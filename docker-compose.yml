@@ -1,0 +1,18 @@
+services:
+  mikroman:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: mikroman:latest
+    container_name: mikroman
+    restart: unless-stopped
+    ports:
+      - "1928:1928"
+    environment:
+      - DATABASE_URL=sqlite+aiosqlite:////data/app.db
+    volumes:
+      - mikroman_data:/data
+
+volumes:
+  mikroman_data:
+    driver: local
