@@ -73,3 +73,11 @@ class InterfaceDTO(BaseModel):
     tx_byte: int = 0
     rx_rate: int = 0  # bps
     tx_rate: int = 0  # bps
+    # Link quality counters. A rising error or drop count is the earliest sign
+    # of a failing cable, duplex mismatch or saturated link.
+    rx_error: int = 0
+    tx_error: int = 0
+    rx_drop: int = 0
+    tx_drop: int = 0
+    mac_address: Optional[str] = None
+    mtu: Optional[str] = None

@@ -61,7 +61,20 @@ async def list_devices(
     if has_updates:
         await db.commit()
 
-    return APIResponse(data=[DeviceDTO.model_validate(d) for d in devices])
+    # Attach today's accounted volume. For an unassigned device this is the
+    # signal that matters most: an unknown client that moved gigabytes today is
+    # very different from one that has moved nothing.
+    volume = await TrafficController._todays_device_volume(db)
+
+    dtos = []
+    for d in devices:
+        dto = DeviceDTO.model_validate(d)
+        d_in, d_out = volume.get(d.id, (0, 0))
+        dto.bytes_today_in = d_in
+        dto.bytes_today_out = d_out
+        dtos.append(dto)
+
+    return APIResponse(data=dtos)
 
 
 @router.get("/suggestions", response_model=APIResponse[List[DeviceSuggestionDTO]])

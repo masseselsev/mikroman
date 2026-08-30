@@ -10,6 +10,7 @@ import { DeviceInbox } from './components/DeviceInbox';
 import { MetricCharts } from './components/MetricCharts';
 import { TrafficAnalytics } from './components/TrafficAnalytics';
 import { SettingsModal } from './components/SettingsModal';
+import { formatBytes } from './utils/formatters';
 import { SetupWizard } from './components/SetupWizard';
 import { Users, Laptop, Activity, BarChart2, Plus, AlertCircle, EyeOff } from 'lucide-react';
 
@@ -73,6 +74,14 @@ export function App() {
     return () => clearInterval(pollInterval);
   }, []);
 
+  // Sum of all profiles' traffic today, used to show each profile's share.
+  // Derived from the profiles themselves so the denominator always matches the
+  // numerators shown on the cards.
+  const gatewayTodayTotal = users.reduce(
+    (sum, u) => sum + (u.bytes_today_in || 0) + (u.bytes_today_out || 0),
+    0
+  );
+
   // Merge live WebSocket telemetry into users state for smooth animation
   useEffect(() => {
     if (telemetry?.users && users.length > 0) {
@@ -81,13 +90,20 @@ export function App() {
         prevUsers.map(u => {
           const live = telemetryMap.get(u.id);
           if (live) {
+            // Per-device live figures ride along in the same telemetry frame,
+            // so device rows animate at the same cadence as the user totals.
+            const perDevice = live.devices || {};
             return {
               ...u,
               current_rate_in: live.current_rate_in,
               current_rate_out: live.current_rate_out,
               bytes_today_in: live.bytes_in,
               bytes_today_out: live.bytes_out,
-              is_paused: live.is_paused
+              is_paused: live.is_paused,
+              devices: (u.devices || []).map(d => {
+                const dm = perDevice[d.id];
+                return dm ? { ...d, ...dm } : d;
+              })
             };
           }
           return u;
@@ -298,6 +314,7 @@ export function App() {
                     onLimitChange={handleLimitChange}
                     onPauseToggle={handlePauseToggle}
                     onUpdate={loadData}
+                    gatewayTotal={gatewayTodayTotal}
                   />
                 ))}
               </div>
@@ -330,20 +347,60 @@ export function App() {
             <div>
               <h2 style={{ fontSize: '1.25rem', fontWeight: 700, marginBottom: 14 }}>{t('network_interfaces')}</h2>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 14 }}>
-                {interfaces.map(iface => (
-                  <div key={iface.id || iface.name} className="card" style={{ padding: 14 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
-                      <span style={{ fontWeight: 700 }}>{iface.name}</span>
-                      <span className={`badge ${iface.running ? 'badge-success' : 'badge-neutral'}`}>
-                        {iface.running ? t('status_running') : t('status_down')}
-                      </span>
+                {interfaces.map(iface => {
+                  // Errors and drops are the earliest warning of a failing link,
+                  // so they are called out rather than buried.
+                  const errors = (iface.rx_error || 0) + (iface.tx_error || 0);
+                  const drops = (iface.rx_drop || 0) + (iface.tx_drop || 0);
+                  return (
+                    <div key={iface.id || iface.name} className="card" style={{ padding: '11px 13px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 7 }}>
+                        <span style={{ fontWeight: 700, fontSize: '0.9rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {iface.name}
+                        </span>
+                        <span className={`badge ${iface.running ? 'badge-success' : 'badge-neutral'}`}>
+                          {iface.running ? t('status_running') : t('status_down')}
+                        </span>
+                      </div>
+
+                      <div style={{ display: 'flex', gap: 14, marginBottom: 6 }}>
+                        <div>
+                          <div style={{ fontSize: '0.62rem', color: 'var(--text-muted)', fontWeight: 600 }}>RX</div>
+                          <div className="font-mono" style={{ fontSize: '0.85rem', fontWeight: 700, color: 'var(--color-success)' }}>
+                            {formatBytes(iface.rx_byte || 0)}
+                          </div>
+                        </div>
+                        <div>
+                          <div style={{ fontSize: '0.62rem', color: 'var(--text-muted)', fontWeight: 600 }}>TX</div>
+                          <div className="font-mono" style={{ fontSize: '0.85rem', fontWeight: 700, color: 'var(--color-primary)' }}>
+                            {formatBytes(iface.tx_byte || 0)}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 8,
+                        fontSize: '0.66rem',
+                        color: 'var(--text-muted)',
+                        borderTop: '1px solid var(--border-color)',
+                        paddingTop: 6,
+                        flexWrap: 'wrap'
+                      }}>
+                        <span>{iface.type || 'ethernet'}</span>
+                        {iface.mtu && <span className="font-mono">MTU {iface.mtu}</span>}
+                        <span style={{ flex: 1 }} />
+                        <span className="font-mono" style={{ color: errors > 0 ? 'var(--color-danger)' : 'var(--text-muted)' }}>
+                          {t('err_label')} {errors.toLocaleString()}
+                        </span>
+                        <span className="font-mono" style={{ color: drops > 0 ? 'var(--color-warning)' : 'var(--text-muted)' }}>
+                          {t('drops_label')} {drops.toLocaleString()}
+                        </span>
+                      </div>
                     </div>
-                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'flex', justifyContent: 'space-between' }}>
-                      <span>{t('type')}: {iface.type || 'ethernet'}</span>
-                      <span className="font-mono">RX: {(iface.rx_byte / (1024 * 1024)).toFixed(1)} MB</span>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
 

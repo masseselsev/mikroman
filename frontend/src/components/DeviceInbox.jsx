@@ -2,10 +2,28 @@ import React, { useState, useEffect } from 'react';
 import { useI18n } from '../context/I18nContext';
 import { api } from '../api/client';
 import { DeviceModal } from './DeviceModal';
+import { formatBytes, formatRelativeTime } from '../utils/formatters';
+
 import { RefreshCw, UserPlus, Laptop, Smartphone, Wifi, Tag, History, Link, X, Clock, ShieldAlert, Sliders, Pause, Play, EyeOff, Eye } from 'lucide-react';
 
+/**
+ * Earliest known sighting of a device: the 'discovered' history entry if one
+ * survives, otherwise the oldest entry recorded for it.
+ */
+function firstSeenOf(device) {
+  const history = device.history || [];
+  if (history.length === 0) return null;
+  const discovery = history.filter(h => h.event_type === 'discovered');
+  const pool = discovery.length > 0 ? discovery : history;
+  return pool.reduce(
+    (oldest, h) => (!oldest || new Date(h.created_at) < new Date(oldest) ? h.created_at : oldest),
+    null
+  );
+}
+
+
 export function DeviceInbox({ devices = [], users = [], onAssign, onScan, isScanning }) {
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   const [selectedUserMap, setSelectedUserMap] = useState({});
   const [suggestions, setSuggestions] = useState([]);
   const [historyDevice, setHistoryDevice] = useState(null);
@@ -302,6 +320,26 @@ export function DeviceInbox({ devices = [], users = [], onAssign, onScan, isScan
                         </span>
                       </div>
                     )}
+
+                    {/* When this device first appeared - a client seen minutes ago
+                        deserves more scrutiny than one that has been around for weeks. */}
+                    {firstSeenOf(device) && (
+                      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                        <span style={{ color: 'var(--text-muted)' }}>{t('first_seen')}:</span>
+                        <span className="font-mono">
+                          {t('last_seen_ago', { time: formatRelativeTime(firstSeenOf(device), lang) })}
+                        </span>
+                      </div>
+                    )}
+
+                    {/* Volume consumed today by an as-yet unidentified device. */}
+                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                      <span style={{ color: 'var(--text-muted)' }}>{t('today_label')}:</span>
+                      <span className="font-mono" style={{ display: 'flex', gap: 8 }}>
+                        <span style={{ color: 'var(--color-success)' }}>↓ {formatBytes(device.bytes_today_in || 0)}</span>
+                        <span style={{ color: 'var(--color-primary)' }}>↑ {formatBytes(device.bytes_today_out || 0)}</span>
+                      </span>
+                    </div>
                   </div>
                 </div>
 

@@ -1,20 +1,126 @@
 import React, { useState, useEffect } from 'react';
 import { useI18n } from '../context/I18nContext';
 import { api } from '../api/client';
-import { formatSpeed, formatBytes, formatUptime } from '../utils/formatters';
+import { formatSpeed, formatUptime } from '../utils/formatters';
 import {
   Cpu,
   HardDrive,
   Thermometer,
-  Zap,
   ArrowDown,
   ArrowUp,
   Clock,
   Sliders,
   X,
   Check,
-  Network
+  Network,
+  Users,
+  Globe
 } from 'lucide-react';
+
+/** How many telemetry ticks each sparkline remembers (~1 tick/second). */
+const HISTORY_LENGTH = 60;
+
+function pushHistory(previous, value) {
+  if (value == null || Number.isNaN(value)) return previous;
+  const next = [...previous, value];
+  return next.length > HISTORY_LENGTH ? next.slice(next.length - HISTORY_LENGTH) : next;
+}
+
+/**
+ * Minimal inline sparkline. Drawn as an SVG polyline from values already
+ * arriving over the telemetry socket, so it costs no extra request and needs
+ * no charting dependency.
+ */
+function Sparkline({ values, color, max }) {
+  if (!values || values.length < 2) {
+    return <div style={{ height: 18 }} />;
+  }
+  const width = 100;
+  const height = 18;
+  const peak = max != null ? max : Math.max(...values, 1);
+  const scale = peak > 0 ? peak : 1;
+  const step = width / (values.length - 1);
+
+  const points = values
+    .map((v, i) => `${(i * step).toFixed(1)},${(height - Math.min(v / scale, 1) * height).toFixed(1)}`)
+    .join(' ');
+  const area = `0,${height} ${points} ${width},${height}`;
+
+  return (
+    <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none"
+         style={{ width: '100%', height: 18, display: 'block' }} aria-hidden="true">
+      <polygon points={area} fill={color} opacity="0.14" />
+      <polyline points={points} fill="none" stroke={color} strokeWidth="1.5"
+                vectorEffect="non-scaling-stroke" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+/**
+ * One compact telemetry tile: label, primary value, a secondary detail, and an
+ * optional sparkline. Replaces eight near-identical blocks of inline markup.
+ */
+function Tile({ icon, tone, label, value, sub, history, historyMax, onClick, title, valueSize = '1rem' }) {
+  return (
+    <div
+      className="card"
+      onClick={onClick}
+      title={title}
+      style={{
+        padding: '9px 11px',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 3,
+        cursor: onClick ? 'pointer' : 'default',
+        minWidth: 0
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+        <span style={{ color: tone, display: 'flex', flexShrink: 0 }}>{icon}</span>
+        <span style={{
+          fontSize: '0.68rem',
+          color: 'var(--text-muted)',
+          fontWeight: 600,
+          textTransform: 'uppercase',
+          letterSpacing: '0.03em',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          whiteSpace: 'nowrap'
+        }}>
+          {label}
+        </span>
+      </div>
+
+      <div className="font-mono" style={{
+        fontSize: valueSize,
+        fontWeight: 800,
+        color: tone,
+        lineHeight: 1.15,
+        overflow: 'hidden',
+        textOverflow: 'ellipsis',
+        whiteSpace: 'nowrap'
+      }}>
+        {value}
+      </div>
+
+      {history ? (
+        <Sparkline values={history} color={tone} max={historyMax} />
+      ) : null}
+
+      {sub ? (
+        <div style={{
+          fontSize: '0.62rem',
+          color: 'var(--text-muted)',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          whiteSpace: 'nowrap'
+        }}>
+          {sub}
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 export function TelemetryBar({ router, activeRouter, interfaces = [] }) {
   const { t, lang } = useI18n();
@@ -23,6 +129,38 @@ export function TelemetryBar({ router, activeRouter, interfaces = [] }) {
   const [selectedIfaces, setSelectedIfaces] = useState([]);
   const [isSaving, setIsSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
+
+  // Rolling history for the sparklines, fed from the telemetry socket itself.
+  const [rxHistory, setRxHistory] = useState([]);
+  const [txHistory, setTxHistory] = useState([]);
+  const [cpuHistory, setCpuHistory] = useState([]);
+  const [memHistory, setMemHistory] = useState([]);
+  const [tempHistory, setTempHistory] = useState([]);
+  const [tempThreshold, setTempThreshold] = useState(null);
+
+  useEffect(() => {
+    if (!router) return;
+    setRxHistory(prev => pushHistory(prev, router.wan_rx_bps));
+    setTxHistory(prev => pushHistory(prev, router.wan_tx_bps));
+    setCpuHistory(prev => pushHistory(prev, router.cpu_load));
+    if (router.total_memory_mb) {
+      const usedPct = ((router.total_memory_mb - router.free_memory_mb) / router.total_memory_mb) * 100;
+      setMemHistory(prev => pushHistory(prev, usedPct));
+    }
+    if (router.temperature != null) {
+      setTempHistory(prev => pushHistory(prev, router.temperature));
+    }
+  }, [router]);
+
+  // Warning threshold is configured in Settings; used to colour the temperature.
+  useEffect(() => {
+    api.getSettings()
+      .then(res => {
+        const raw = res?.data?.temp_warning_threshold;
+        if (raw) setTempThreshold(Number(raw));
+      })
+      .catch(() => {});
+  }, []);
 
   // Load configured interfaces
   useEffect(() => {
@@ -94,6 +232,19 @@ export function TelemetryBar({ router, activeRouter, interfaces = [] }) {
 
   const cpuLoad = router.cpu_load || 0;
   const cpuColor = cpuLoad > 85 ? 'var(--color-danger)' : (cpuLoad > 60 ? 'var(--color-warning)' : 'var(--color-success)');
+
+  const memPct = router.total_memory_mb
+    ? Math.round(((router.total_memory_mb - router.free_memory_mb) / router.total_memory_mb) * 100)
+    : null;
+
+  // Temperature is judged against the user's configured warning threshold
+  // rather than a hard-coded number, so it matches the alerting behaviour.
+  const temp = router.temperature;
+  const warnAt = tempThreshold || 80;
+  const tempColor = temp == null
+    ? 'var(--text-muted)'
+    : (temp >= warnAt ? 'var(--color-danger)'
+      : (temp >= warnAt - 8 ? 'var(--color-warning)' : 'var(--color-success)'));
   const monitored = router.monitored_interfaces || selectedIfaces || [];
   const monitoredShort = monitored.length === 0
     ? 'none'
@@ -105,235 +256,87 @@ export function TelemetryBar({ router, activeRouter, interfaces = [] }) {
     <>
       <div style={{
         display: 'grid',
-        gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))',
-        gap: 12,
-        marginBottom: 24,
+        gridTemplateColumns: 'repeat(auto-fit, minmax(148px, 1fr))',
+        gap: 10,
+        marginBottom: 18,
         alignItems: 'stretch'
       }}>
-        {/* Gateway Download */}
-        <div
-          className="card"
-          style={{
-            padding: '12px 14px',
-            display: 'flex',
-            alignItems: 'center',
-            gap: 12,
-            minHeight: 74,
-            cursor: 'pointer',
-            transition: 'border-color 0.2s ease, transform 0.15s ease'
-          }}
+        <Tile
+          icon={<ArrowDown size={15} />}
+          tone="var(--color-success)"
+          label={t('total_rx')}
+          value={formatSpeed(router.wan_rx_bps)}
+          sub={monitoredShort}
+          history={rxHistory}
           onClick={openConfigModal}
-          title="Click to configure monitored interfaces"
-        >
-          <div style={{
-            background: 'rgba(46, 204, 113, 0.12)',
-            color: 'var(--color-success)',
-            width: 36,
-            height: 36,
-            borderRadius: 'var(--radius-md)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            flexShrink: 0
-          }}>
-            <ArrowDown size={18} />
-          </div>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 4, marginBottom: 2 }}>
-              <span style={{ fontSize: '0.725rem', color: 'var(--text-muted)', fontWeight: 600 }}>{t('total_rx')}</span>
-              <span
-                style={{
-                  fontSize: '0.65rem',
-                  padding: '1px 5px',
-                  borderRadius: 4,
-                  background: 'var(--bg-secondary)',
-                  color: 'var(--text-muted)',
-                  border: '1px solid var(--border-color)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 3,
-                  maxWidth: 70,
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  whiteSpace: 'nowrap'
-                }}
-              >
-                <Sliders size={9} />
-                {monitoredShort}
-              </span>
-            </div>
-            <div className="font-mono" style={{ fontSize: '1.1rem', fontWeight: 800, color: 'var(--color-success)', lineHeight: 1.2 }}>
-              {formatSpeed(router.wan_rx_bps)}
-            </div>
-          </div>
-        </div>
+          title={t('configure_interfaces_hint')}
+        />
 
-        {/* Gateway Upload */}
-        <div
-          className="card"
-          style={{
-            padding: '12px 14px',
-            display: 'flex',
-            alignItems: 'center',
-            gap: 12,
-            minHeight: 74,
-            cursor: 'pointer',
-            transition: 'border-color 0.2s ease, transform 0.15s ease'
-          }}
+        <Tile
+          icon={<ArrowUp size={15} />}
+          tone="var(--color-primary)"
+          label={t('total_tx')}
+          value={formatSpeed(router.wan_tx_bps)}
+          sub={monitoredShort}
+          history={txHistory}
           onClick={openConfigModal}
-          title="Click to configure monitored interfaces"
-        >
-          <div style={{
-            background: 'rgba(11, 114, 201, 0.12)',
-            color: 'var(--color-primary)',
-            width: 36,
-            height: 36,
-            borderRadius: 'var(--radius-md)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            flexShrink: 0
-          }}>
-            <ArrowUp size={18} />
-          </div>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 4, marginBottom: 2 }}>
-              <span style={{ fontSize: '0.725rem', color: 'var(--text-muted)', fontWeight: 600 }}>{t('total_tx')}</span>
-              <span
-                style={{
-                  fontSize: '0.65rem',
-                  padding: '1px 5px',
-                  borderRadius: 4,
-                  background: 'var(--bg-secondary)',
-                  color: 'var(--text-muted)',
-                  border: '1px solid var(--border-color)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 3,
-                  maxWidth: 70,
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  whiteSpace: 'nowrap'
-                }}
-              >
-                <Sliders size={9} />
-                {monitoredShort}
-              </span>
-            </div>
-            <div className="font-mono" style={{ fontSize: '1.1rem', fontWeight: 800, color: 'var(--color-primary)', lineHeight: 1.2 }}>
-              {formatSpeed(router.wan_tx_bps)}
-            </div>
-          </div>
-        </div>
+          title={t('configure_interfaces_hint')}
+        />
 
-        {/* CPU Load */}
-        <div className="card" style={{ padding: '12px 14px', display: 'flex', alignItems: 'center', gap: 12, minHeight: 74 }}>
-          <div style={{
-            background: 'var(--bg-secondary)',
-            color: cpuColor,
-            width: 36,
-            height: 36,
-            borderRadius: 'var(--radius-md)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            flexShrink: 0
-          }}>
-            <Cpu size={18} />
-          </div>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-              <span style={{ fontSize: '0.725rem', color: 'var(--text-muted)', fontWeight: 600 }}>{t('cpu')}</span>
-              <span className="font-mono" style={{ fontSize: '0.825rem', fontWeight: 700, color: cpuColor }}>{cpuLoad}%</span>
-            </div>
-            <div style={{
-              height: 5,
-              background: 'var(--bg-input)',
-              borderRadius: 3,
-              overflow: 'hidden'
-            }}>
-              <div style={{
-                width: `${Math.min(cpuLoad, 100)}%`,
-                height: '100%',
-                background: cpuColor,
-                transition: 'width 0.4s ease'
-              }}></div>
-            </div>
-          </div>
-        </div>
+        <Tile
+          icon={<Cpu size={15} />}
+          tone={cpuColor}
+          label={t('cpu')}
+          value={`${cpuLoad}%`}
+          sub={router.board_name || ''}
+          history={cpuHistory}
+          historyMax={100}
+        />
 
-        {/* Memory */}
-        <div className="card" style={{ padding: '12px 14px', display: 'flex', alignItems: 'center', gap: 12, minHeight: 74 }}>
-          <div style={{
-            background: 'var(--bg-secondary)',
-            color: 'var(--color-info)',
-            width: 36,
-            height: 36,
-            borderRadius: 'var(--radius-md)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            flexShrink: 0
-          }}>
-            <HardDrive size={18} />
-          </div>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: '0.725rem', color: 'var(--text-muted)', fontWeight: 600, marginBottom: 2 }}>{t('ram_free')}</div>
-            <div className="font-mono" style={{ fontSize: '1.05rem', fontWeight: 700, lineHeight: 1.2 }}>
-              {router.free_memory_mb || 0} <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontWeight: 500 }}>MB</span>
-            </div>
-          </div>
-        </div>
+        <Tile
+          icon={<HardDrive size={15} />}
+          tone="var(--color-primary)"
+          label={t('ram_free')}
+          value={`${Math.round(router.free_memory_mb || 0)} MB`}
+          sub={memPct !== null ? `${memPct}% ${t('used_label')}` : ''}
+          history={memHistory}
+          historyMax={100}
+        />
 
-        {/* Temp */}
-        {router.temperature !== null && (
-          <div className="card" style={{ padding: '12px 14px', display: 'flex', alignItems: 'center', gap: 12, minHeight: 74 }}>
-            <div style={{
-              background: 'var(--bg-secondary)',
-              color: (router.temperature > 65 ? 'var(--color-danger)' : 'var(--color-warning)'),
-              width: 36,
-              height: 36,
-              borderRadius: 'var(--radius-md)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              flexShrink: 0
-            }}>
-              <Thermometer size={18} />
-            </div>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontSize: '0.725rem', color: 'var(--text-muted)', fontWeight: 600, marginBottom: 2 }}>{t('temp')}</div>
-              <div className="font-mono" style={{ fontSize: '1.05rem', fontWeight: 700, lineHeight: 1.2 }}>
-                {router.temperature}°C
-              </div>
-            </div>
-          </div>
-        )}
+        <Tile
+          icon={<Thermometer size={15} />}
+          tone={tempColor}
+          label={t('temp')}
+          value={router.temperature != null ? `${router.temperature}°C` : '—'}
+          sub={tempThreshold ? `${t('threshold_label')} ${tempThreshold}°C` : ''}
+          history={tempHistory}
+        />
 
-        {/* Uptime */}
-        {router.uptime && (
-          <div className="card" style={{ padding: '12px 14px', display: 'flex', alignItems: 'center', gap: 12, minHeight: 74 }}>
-            <div style={{
-              background: 'var(--bg-secondary)',
-              color: 'var(--text-secondary)',
-              width: 36,
-              height: 36,
-              borderRadius: 'var(--radius-md)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              flexShrink: 0
-            }}>
-              <Clock size={18} />
-            </div>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontSize: '0.725rem', color: 'var(--text-muted)', fontWeight: 600, marginBottom: 2 }}>{t('uptime')}</div>
-              <div className="font-mono" style={{ fontSize: '1.05rem', fontWeight: 700, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', lineHeight: 1.2 }}>
-                {formatUptime(router.uptime, lang)}
-              </div>
-            </div>
-          </div>
-        )}
+        <Tile
+          icon={<Users size={15} />}
+          tone="var(--color-primary)"
+          label={t('clients_label')}
+          value={String(router.active_clients ?? 0)}
+          sub={t('online')}
+        />
+
+        <Tile
+          icon={<Globe size={15} />}
+          tone="var(--text-secondary)"
+          label={t('wan_ip')}
+          value={router.wan_ip || '—'}
+          valueSize="0.85rem"
+          sub={router.version || ''}
+        />
+
+        <Tile
+          icon={<Clock size={15} />}
+          tone="var(--text-secondary)"
+          label={t('uptime')}
+          value={formatUptime(router.uptime, lang)}
+          valueSize="0.9rem"
+          sub={router.board_name || ''}
+        />
       </div>
 
       {/* Interface Configuration Modal */}

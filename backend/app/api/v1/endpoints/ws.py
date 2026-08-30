@@ -15,6 +15,48 @@ from backend.app.services.traffic_controller import TrafficController
 logger = logging.getLogger("mikroman.ws")
 router = APIRouter(tags=["WebSocket Telemetry"])
 
+# The WAN address changes rarely but the telemetry loop ticks once a second, so
+# it is cached rather than queried on every frame.
+_WAN_IP_TTL_SECONDS = 60
+_wan_ip_cache: dict = {}
+
+
+async def _get_wan_ip(client, router_id: Optional[int], monitored: list) -> Optional[str]:
+    """Public-facing address of the monitored uplink, cached briefly.
+
+    Falls back to any non-loopback address when no monitored interface matches,
+    so the dashboard still shows something useful on unusual topologies.
+    """
+    cache_key = str(router_id)
+    cached = _wan_ip_cache.get(cache_key)
+    now = time.time()
+    if cached and (now - cached["at"]) < _WAN_IP_TTL_SECONDS:
+        return cached["ip"]
+
+    try:
+        addresses = await client.get_ip_addresses()
+    except Exception as e:
+        logger.debug(f"Could not read IP addresses for WAN display: {e}")
+        return cached["ip"] if cached else None
+
+    preferred = None
+    fallback = None
+    for entry in addresses:
+        raw = entry.get("address") or ""
+        ip = raw.split("/")[0]
+        iface = entry.get("interface")
+        if not ip or ip.startswith("127."):
+            continue
+        if monitored and iface in monitored:
+            preferred = ip
+            break
+        if fallback is None:
+            fallback = ip
+
+    resolved = preferred or fallback
+    _wan_ip_cache[cache_key] = {"ip": resolved, "at": now}
+    return resolved
+
 
 class ConnectionManager:
     """Manages active browser WebSocket connections."""
@@ -130,6 +172,10 @@ async def websocket_telemetry_endpoint(
                         "wan_rx_bps": total_rx,
                         "wan_tx_bps": total_tx,
                         "monitored_interfaces": monitored_ifaces,
+                        "wan_ip": await _get_wan_ip(client, eff_router_id, monitored_ifaces),
+                        # Devices currently online across all profiles - answers
+                        # "how many clients is this router actually serving".
+                        "active_clients": sum(u.get("active_device_count", 0) for u in users_stats),
                     },
                     "users": users_stats
                 }

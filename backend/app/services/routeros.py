@@ -456,7 +456,13 @@ class RouterOSClient:
                     rx_byte=int(item.get("rx-byte", 0)),
                     tx_byte=int(item.get("tx-byte", 0)),
                     rx_rate=int(item.get("rx-bits-per-second", 0) or item.get("rx-rate", 0)),
-                    tx_rate=int(item.get("tx-bits-per-second", 0) or item.get("tx-rate", 0))
+                    tx_rate=int(item.get("tx-bits-per-second", 0) or item.get("tx-rate", 0)),
+                    rx_error=int(item.get("rx-error", 0) or 0),
+                    tx_error=int(item.get("tx-error", 0) or 0),
+                    rx_drop=int(item.get("rx-drop", 0) or 0),
+                    tx_drop=int(item.get("tx-drop", 0) or 0),
+                    mac_address=item.get("mac-address"),
+                    mtu=str(item.get("mtu")) if item.get("mtu") is not None else None
                 ))
             return results
 
@@ -588,6 +594,15 @@ class RouterOSClient:
         async with self._get_client() as client:
             resp = await client.patch(f"/ip/firewall/filter/{rule_id}", json=payload)
             return resp.status_code in (200, 201, 204)
+
+    async def get_ip_addresses(self) -> List[Dict[str, Any]]:
+        """Fetch configured IP addresses (``/ip/address``) with their interfaces."""
+        async with self._get_client() as client:
+            resp = await client.get("/ip/address")
+            if resp.status_code != 200:
+                return []
+            raw = resp.json()
+            return raw if isinstance(raw, list) else [raw]
 
     # --- Firewall Mangle Operations (per-device traffic accounting) ---
     #

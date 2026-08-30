@@ -18,6 +18,29 @@ export function formatSpeed(bps) {
   return `${(bps / 1000000000).toFixed(2)} Gbps`;
 }
 
+/**
+ * Compact "time since" label for a timestamp, e.g. "2m", "3h", "5d".
+ * Used on device rows where a full date would not fit and is rarely what the
+ * reader wants - "how stale is this" is the actual question.
+ */
+export function formatRelativeTime(timestamp, lang = 'en') {
+  if (!timestamp) return '';
+  const then = new Date(timestamp);
+  if (Number.isNaN(then.getTime())) return '';
+
+  const isRu = lang === 'ru';
+  const seconds = Math.max(0, Math.floor((Date.now() - then.getTime()) / 1000));
+
+  if (seconds < 60) return isRu ? 'сейчас' : 'now';
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}${isRu ? 'м' : 'm'}`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}${isRu ? 'ч' : 'h'}`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days}${isRu ? 'д' : 'd'}`;
+  return `${Math.floor(days / 30)}${isRu ? 'мес' : 'mo'}`;
+}
+
 export function formatUptime(uptime, lang = 'en') {
   const isRu = lang === 'ru';
   const dUnit = isRu ? 'д' : 'd';

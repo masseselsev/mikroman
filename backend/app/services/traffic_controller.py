@@ -442,6 +442,21 @@ class TrafficController:
         rows = (await session.execute(stmt)).all()
         return {row[0]: (int(row[1] or 0), int(row[2] or 0)) for row in rows}
 
+    @staticmethod
+    async def _todays_device_volume(session: AsyncSession) -> Dict[int, Tuple[int, int]]:
+        """Today's accumulated (download, upload) bytes per device from the rollups."""
+        from datetime import date
+
+        from backend.app.db.models import DeviceTrafficRollup
+
+        stmt = select(
+            DeviceTrafficRollup.device_id,
+            DeviceTrafficRollup.bytes_in,
+            DeviceTrafficRollup.bytes_out,
+        ).where(DeviceTrafficRollup.record_date == date.today())
+        rows = (await session.execute(stmt)).all()
+        return {row[0]: (int(row[1] or 0), int(row[2] or 0)) for row in rows}
+
     async def reconcile_managed_queues(self, session: AsyncSession) -> int:
         """Delete managed Simple Queues whose owning user or device is gone.
 
@@ -540,6 +555,15 @@ class TrafficController:
         per_device_rates = live_rate_tracker.sample(rules)
         user_rates = await aggregate_user_rates(session, per_device_rates)
         user_volume = await self._todays_user_volume(session)
+        device_volume = await self._todays_device_volume(session)
+
+        # Grouped from the device rows directly rather than the ORM relationship,
+        # which can be stale on a long-lived session.
+        devices_by_user: Dict[int, List[Device]] = {}
+        all_devices = (await session.execute(select(Device))).scalars().all()
+        for device in all_devices:
+            if device.user_id:
+                devices_by_user.setdefault(device.user_id, []).append(device)
 
         user_metrics = []
         for user in users:
@@ -548,18 +572,34 @@ class TrafficController:
             rate_out = int(rates.get("tx_bps", 0))
             bytes_in, bytes_out = user_volume.get(user.id, (0, 0))
 
+            # Per-device breakdown, so the dashboard can name the device that is
+            # actually consuming the bandwidth rather than only its owner.
+            # A device with no counter sample reports zero, never a stale value.
+            owned = devices_by_user.get(user.id, [])
+            device_metrics: Dict[int, Dict[str, int]] = {}
+            for device in owned:
+                d_rate = per_device_rates.get(device.id, {})
+                d_in, d_out = device_volume.get(device.id, (0, 0))
+                device_metrics[device.id] = {
+                    "current_rate_in": int(d_rate.get("rx_bps", 0)),
+                    "current_rate_out": int(d_rate.get("tx_bps", 0)),
+                    "bytes_today_in": d_in,
+                    "bytes_today_out": d_out,
+                }
+
             user_metrics.append({
                 "user_id": user.id,
                 "name": user.name,
                 "avatar_icon": user.avatar_icon,
                 "speed_limit": user.speed_limit,
                 "is_paused": user.is_paused,
-                "device_count": len(user.devices),
-                "active_device_count": len([d for d in user.devices if d.is_active]),
+                "device_count": len(owned),
+                "active_device_count": len([d for d in owned if d.is_active]),
                 "current_rate_in": rate_in,    # bps download
                 "current_rate_out": rate_out,  # bps upload
                 "bytes_in": bytes_in,
                 "bytes_out": bytes_out,
+                "devices": device_metrics,
             })
 
         return user_metrics

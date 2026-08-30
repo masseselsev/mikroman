@@ -151,6 +151,26 @@ body {
   border: 1px solid var(--border-color);
 }
 
+/* Compact inline chip used on dense device rows, where a full badge would
+   dominate the line it annotates. */
+.badge-chip {
+  padding: 0 5px;
+  font-size: 0.6rem;
+  letter-spacing: 0.02em;
+  border-radius: var(--radius-sm);
+  background: rgba(100, 116, 139, 0.18);
+  color: var(--text-muted);
+  border: 1px solid rgba(100, 116, 139, 0.28);
+  flex-shrink: 0;
+  line-height: 1.5;
+}
+
+.badge-chip-warn {
+  background: var(--color-warning-bg);
+  color: var(--color-warning);
+  border-color: rgba(234, 179, 8, 0.35);
+}
+
 /* Buttons */
 .btn {
   display: inline-flex;
@@ -304,8 +324,11 @@ body {
 /* Grid Layouts */
 .grid-users {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
-  gap: 20px;
+  grid-template-columns: repeat(auto-fill, minmax(400px, 1fr));
+  gap: 14px;
+  /* Cards size to their own content. Stretching made a one-device profile as
+     tall as a three-device one, leaving a large dead gap inside it. */
+  align-items: start;
 }
 
 @media (max-width: 768px) {

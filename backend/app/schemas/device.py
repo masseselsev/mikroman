@@ -77,6 +77,13 @@ class DeviceDTO(DeviceBase):
     last_seen: datetime
     history: List[DeviceHistoryDTO] = []
 
+    # Live figures populated by the telemetry engine from firewall counters.
+    # A device with no counter sample reports 0 rather than a stale value.
+    current_rate_in: int = 0    # bps download
+    current_rate_out: int = 0   # bps upload
+    bytes_today_in: int = 0     # bytes downloaded today
+    bytes_today_out: int = 0    # bytes uploaded today
+
     @computed_field
     @property
     def is_randomized_mac(self) -> bool:

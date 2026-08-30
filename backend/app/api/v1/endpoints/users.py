@@ -42,6 +42,17 @@ async def list_users(
             dto.current_rate_out = m["current_rate_out"]
             dto.bytes_today_in = m["bytes_in"]
             dto.bytes_today_out = m["bytes_out"]
+
+            # Per-device live rate and daily volume, so the dashboard can point
+            # at the specific device consuming bandwidth rather than its owner.
+            per_device = m.get("devices", {})
+            for device_dto in dto.devices:
+                dm = per_device.get(device_dto.id)
+                if dm:
+                    device_dto.current_rate_in = dm["current_rate_in"]
+                    device_dto.current_rate_out = dm["current_rate_out"]
+                    device_dto.bytes_today_in = dm["bytes_today_in"]
+                    device_dto.bytes_today_out = dm["bytes_today_out"]
         user_dtos.append(dto)
 
     return APIResponse(data=user_dtos)

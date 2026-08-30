@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useI18n } from '../context/I18nContext';
 import { api } from '../api/client';
-import { formatSpeed, formatBytes } from '../utils/formatters';
+import { formatSpeed, formatBytes, formatRelativeTime } from '../utils/formatters';
 import { DeviceModal } from './DeviceModal';
 import {
   User as UserIcon,
@@ -10,6 +10,7 @@ import {
   Tv,
   Gamepad2,
   Wifi,
+  Cable,
   Pause,
   Play,
   Settings,
@@ -18,9 +19,7 @@ import {
   ArrowUp,
   Check,
   X,
-  Sliders,
-  EyeOff,
-  Eye
+  Sliders
 } from 'lucide-react';
 
 const SPEED_PRESETS = [
@@ -35,18 +34,18 @@ const SPEED_PRESETS = [
   { label: '✏️ Custom manual limit...', value: 'custom' },
 ];
 
-function getDeviceIcon(vendor, hostname) {
+function getDeviceIcon(vendor, hostname, size = 14) {
   const text = `${vendor || ''} ${hostname || ''}`.toLowerCase();
   if (text.includes('phone') || text.includes('iphone') || text.includes('pixel') || text.includes('galaxy')) {
-    return <Smartphone size={14} />;
+    return <Smartphone size={size} />;
   }
   if (text.includes('tv') || text.includes('cast') || text.includes('samsung')) {
-    return <Tv size={14} />;
+    return <Tv size={size} />;
   }
   if (text.includes('playstation') || text.includes('xbox') || text.includes('nintendo') || text.includes('game')) {
-    return <Gamepad2 size={14} />;
+    return <Gamepad2 size={size} />;
   }
-  return <Laptop size={14} />;
+  return <Laptop size={size} />;
 }
 
 export function formatLimitSummary(limitStr) {
@@ -58,8 +57,186 @@ export function formatLimitSummary(limitStr) {
   return `↓↑ ${limitStr}`;
 }
 
-export function UserCard({ user, onEdit, onDelete, onLimitChange, onPauseToggle, onUpdate, showHidden = false }) {
-  const { t } = useI18n();
+/** Signal strength colour: usable above -65 dBm, weak below -80 dBm. */
+function signalColor(dbm) {
+  if (dbm > -65) return 'var(--color-success)';
+  if (dbm > -80) return 'var(--color-warning)';
+  return 'var(--color-danger)';
+}
+
+const META_SEP = <span style={{ opacity: 0.4 }}>·</span>;
+
+/**
+ * A single device, rendered on two lines.
+ *
+ * Line 1 answers "is this device using bandwidth right now"; line 2 answers
+ * "what and where is it, and how much has it used today". Splitting them means
+ * the name no longer has to compete with the metadata for width, so it stops
+ * being truncated to "Nama...".
+ */
+function DeviceRow({ device: d, t, lang, onOpen, onUpdate }) {
+  const [busy, setBusy] = useState(false);
+
+  const rateIn = d.current_rate_in || 0;
+  const rateOut = d.current_rate_out || 0;
+  const isMoving = rateIn > 0 || rateOut > 0;
+  const offline = !d.is_active;
+
+  const togglePause = async (e) => {
+    e.stopPropagation();
+    setBusy(true);
+    try {
+      await api.toggleDevicePause(d.id, !d.is_paused);
+      if (onUpdate) onUpdate();
+    } catch (err) {
+      console.error('Failed to toggle device pause:', err);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div
+      onClick={onOpen}
+      title={t('device_row_hint')}
+      style={{
+        padding: '6px 9px',
+        background: 'var(--bg-secondary)',
+        borderRadius: 'var(--radius-sm)',
+        border: '1px solid var(--border-color)',
+        opacity: d.is_paused ? 0.6 : (offline ? 0.78 : 1),
+        cursor: 'pointer',
+        transition: 'border-color 0.15s ease'
+      }}
+    >
+      {/* Line 1 — identity and live throughput */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+        <span
+          style={{
+            width: 7,
+            height: 7,
+            borderRadius: '50%',
+            flexShrink: 0,
+            background: d.is_paused ? 'var(--color-danger)' : (d.is_active ? 'var(--color-success)' : 'var(--text-muted)'),
+            boxShadow: d.is_active && !d.is_paused ? '0 0 6px rgba(16, 185, 129, 0.5)' : 'none'
+          }}
+          title={d.is_paused ? t('paused') : (d.is_active ? t('online') : t('offline'))}
+        />
+        <span style={{ flexShrink: 0, display: 'flex', color: 'var(--text-secondary)' }}>
+          {getDeviceIcon(d.vendor, d.hostname)}
+        </span>
+        <span style={{
+          fontWeight: 600,
+          fontSize: '0.8125rem',
+          color: 'var(--text-primary)',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          whiteSpace: 'nowrap',
+          minWidth: 0
+        }}>
+          {d.custom_name || d.hostname || d.vendor || 'Device'}
+        </span>
+
+        {d.is_hidden && (
+          <span className="badge badge-chip" title={t('hidden_badge')}>{t('hidden_badge')}</span>
+        )}
+        {d.speed_limit && d.speed_limit !== 'default' && (
+          <span className="badge badge-chip badge-chip-warn" title={`${t('table_speed_limit')}: ${d.speed_limit}`}>
+            ⚡ {d.speed_limit}
+          </span>
+        )}
+        {d.is_randomized_mac && (
+          <span className="badge badge-chip badge-chip-warn" title={t('private_mac_hint')}>
+            {t('private_badge')}
+          </span>
+        )}
+
+        <span style={{ flex: 1 }} />
+
+        {/* Live rate. Dimmed when idle so a quiet device reads as quiet. */}
+        <span className="font-mono" style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
+          fontSize: '0.75rem',
+          flexShrink: 0,
+          fontWeight: 700
+        }}>
+          <span style={{ color: isMoving && rateIn ? 'var(--color-success)' : 'var(--text-muted)' }}>
+            ↓ {formatSpeed(rateIn)}
+          </span>
+          <span style={{ color: isMoving && rateOut ? 'var(--color-primary)' : 'var(--text-muted)' }}>
+            ↑ {formatSpeed(rateOut)}
+          </span>
+        </span>
+      </div>
+
+      {/* Line 2 — where it is, and what it has consumed today */}
+      <div style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 6,
+        marginTop: 3,
+        paddingLeft: 14,
+        fontSize: '0.6875rem',
+        color: 'var(--text-muted)',
+        minWidth: 0
+      }}>
+        <span className="font-mono" style={{ flexShrink: 0 }}>{d.ip_address || d.mac_address}</span>
+
+        {d.vendor && <>{META_SEP}<span style={{
+          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'
+        }}>{d.vendor}</span></>}
+
+        {d.last_interface && <>{META_SEP}<span style={{ display: 'flex', alignItems: 'center', gap: 3, flexShrink: 0 }}>
+          {d.last_wifi_signal ? <Wifi size={10} /> : <Cable size={10} />}
+          {d.last_interface}
+        </span></>}
+
+        {/* A stale signal reading is meaningless once the device has left. */}
+        {!offline && d.last_wifi_signal ? (
+          <>{META_SEP}<span className="font-mono" style={{ color: signalColor(d.last_wifi_signal), flexShrink: 0 }}>
+            {d.last_wifi_signal} dBm
+          </span></>
+        ) : null}
+
+        {offline && d.last_seen && (
+          <>{META_SEP}<span style={{ flexShrink: 0 }}>
+            {t('last_seen_ago', { time: formatRelativeTime(d.last_seen, lang) })}
+          </span></>
+        )}
+
+        <span style={{ flex: 1 }} />
+
+        {/* Today's volume for this specific device */}
+        <span className="font-mono" style={{ display: 'flex', gap: 7, flexShrink: 0 }}>
+          <span title={t('today_download')}>↓ {formatBytes(d.bytes_today_in || 0)}</span>
+          <span title={t('today_upload')}>↑ {formatBytes(d.bytes_today_out || 0)}</span>
+        </span>
+
+        <button
+          type="button"
+          onClick={togglePause}
+          disabled={busy}
+          className="btn-icon"
+          style={{
+            width: 22,
+            height: 22,
+            flexShrink: 0,
+            background: d.is_paused ? 'var(--color-danger)' : 'transparent',
+            color: d.is_paused ? '#fff' : 'var(--text-muted)'
+          }}
+          title={d.is_paused ? t('resume_device') : t('pause_device')}
+        >
+          {d.is_paused ? <Play size={11} /> : <Pause size={11} />}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+export function UserCard({ user, onEdit, onDelete, onLimitChange, onPauseToggle, onUpdate, showHidden = false, gatewayTotal = 0 }) {
+  const { t, lang } = useI18n();
   const [isUpdating, setIsUpdating] = useState(false);
   const [showCustomInput, setShowCustomInput] = useState(false);
   const [customDown, setCustomDown] = useState('');
@@ -71,13 +248,15 @@ export function UserCard({ user, onEdit, onDelete, onLimitChange, onPauseToggle,
   const isPaused = user.is_paused;
   const isOnline = activeDevices.length > 0 && !isPaused;
 
+  const todayTotal = (user.bytes_today_in || 0) + (user.bytes_today_out || 0);
+  const sharePct = gatewayTotal > 0 ? (todayTotal / gatewayTotal) * 100 : 0;
+
   const currentLimit = user.speed_limit || 'unlimited';
   const isKnownPreset = SPEED_PRESETS.some(p => p.value === currentLimit);
 
   const handleLimitSelect = async (e) => {
     const val = e.target.value;
     if (val === 'custom') {
-      // Pre-fill custom values from current limit
       if (currentLimit.includes('/')) {
         const [up, down] = currentLimit.split('/');
         setCustomUp(up);
@@ -109,7 +288,6 @@ export function UserCard({ user, onEdit, onDelete, onLimitChange, onPauseToggle,
     if (!down) down = up;
     if (!up) up = down;
 
-    // Normalize units e.g. 50 -> 50M
     if (/^\d+$/.test(down)) down += 'M';
     if (/^\d+$/.test(up)) up += 'M';
 
@@ -137,273 +315,136 @@ export function UserCard({ user, onEdit, onDelete, onLimitChange, onPauseToggle,
       display: 'flex',
       flexDirection: 'column',
       justifyContent: 'space-between',
-      gap: 16,
+      gap: 12,
+      padding: 14,
       borderLeft: `4px solid ${isPaused ? 'var(--color-danger)' : (isOnline ? 'var(--color-primary)' : 'var(--border-color)')}`
     }}>
-      {/* Card Header */}
       <div>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        {/* Header — identity, status and today's consumption in one band */}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 9, minWidth: 0 }}>
             <div style={{
               background: isPaused ? 'var(--color-danger-bg)' : 'var(--bg-secondary)',
               color: isPaused ? 'var(--color-danger)' : 'var(--color-primary)',
-              width: 38,
-              height: 38,
+              width: 30,
+              height: 30,
               borderRadius: 'var(--radius-full)',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              fontWeight: 700
+              flexShrink: 0
             }}>
-              <UserIcon size={20} />
+              <UserIcon size={16} />
             </div>
-            <div>
-              <div style={{ fontWeight: 700, fontSize: '1.05rem', color: 'var(--text-primary)' }}>
+            <div style={{ minWidth: 0 }}>
+              <div style={{
+                fontWeight: 700,
+                fontSize: '1rem',
+                color: 'var(--text-primary)',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap'
+              }}>
                 {user.name}
               </div>
-              <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                {t('devices_count', { count: user.devices?.length || 0 })}
+              <div style={{ fontSize: '0.6875rem', color: 'var(--text-muted)' }}>
+                {activeDevices.length}/{visibleDevices.length} {t('online_of_devices')}
               </div>
             </div>
           </div>
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 5, flexShrink: 0 }}>
             <span className={`badge ${isPaused ? 'badge-danger' : (isOnline ? 'badge-success' : 'badge-neutral')}`}>
               {isPaused ? t('paused') : (isOnline ? t('active_now') : t('idle'))}
             </span>
-            <button className="btn-icon" onClick={() => onEdit(user)} title={t('edit_user')} style={{ width: 30, height: 30 }}>
-              <Settings size={14} />
+            <button className="btn-icon" onClick={() => onEdit(user)} title={t('edit_user')} style={{ width: 26, height: 26 }}>
+              <Settings size={13} />
             </button>
-            <button className="btn-icon" onClick={() => onDelete(user.id)} title={t('delete_user')} style={{ width: 30, height: 30, color: 'var(--color-danger)' }}>
-              <Trash2 size={14} />
+            <button className="btn-icon" onClick={() => onDelete(user.id)} title={t('delete_user')} style={{ width: 26, height: 26, color: 'var(--color-danger)' }}>
+              <Trash2 size={13} />
             </button>
           </div>
         </div>
 
-        {/* Real-time Bandwidth Gauges */}
+        {/* Live throughput + today's volume. bytes_today_* was previously
+            fetched by the app and never displayed anywhere. */}
         <div style={{
           background: 'var(--bg-secondary)',
           borderRadius: 'var(--radius-md)',
-          padding: '10px 14px',
+          padding: '8px 12px',
+          marginTop: 10,
           display: 'flex',
-          justifyContent: 'space-around',
           alignItems: 'center',
-          marginTop: 8
+          gap: 10
         }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <ArrowDown size={18} style={{ color: isOnline ? 'var(--color-success)' : 'var(--text-muted)' }} />
-            <div>
-              <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontWeight: 600 }}>{t('download_rx')}</div>
-              <div className="font-mono" style={{ fontSize: '0.95rem', fontWeight: 800, color: isOnline ? 'var(--color-success)' : 'var(--text-muted)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+            <ArrowDown size={15} style={{ color: isOnline ? 'var(--color-success)' : 'var(--text-muted)', flexShrink: 0 }} />
+            <div style={{ minWidth: 0 }}>
+              <div className="font-mono" style={{ fontSize: '0.9rem', fontWeight: 800, color: isOnline ? 'var(--color-success)' : 'var(--text-muted)', lineHeight: 1.15 }}>
                 {formatSpeed(user.current_rate_in || 0)}
+              </div>
+              <div className="font-mono" style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>
+                {formatBytes(user.bytes_today_in || 0)}
               </div>
             </div>
           </div>
 
-          <div style={{ width: 1, height: 28, background: 'var(--border-color)' }}></div>
+          <div style={{ width: 1, height: 26, background: 'var(--border-color)', flexShrink: 0 }} />
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <ArrowUp size={18} style={{ color: isOnline ? 'var(--color-primary)' : 'var(--text-muted)' }} />
-            <div>
-              <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontWeight: 600 }}>{t('upload_tx')}</div>
-              <div className="font-mono" style={{ fontSize: '0.95rem', fontWeight: 800, color: isOnline ? 'var(--color-primary)' : 'var(--text-muted)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+            <ArrowUp size={15} style={{ color: isOnline ? 'var(--color-primary)' : 'var(--text-muted)', flexShrink: 0 }} />
+            <div style={{ minWidth: 0 }}>
+              <div className="font-mono" style={{ fontSize: '0.9rem', fontWeight: 800, color: isOnline ? 'var(--color-primary)' : 'var(--text-muted)', lineHeight: 1.15 }}>
                 {formatSpeed(user.current_rate_out || 0)}
               </div>
+              <div className="font-mono" style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>
+                {formatBytes(user.bytes_today_out || 0)}
+              </div>
+            </div>
+          </div>
+
+          <div style={{ flex: 1 }} />
+
+          {/* Share of today's gateway traffic */}
+          <div style={{ textAlign: 'right', flexShrink: 0 }}>
+            <div className="font-mono" style={{ fontSize: '0.9rem', fontWeight: 800, color: 'var(--text-primary)', lineHeight: 1.15 }}>
+              {formatBytes(todayTotal)}
+            </div>
+            <div className="font-mono" style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>
+              {gatewayTotal > 0 ? `${sharePct.toFixed(1)}% ${t('of_total')}` : t('today_label')}
             </div>
           </div>
         </div>
 
-        {/* Associated Devices List */}
-        <div style={{ marginTop: 14, display: 'flex', flexDirection: 'column', gap: 6 }}>
+        {/* Associated devices — two lines each, see DeviceRow */}
+        <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 5 }}>
           {visibleDevices.map(d => (
-            <div
+            <DeviceRow
               key={d.id}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                padding: '6px 10px',
-                background: 'var(--bg-secondary)',
-                borderRadius: 'var(--radius-sm)',
-                fontSize: '0.8125rem',
-                border: '1px solid var(--border-color)',
-                opacity: d.is_paused ? 0.65 : (d.is_hidden ? 0.75 : 1),
-                gap: 8,
-                transition: 'all 0.15s ease'
-              }}
-            >
-              <div
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 7,
-                  minWidth: 0,
-                  flex: '1 1 auto',
-                  cursor: 'pointer'
-                }}
-                onClick={() => setSelectedDevice(d)}
-                title="Click to edit device settings & limits"
-              >
-                <span
-                  style={{
-                    width: 7,
-                    height: 7,
-                    borderRadius: '50%',
-                    background: d.is_paused ? 'var(--color-danger)' : (d.is_active ? 'var(--color-success)' : 'var(--text-muted)'),
-                    boxShadow: d.is_active && !d.is_paused ? '0 0 6px rgba(16, 185, 129, 0.5)' : 'none',
-                    flexShrink: 0
-                  }}
-                  title={d.is_paused ? 'Paused' : (d.is_active ? 'Online / Active' : 'Offline / Idle')}
-                />
-                <span style={{ flexShrink: 0, display: 'flex', alignItems: 'center' }}>
-                  {getDeviceIcon(d.vendor, d.hostname)}
-                </span>
-                <span style={{
-                  fontWeight: 600,
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  whiteSpace: 'nowrap',
-                  color: 'var(--text-primary)'
-                }}>
-                  {d.custom_name || d.hostname || d.vendor || 'Device'}
-                </span>
-                {d.is_hidden && (
-                  <span
-                    className="badge"
-                    style={{
-                      fontSize: '0.6rem',
-                      padding: '1px 5px',
-                      background: 'rgba(100, 116, 139, 0.2)',
-                      color: 'var(--text-muted)',
-                      border: '1px solid rgba(100, 116, 139, 0.3)',
-                      flexShrink: 0
-                    }}
-                    title="Hidden device"
-                  >
-                    {t('hidden_badge')}
-                  </span>
-                )}
-                {d.speed_limit && d.speed_limit !== 'default' && (
-                  <span
-                    className="badge"
-                    style={{
-                      fontSize: '0.625rem',
-                      padding: '1px 5px',
-                      background: 'rgba(234, 179, 8, 0.15)',
-                      color: 'var(--color-warning)',
-                      border: '1px solid rgba(234, 179, 8, 0.3)',
-                      flexShrink: 0
-                    }}
-                    title={`Device custom limit: ${d.speed_limit}`}
-                  >
-                    ⚡ {d.speed_limit}
-                  </span>
-                )}
-                {d.is_randomized_mac && (
-                  <span
-                    className="badge"
-                    style={{
-                      fontSize: '0.6rem',
-                      padding: '1px 5px',
-                      background: 'rgba(234, 179, 8, 0.15)',
-                      color: 'var(--color-warning)',
-                      border: '1px solid rgba(234, 179, 8, 0.3)',
-                      flexShrink: 0
-                    }}
-                    title="Private / Randomized MAC address"
-                  >
-                    Private
-                  </span>
-                )}
-              </div>
-
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
-                {d.last_wifi_signal && (
-                  <span style={{ fontSize: '0.7rem', color: d.last_wifi_signal > -65 ? 'var(--color-success)' : 'var(--color-warning)', display: 'flex', alignItems: 'center', gap: 2 }}>
-                    <Wifi size={11} /> {d.last_wifi_signal} dBm
-                  </span>
-                )}
-                <span className="font-mono" style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                  {d.ip_address || d.mac_address}
-                </span>
-
-                {/* Device Pause/Resume Toggle */}
-                <button
-                  type="button"
-                  onClick={async (e) => {
-                    e.stopPropagation();
-                    try {
-                      await api.toggleDevicePause(d.id, !d.is_paused);
-                      if (onUpdate) onUpdate();
-                    } catch (err) {
-                      console.error('Failed to toggle device pause:', err);
-                    }
-                  }}
-                  style={{
-                    width: 26,
-                    height: 26,
-                    borderRadius: 'var(--radius-sm)',
-                    background: d.is_paused ? 'var(--color-danger)' : 'var(--bg-card)',
-                    color: d.is_paused ? '#fff' : 'var(--text-secondary)',
-                    border: '1px solid var(--border-color)'
-                  }}
-                  title={d.is_paused ? t('resume_device') : t('pause_device')}
-                >
-                  {d.is_paused ? <Play size={12} /> : <Pause size={12} />}
-                </button>
-
-                {/* Device Hide/Unhide Toggle */}
-                <button
-                  type="button"
-                  onClick={async (e) => {
-                    e.stopPropagation();
-                    try {
-                      await api.toggleHideDevice(d.id, !d.is_hidden);
-                      if (onUpdate) onUpdate();
-                    } catch (err) {
-                      console.error('Failed to toggle device hide:', err);
-                    }
-                  }}
-                  style={{
-                    width: 26,
-                    height: 26,
-                    borderRadius: 'var(--radius-sm)',
-                    background: d.is_hidden ? 'rgba(234, 179, 8, 0.15)' : 'var(--bg-card)',
-                    color: d.is_hidden ? 'var(--color-warning, #f59e0b)' : 'var(--text-muted)',
-                    border: '1px solid var(--border-color)'
-                  }}
-                  title={d.is_hidden ? t('unhide_device') : t('hide_device')}
-                >
-                  {d.is_hidden ? <EyeOff size={12} /> : <Eye size={12} />}
-                </button>
-
-                {/* Device Settings Edit Button */}
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setSelectedDevice(d);
-                  }}
-                  style={{
-                    width: 26,
-                    height: 26,
-                    borderRadius: 'var(--radius-sm)',
-                    background: 'var(--bg-card)',
-                    color: 'var(--text-secondary)',
-                    border: '1px solid var(--border-color)'
-                  }}
-                  title={t('edit_device')}
-                >
-                  <Sliders size={12} />
-                </button>
-              </div>
-            </div>
+              device={d}
+              t={t}
+              lang={lang}
+              onOpen={() => setSelectedDevice(d)}
+              onUpdate={onUpdate}
+            />
           ))}
+          {visibleDevices.length === 0 && (
+            <div style={{
+              fontSize: '0.75rem',
+              color: 'var(--text-muted)',
+              textAlign: 'center',
+              padding: '10px 0',
+              border: '1px dashed var(--border-color)',
+              borderRadius: 'var(--radius-sm)'
+            }}>
+              {t('no_devices_assigned')}
+            </div>
+          )}
         </div>
       </div>
 
-      {/* Card Footer: Speed Limiter & Pause Toggle */}
-      <div style={{ borderTop: '1px solid var(--border-color)', paddingTop: 12 }}>
+      {/* Footer: speed limiter and pause toggle */}
+      <div style={{ borderTop: '1px solid var(--border-color)', paddingTop: 10 }}>
         {showCustomInput ? (
           <div style={{
             display: 'flex',
@@ -482,11 +523,11 @@ export function UserCard({ user, onEdit, onDelete, onLimitChange, onPauseToggle,
             </div>
           </div>
         ) : (
-          <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
             <div style={{ flex: 1, minWidth: 0 }}>
               <select
                 className="form-select"
-                style={{ width: '100%', padding: '6px 8px', fontSize: '0.8rem' }}
+                style={{ width: '100%', padding: '5px 8px', fontSize: '0.78rem' }}
                 value={isKnownPreset ? currentLimit : 'custom'}
                 onChange={handleLimitSelect}
                 disabled={isUpdating}
@@ -515,7 +556,6 @@ export function UserCard({ user, onEdit, onDelete, onLimitChange, onPauseToggle,
         )}
       </div>
 
-      {/* Individual Device Settings & Limits Modal */}
       {selectedDevice && (
         <DeviceModal
           device={selectedDevice}

@@ -56,6 +56,12 @@ An ultra-lightweight, high-performance companion app and Telegram bot for **Mikr
   * Proactive alerts for newly discovered devices, high CPU load, temperature warnings, and WAN IP changes.
 
 * **🎨 Modern Responsive Web Dashboard:**
+  * **Two-Line Device Rows**: Each device shows identity, badges and *live* download/upload on the first line, and IP, vendor, interface, signal, last-seen and today's consumed volume on the second — so names are never truncated and every row answers both "what is using bandwidth now" and "how much has it used".
+  * **Per-Device Live Metrics**: Live rate and daily volume are exposed per device, not only per user profile, so the specific device saturating the link is named directly.
+  * **Compact Telemetry Strip**: Download, Upload, CPU, RAM and Temperature carry inline **sparklines** built from the live telemetry stream (no extra requests, no charting dependency), alongside the **WAN IP**, **active client count** and uptime. Temperature is coloured against your configured warning threshold.
+  * **Sortable Analytics Tables** with share-of-traffic bars, defaulting to the heaviest consumer first.
+  * **Interface Link Health**: per-interface RX/TX volume plus error and drop counters — the earliest warning of a failing cable or saturated link.
+  * **Discovery Context**: unassigned devices show first-seen time and today's consumed volume, so an unknown client that moved gigabytes stands out from one that moved nothing.
   * Native **RouterOS Dark Mode** (WinBox slate/blue) and **RouterOS Light Mode** (WebFig).
   * Full bilingual **English (`en`)** and **Russian (`ru`)** language switching.
   * Compact, responsive layouts tailored for mobile, tablet, and desktop viewports.
