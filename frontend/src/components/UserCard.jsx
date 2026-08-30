@@ -19,7 +19,8 @@ import {
   ArrowUp,
   Check,
   X,
-  Sliders
+  Sliders,
+  GripVertical
 } from 'lucide-react';
 
 const SPEED_PRESETS = [
@@ -380,7 +381,7 @@ function DeviceRow({ group, t, lang, onOpen, onUpdate }) {
   );
 }
 
-export function UserCard({ user, onEdit, onDelete, onLimitChange, onPauseToggle, onUpdate, showHidden = false, gatewayTotal = 0 }) {
+export function UserCard({ user, onEdit, onDelete, onLimitChange, onPauseToggle, onUpdate, showHidden = false, gatewayTotal = 0, dragIndex = null }) {
   const { t, lang } = useI18n();
   const [isUpdating, setIsUpdating] = useState(false);
   const [showCustomInput, setShowCustomInput] = useState(false);
@@ -470,6 +471,13 @@ export function UserCard({ user, onEdit, onDelete, onLimitChange, onPauseToggle,
         {/* Header — identity, status and today's consumption in one band */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 9, minWidth: 0 }}>
+            {dragIndex !== null && (
+              <GripVertical
+                size={14}
+                style={{ color: 'var(--text-muted)', cursor: 'grab', flexShrink: 0 }}
+                title={t('drag_to_reorder')}
+              />
+            )}
             <div style={{
               background: isPaused ? 'var(--color-danger-bg)' : 'var(--bg-secondary)',
               color: isPaused ? 'var(--color-danger)' : 'var(--color-primary)',
@@ -558,7 +566,7 @@ export function UserCard({ user, onEdit, onDelete, onLimitChange, onPauseToggle,
               {formatBytes(todayTotal)}
             </div>
             <div className="font-mono" style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>
-              {gatewayTotal > 0 ? `${sharePct.toFixed(1)}% ${t('of_total')}` : t('today_label')}
+              {gatewayTotal > 0 ? `${t('today_scope')} · ${sharePct.toFixed(1)}%` : t('today_scope')}
             </div>
           </div>
         </div>

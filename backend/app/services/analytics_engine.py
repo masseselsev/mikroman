@@ -22,6 +22,7 @@ from backend.app.schemas.analytics import (
     TrafficAnalyticsResponse,
     UserTrafficSummary,
 )
+from backend.app.services.router_time import router_local_date
 
 logger = logging.getLogger("mikroman.analytics_engine")
 
@@ -82,10 +83,16 @@ def resolve_date_range(
     preset: str,
     start_date: Optional[date] = None,
     end_date: Optional[date] = None,
-    anchor_day: int = 1
+    anchor_day: int = 1,
+    today: Optional[date] = None
 ) -> Tuple[date, date, str]:
-    """Resolve a date range preset or explicit custom dates into concrete (start_date, end_date)."""
-    today = date.today()
+    """Resolve a date range preset or explicit custom dates into concrete dates.
+
+    ``today`` is supplied by the caller as the router's date; the container is
+    usually on UTC and would otherwise resolve "today" to a different day than
+    the router's own clock shows.
+    """
+    today = today or date.today()
 
     if preset == "today":
         return (today, today, "today")
@@ -504,7 +511,9 @@ class AnalyticsEngine:
         ``backend.app.services.traffic_accounting`` which reads firewall mangle
         counters instead. This method owns the gateway level only.
         """
-        today = date.today()
+        # Keyed to the router's date: a UTC container files the router's
+        # evening traffic under the previous day.
+        today = await router_local_date(session)
         today_str = str(today)
 
         try:

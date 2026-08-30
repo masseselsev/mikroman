@@ -4,6 +4,29 @@ from typing import List, Optional
 from pydantic import BaseModel, Field
 
 
+class QuotaConfigDTO(BaseModel):
+    """ISP data allowance for one billing cycle, and when to warn about it."""
+    limit_bytes: int = Field(default=0, ge=0, description="Cycle allowance in bytes; 0 disables the quota")
+    thresholds: List[int] = Field(default_factory=list, description="Percentages at which to alert, e.g. [50, 80, 100]")
+    notify_telegram: bool = True
+
+
+class QuotaStatusDTO(BaseModel):
+    """Consumption against the quota for the current billing cycle."""
+    limit_bytes: int = 0
+    used_bytes: int = 0
+    remaining_bytes: int = 0
+    used_pct: float = 0.0
+    cycle_start: Optional[date] = None
+    cycle_end: Optional[date] = None
+    days_remaining: int = 0
+    # Average daily allowance for the rest of the cycle to stay within quota.
+    projected_daily_budget: int = 0
+    thresholds: List[int] = Field(default_factory=list)
+    thresholds_reached: List[int] = Field(default_factory=list)
+    enabled: bool = False
+
+
 class BillingCycleConfig(BaseModel):
     """Configuration for ISP monthly billing cycle anchor day."""
     anchor_day: int = Field(default=1, ge=1, le=31, description="Day of the month when ISP traffic counters reset (1-31)")

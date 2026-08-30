@@ -623,3 +623,59 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
 :root:not([data-theme="light"]) input[type="date"]::-webkit-calendar-picker-indicator {
   filter: invert(1);
 }
+
+/* Segmented range selector.
+   The analytics and metrics views each rolled their own, with different heights
+   (28px vs 26px), padding and corner radii, so two controls doing the same job
+   looked like different widgets. This is the single definition both use. */
+.range-group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  flex-wrap: wrap;
+}
+
+.range-group > svg {
+  color: var(--text-muted);
+  margin: 0 2px;
+  flex-shrink: 0;
+}
+
+.range-btn {
+  height: 26px;
+  padding: 0 10px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  font-family: var(--font-sans);
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.range-btn:hover {
+  background: var(--bg-card-hover);
+  color: var(--text-primary);
+}
+
+.range-btn.active {
+  background: var(--color-primary);
+  color: #ffffff;
+  border-color: var(--color-primary);
+}
+
+/* Section panels share one radius and padding so cards, tiles and headers line
+   up rather than each carrying their own inline values. */
+.panel {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  padding: 14px 16px;
+}

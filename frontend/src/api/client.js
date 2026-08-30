@@ -53,6 +53,15 @@ export const api = {
   updateDevice: (id, data) => request(`/devices/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
   toggleHideDevice: (id, isHidden) => request(`/devices/${id}`, { method: 'PATCH', body: JSON.stringify({ is_hidden: isHidden }) }),
   getDeviceHistory: (id) => request(`/devices/${id}/history`),
+  reorderUsers: (userIds) => request('/users/reorder', {
+    method: 'POST',
+    body: JSON.stringify({ user_ids: userIds })
+  }),
+  getQuota: (routerId = null) => request(`/analytics/quota${routerId ? `?router_id=${routerId}` : ''}`),
+  saveQuota: (config) => request('/analytics/quota', {
+    method: 'POST',
+    body: JSON.stringify(config)
+  }),
   getMergeSuggestions: () => request('/devices/suggestions'),
   // Linking keeps both records and presents them as one machine with several
   // network adapters; merging collapses two records into one and exists for

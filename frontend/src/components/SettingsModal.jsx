@@ -50,9 +50,29 @@ export function SettingsModal({ isOpen, onClose, onReboot, onRoutersChanged }) {
     }
   };
 
+  // Quota is kept apart from the key/value settings map because it has its own
+  // endpoint and derived status, and is expressed in GB for the operator.
+  const [quota, setQuota] = useState({ limit_gb: 0, thresholds: [], notify_telegram: true });
+
+  const loadQuota = async () => {
+    try {
+      const res = await api.getQuota();
+      if (res?.data) {
+        setQuota({
+          limit_gb: Math.round((res.data.limit_bytes || 0) / (1024 ** 3)),
+          thresholds: res.data.thresholds || [],
+          notify_telegram: true,
+        });
+      }
+    } catch (e) {
+      console.debug('Failed to load quota config', e);
+    }
+  };
+
   useEffect(() => {
     if (isOpen) {
       loadSettingsAndRouters();
+      loadQuota();
       setTestResult(null);
       setTestRouterResult(null);
       setStatusMsg('');
@@ -67,6 +87,11 @@ export function SettingsModal({ isOpen, onClose, onReboot, onRoutersChanged }) {
     setIsSaving(true);
     try {
       await api.saveSettings(settings);
+      await api.saveQuota({
+        limit_bytes: Math.max(0, Math.round(quota.limit_gb * (1024 ** 3))),
+        thresholds: quota.thresholds,
+        notify_telegram: quota.notify_telegram,
+      });
       setStatusMsg(t('save') + ' OK');
       setTimeout(() => {
         onClose();
@@ -289,6 +314,74 @@ export function SettingsModal({ isOpen, onClose, onReboot, onRoutersChanged }) {
                     </span>
                   )}
                 </div>
+              </div>
+
+              <div style={{ height: 1, background: 'var(--border-color)', margin: '6px 0' }}></div>
+
+              <div>
+                <h3 style={{ fontSize: '0.9rem', fontWeight: 700, marginBottom: 4, color: 'var(--color-success)' }}>
+                  {t('quota_title')}
+                </h3>
+                <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: 10 }}>
+                  {t('quota_desc')}
+                </p>
+
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 10 }}>
+                  <div className="form-group">
+                    <label className="form-label">{t('quota_limit')}</label>
+                    <select
+                      className="form-select font-mono"
+                      value={String(quota.limit_gb)}
+                      onChange={e => setQuota({ ...quota, limit_gb: Number(e.target.value) })}
+                      style={{ width: '100%', height: 36, fontSize: '0.85rem' }}
+                    >
+                      <option value="0">{t('quota_unlimited')}</option>
+                      {[50, 100, 200, 300, 500, 750, 1000, 1500, 2000, 3000].map(gb => (
+                        <option key={gb} value={gb}>{gb >= 1000 ? `${gb / 1000} TB` : `${gb} GB`}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="form-group">
+                    <label className="form-label">{t('quota_thresholds')}</label>
+                    <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', alignItems: 'center', minHeight: 36 }}>
+                      {[50, 75, 80, 90, 100].map(th => {
+                        const on = quota.thresholds.includes(th);
+                        return (
+                          <button
+                            key={th}
+                            type="button"
+                            onClick={() => setQuota({
+                              ...quota,
+                              thresholds: on
+                                ? quota.thresholds.filter(x => x !== th)
+                                : [...quota.thresholds, th].sort((a, b) => a - b)
+                            })}
+                            className="badge"
+                            style={{
+                              cursor: 'pointer',
+                              border: `1px solid ${on ? 'var(--color-primary)' : 'var(--border-color)'}`,
+                              background: on ? 'var(--color-primary-light)' : 'transparent',
+                              color: on ? 'var(--color-primary)' : 'var(--text-muted)',
+                              fontFamily: 'var(--font-mono)'
+                            }}
+                          >
+                            {th}%
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: '0.78rem', cursor: 'pointer', color: 'var(--text-secondary)' }}>
+                  <input
+                    type="checkbox"
+                    checked={quota.notify_telegram}
+                    onChange={e => setQuota({ ...quota, notify_telegram: e.target.checked })}
+                    style={{ width: 14, height: 14, accentColor: 'var(--color-primary)' }}
+                  />
+                  {t('quota_notify_tg')}
+                </label>
               </div>
 
               <div style={{ height: 1, background: 'var(--border-color)', margin: '6px 0' }}></div>

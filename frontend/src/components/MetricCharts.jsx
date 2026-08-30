@@ -523,13 +523,12 @@ export function MetricCharts({ activeRouterId }) {
           </div>
 
           {/* Time Range Selector */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'var(--bg-secondary)', padding: '4px 6px', borderRadius: 'var(--radius-md)' }}>
-            <Clock size={13} style={{ color: 'var(--text-muted)', marginLeft: 4 }} />
+          <div className="range-group">
+            <Clock size={13} />
             {RANGES.map(r => (
               <button
                 key={r}
-                className={`btn btn-sm ${range === r ? 'btn-primary' : 'btn-ghost'}`}
-                style={{ fontSize: '0.75rem', padding: '3px 9px', borderRadius: 4, height: 26 }}
+                className={`range-btn ${range === r ? 'active' : ''}`}
                 onClick={() => setRange(r)}
               >
                 {t(`range_${r}`)}

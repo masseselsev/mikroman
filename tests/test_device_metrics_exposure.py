@@ -5,8 +5,6 @@ returns a rate per device and DeviceTrafficRollup stores a daily total per
 device - but only the user-level sums were exposed, so the dashboard could not
 show which specific device was consuming the bandwidth.
 """
-from datetime import date
-
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -102,9 +100,11 @@ async def test_per_device_rates_are_returned(session):
 
 @pytest.mark.asyncio
 async def test_per_device_daily_volume_is_returned(session):
+    from backend.app.services.router_time import router_local_date
+
     user, devices = await _seed(session)
     d1, d2 = devices
-    today = date.today()
+    today = await router_local_date(session)
     session.add(DeviceTrafficRollup(device_id=d1.id, record_date=today, bytes_in=2_100_000_000, bytes_out=45_000_000))
     session.add(DeviceTrafficRollup(device_id=d2.id, record_date=today, bytes_in=15_000, bytes_out=9_000))
     await session.commit()

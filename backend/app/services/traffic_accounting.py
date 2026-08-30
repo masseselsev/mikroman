@@ -40,6 +40,7 @@ from backend.app.db.models import (
     DeviceTrafficRollup,
     TrafficRollup,
 )
+from backend.app.services.router_time import router_local_date
 
 logger = logging.getLogger("mikroman.traffic_accounting")
 
@@ -275,7 +276,7 @@ class TrafficAccountingService:
             return
         session.add(AppSetting(
             key=STARTED_SETTING_KEY,
-            value=date.today().isoformat(),
+            value=(await router_local_date(session)).isoformat(),
             description="First date per-device mangle accounting was active",
         ))
         await session.commit()
@@ -339,7 +340,9 @@ class TrafficAccountingService:
         Device volume is authoritative; user volume is the sum of that user's
         devices, so the two levels can never disagree.
         """
-        today = date.today()
+        # Rollups are keyed by the router's date, not the container's: a UTC
+        # container files the router's evening under the previous day.
+        today = await router_local_date(session)
 
         try:
             rules = await self.router_client.get_mangle_rules()

@@ -27,6 +27,55 @@ telegram_service: TelegramBotService = None
 bg_sync_task: asyncio.Task = None
 
 
+async def check_quota_thresholds(session, router_id, tg_service) -> None:
+    """Alert once per billing cycle for each quota threshold that has been passed.
+
+    Runs on the background tick so a warning does not depend on someone having
+    the dashboard open.
+    """
+    from backend.app.api.v1.endpoints.analytics import build_quota_status
+    from backend.app.db.models import AlertLog
+    from backend.app.services.quota import crossed_thresholds, get_quota_config, mark_fired
+    from backend.app.utils_format import format_bytes_human
+
+    config = await get_quota_config(session)
+    if not config.limit_bytes:
+        return
+
+    status = await build_quota_status(session, router_id)
+    newly = crossed_thresholds(
+        used_bytes=status.used_bytes,
+        limit_bytes=config.limit_bytes,
+        thresholds=config.thresholds,
+        already_fired=status.thresholds_reached,
+    )
+    for threshold in newly:
+        message = (
+            f"\U0001F4CA <b>ISP quota {threshold}% reached</b>\n"
+            f"Used <b>{format_bytes_human(status.used_bytes)}</b> of "
+            f"{format_bytes_human(config.limit_bytes)} "
+            f"({status.used_pct:.1f}%)\n"
+            f"Cycle ends {status.cycle_end} \u00b7 {status.days_remaining} day(s) left\n"
+            f"Remaining budget: {format_bytes_human(status.remaining_bytes)} "
+            f"(~{format_bytes_human(status.projected_daily_budget)}/day)"
+        )
+        session.add(AlertLog(
+            router_id=router_id,
+            alert_type="quota_threshold",
+            message=(
+                f"ISP quota {threshold}% reached: "
+                f"{format_bytes_human(status.used_bytes)} of {format_bytes_human(config.limit_bytes)}"
+            ),
+            metadata_payload={"threshold": threshold, "used_bytes": status.used_bytes},
+        ))
+        await session.commit()
+        await mark_fired(session, status.cycle_start, threshold)
+        logger.info(f"ISP quota threshold {threshold}% reached for router {router_id}")
+
+        if config.notify_telegram and tg_service:
+            await tg_service.send_alert_to_admins(message, parse_mode="HTML")
+
+
 async def background_sync_worker():
     """Periodic background discovery and health monitor for all configured active routers."""
     while True:
@@ -88,6 +137,14 @@ async def background_sync_worker():
                                 await AnalyticsEngine.record_traffic_snapshot(session, r.id, client)
                             except Exception as te:
                                 logger.warning(f"Gateway rollup tick error for router {r.id}: {te}")
+
+                            # Quota thresholds for the ISP billing cycle. Checked
+                            # here rather than on request so an alert fires even
+                            # with no browser open.
+                            try:
+                                await check_quota_thresholds(session, r.id, telegram_service)
+                            except Exception as qe:
+                                logger.warning(f"Quota threshold check error for router {r.id}: {qe}")
 
                             # Per-device accounting via firewall mangle counters.
                             # Simple Queue byte counters are unreliable on RouterOS 7.x

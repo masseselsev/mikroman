@@ -119,8 +119,9 @@ async def test_analytics_api_endpoints(api_client: AsyncClient):
         await session.commit()
         await session.refresh(device)
 
-        # Add rollups for today
-        today = date.today()
+        # Add rollups for today, keyed the way the engine keys them.
+        from backend.app.services.router_time import router_local_date
+        today = await router_local_date(session)
         dev_rollup = DeviceTrafficRollup(
             device_id=device.id,
             record_date=today,

@@ -141,7 +141,10 @@ class VendorLookupService:
         clean_mac = mac.upper().replace("-", ":")
         prefix = clean_mac[:8]
 
-        if prefix in self._cache:
+        # A randomized MAC is not an OUI: its first three bytes identify no
+        # vendor, so a cached value under that prefix would be meaningless and
+        # would shadow the hostname-derived identity resolved below.
+        if prefix in self._cache and not self.is_randomized_mac(clean_mac):
             return self._cache[prefix]
 
         if self.is_randomized_mac(clean_mac):
@@ -172,8 +175,10 @@ class VendorLookupService:
         clean_mac = mac.upper().replace("-", ":")
         prefix = clean_mac[:8]
 
-        # 1. Local cache hit
-        if prefix in self._cache:
+        # 1. Local cache hit. Skipped for randomized MACs: their first three
+        # bytes identify no vendor, so a cached entry there is meaningless and
+        # would shadow the hostname-derived identity resolved below.
+        if prefix in self._cache and not self.is_randomized_mac(clean_mac):
             return self._cache[prefix]
 
         # 2. Check if MAC is randomized / private

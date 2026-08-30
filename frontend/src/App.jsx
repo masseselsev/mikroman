@@ -75,6 +75,31 @@ export function App() {
   }, []);
 
   const [interfacesOpen, setInterfacesOpen] = useState(false);
+  const [draggedUserId, setDraggedUserId] = useState(null);
+
+  /** Move the dragged card in front of the card it was dropped on. */
+  const handleDropOnUser = async (targetUserId) => {
+    if (!draggedUserId || draggedUserId === targetUserId) return;
+
+    const ordered = [...users];
+    const from = ordered.findIndex(u => u.id === draggedUserId);
+    const to = ordered.findIndex(u => u.id === targetUserId);
+    if (from < 0 || to < 0) return;
+
+    const [moved] = ordered.splice(from, 1);
+    ordered.splice(to, 0, moved);
+    // Applied locally first so the card follows the cursor without waiting for
+    // the round trip; the reload afterwards confirms the persisted order.
+    setUsers(ordered);
+    setDraggedUserId(null);
+    try {
+      await api.reorderUsers(ordered.map(u => u.id));
+    } catch (err) {
+      console.error('Failed to persist card order:', err);
+      await loadData();
+    }
+  };
+
 
   // Link faults drive the collapsed header, so a failing cable is visible
   // without expanding the section.
@@ -317,10 +342,23 @@ export function App() {
               </div>
             ) : (
               <div className="grid-users">
-                {users.map(user => (
-                  <UserCard
+                {users.map((user, index) => (
+                  <div
                     key={user.id}
+                    draggable
+                    onDragStart={() => setDraggedUserId(user.id)}
+                    onDragEnd={() => setDraggedUserId(null)}
+                    onDragOver={(e) => e.preventDefault()}
+                    onDrop={() => handleDropOnUser(user.id)}
+                    style={{
+                      // The dragged card fades so the drop target stays readable.
+                      opacity: draggedUserId === user.id ? 0.4 : 1,
+                      transition: 'opacity 0.15s ease'
+                    }}
+                  >
+                  <UserCard
                     user={user}
+                    dragIndex={index}
                     showHidden={showHiddenDevices}
                     onEdit={(u) => {
                       setEditingUser(u);
@@ -332,6 +370,7 @@ export function App() {
                     onUpdate={loadData}
                     gatewayTotal={gatewayTodayTotal}
                   />
+                  </div>
                 ))}
               </div>
             )}

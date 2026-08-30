@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.db.models import Device, User
 from backend.app.db.session import get_db
 from backend.app.schemas.common import APIResponse
-from backend.app.schemas.user import UserCreate, UserDTO, UserUpdate
+from backend.app.schemas.user import UserCreate, UserDTO, UserReorderRequest, UserUpdate
 from backend.app.services.router_manager import router_manager
 from backend.app.services.routeros import RouterOSClient
 from backend.app.services.traffic_controller import TrafficController
@@ -26,7 +26,8 @@ async def list_users(
     traffic_ctrl: TrafficController = Depends(get_traffic_controller)
 ):
     """List all users with live metrics and device assignments."""
-    result = await db.execute(select(User))
+    # Manual order first, then id, so the sequence is stable for equal values.
+    result = await db.execute(select(User).order_by(User.sort_order, User.id))
     users = result.scalars().all()
 
     # Enrich with live queue metrics
@@ -171,3 +172,29 @@ async def delete_user(
     await db.delete(user)
     await db.commit()
     return APIResponse(data=True, message="User deleted successfully")
+
+
+@router.post("/reorder", response_model=APIResponse[bool])
+async def reorder_users(payload: UserReorderRequest, db: AsyncSession = Depends(get_db)):
+    """Set the dashboard order of the user cards.
+
+    Positions are assigned from the given sequence; ids that are not listed keep
+    their existing order after the listed ones, so a partial list cannot drop a
+    profile off the dashboard.
+    """
+    result = await db.execute(select(User))
+    users = {u.id: u for u in result.scalars().all()}
+
+    position = 0
+    for user_id in payload.user_ids:
+        user = users.pop(user_id, None)
+        if user is not None:
+            user.sort_order = position
+            position += 1
+
+    for leftover in sorted(users.values(), key=lambda u: (u.sort_order, u.id)):
+        leftover.sort_order = position
+        position += 1
+
+    await db.commit()
+    return APIResponse(data=True)

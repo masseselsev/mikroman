@@ -16,6 +16,13 @@ from backend.app.services.vendor_lookup import vendor_service
 
 logger = logging.getLogger("mikroman.device_manager")
 
+# Placeholder identities worth re-resolving once a hostname becomes known.
+GENERIC_VENDOR_LABELS = {
+    "Unknown Vendor",
+    "Private MAC (Randomized)",
+    "Randomized MAC",
+}
+
 
 def lookup_vendor(mac: str) -> str:
     """Lookup hardware vendor using synchronous cache."""
@@ -160,8 +167,10 @@ class DeviceManager:
                 device.is_active = True
                 device.last_seen = now_utc
 
-                # If vendor was previously Unknown, attempt to resolve it
-                if not device.vendor or device.vendor == "Unknown Vendor":
+                # Re-resolve placeholder identities, not just "Unknown Vendor".
+                # A randomized-MAC device discovered before its hostname was
+                # known kept the generic label forever.
+                if not device.vendor or device.vendor in GENERIC_VENDOR_LABELS:
                     device.vendor = await vendor_service.lookup_async(mac, hostname=device.hostname or lease.host_name)
             else:
                 # Fetch default speed limit for unassigned / suspicious devices
@@ -232,12 +241,16 @@ class DeviceManager:
                 elif arp.interface and not device.last_interface:
                     device.last_interface = arp.interface
             else:
-                vendor = await vendor_service.lookup_async(mac)
+                # Pass whatever hostname the lease table knows for this MAC: a
+                # randomized MAC has no OUI, so the hostname is the only thing
+                # that can identify it as e.g. a Pixel rather than "Private MAC".
+                lease_hostname = next((lz.host_name for lz in leases if lz.mac_address == mac and lz.host_name), None)
+                vendor = await vendor_service.lookup_async(mac, hostname=lease_hostname)
                 device = Device(
                     mac_address=mac,
                     router_id=self.router_id,
                     ip_address=arp.address,
-                    hostname=None,
+                    hostname=lease_hostname,
                     vendor=vendor,
                     last_interface=wifi_info.interface if wifi_info else arp.interface,
                     last_wifi_signal=wifi_info.signal_strength if wifi_info else None,

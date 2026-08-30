@@ -10,6 +10,7 @@ from backend.app.core.config import settings
 from backend.app.db.models import AppSetting
 from backend.app.db.session import AsyncSessionLocal
 from backend.app.services.router_manager import router_manager
+from backend.app.services.router_time import store_router_offset
 from backend.app.services.traffic_controller import TrafficController
 
 logger = logging.getLogger("mikroman.ws")
@@ -58,7 +59,44 @@ async def _get_router_clock(client, router_id: Optional[int]) -> dict:
         logger.debug(f"Could not read router clock: {e}")
         return cached["clock"] if cached else {}
     _clock_cache[key] = {"clock": clock, "at": now}
+    # Persist the offset so daily rollup boundaries follow the router's calendar
+    # even before the first telemetry frame of a fresh process.
+    try:
+        async with AsyncSessionLocal() as session:
+            await store_router_offset(session, clock.get("gmt_offset_minutes"))
+    except Exception as e:
+        logger.debug(f"Could not persist router UTC offset: {e}")
     return clock
+
+
+_PUBLIC_IP_TTL_SECONDS = 900
+_public_ip_cache: dict = {"ip": None, "at": 0.0}
+
+
+async def _get_public_ip() -> Optional[str]:
+    """Internet-facing address, for links behind CGNAT or a double NAT.
+
+    The WAN interface address is often a carrier-grade NAT address (10.x, 100.64/10)
+    which is not the address the outside world sees, so the real one is resolved
+    through an external echo service. Cached for 15 minutes and failing quietly:
+    it is a convenience, and the router may legitimately have no internet.
+    """
+    now = time.time()
+    if _public_ip_cache["ip"] and (now - _public_ip_cache["at"]) < _PUBLIC_IP_TTL_SECONDS:
+        return _public_ip_cache["ip"]
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=4.0) as http:
+            resp = await http.get("https://api.ipify.org")
+            if resp.status_code == 200:
+                ip = resp.text.strip()
+                if ip and len(ip) <= 45:
+                    _public_ip_cache.update({"ip": ip, "at": now})
+                    return ip
+    except Exception as e:
+        logger.debug(f"Could not resolve public IP: {e}")
+    _public_ip_cache["at"] = now  # avoid retrying every frame while offline
+    return _public_ip_cache["ip"]
 
 
 async def _get_wan_ip(client, router_id: Optional[int], monitored: list) -> Optional[str]:
@@ -217,6 +255,7 @@ async def websocket_telemetry_endpoint(
                         "monitored_interfaces": monitored_ifaces,
                         "wan_ip": await _get_wan_ip(client, eff_router_id, monitored_ifaces),
                         "clock": await _get_router_clock(client, eff_router_id),
+                        "public_ip": await _get_public_ip(),
                         # Devices currently online across all profiles - answers
                         # "how many clients is this router actually serving".
                         "active_clients": sum(u.get("active_device_count", 0) for u in users_stats),

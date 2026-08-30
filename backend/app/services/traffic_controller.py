@@ -432,28 +432,26 @@ class TrafficController:
     @staticmethod
     async def _todays_user_volume(session: AsyncSession) -> Dict[int, Tuple[int, int]]:
         """Today's accumulated (download, upload) bytes per user from the rollups."""
-        from datetime import date
-
         from backend.app.db.models import TrafficRollup
+        from backend.app.services.router_time import router_local_date
 
         stmt = select(
             TrafficRollup.user_id, TrafficRollup.bytes_in, TrafficRollup.bytes_out
-        ).where(TrafficRollup.record_date == date.today())
+        ).where(TrafficRollup.record_date == await router_local_date(session))
         rows = (await session.execute(stmt)).all()
         return {row[0]: (int(row[1] or 0), int(row[2] or 0)) for row in rows}
 
     @staticmethod
     async def _todays_device_volume(session: AsyncSession) -> Dict[int, Tuple[int, int]]:
         """Today's accumulated (download, upload) bytes per device from the rollups."""
-        from datetime import date
-
         from backend.app.db.models import DeviceTrafficRollup
+        from backend.app.services.router_time import router_local_date
 
         stmt = select(
             DeviceTrafficRollup.device_id,
             DeviceTrafficRollup.bytes_in,
             DeviceTrafficRollup.bytes_out,
-        ).where(DeviceTrafficRollup.record_date == date.today())
+        ).where(DeviceTrafficRollup.record_date == await router_local_date(session))
         rows = (await session.execute(stmt)).all()
         return {row[0]: (int(row[1] or 0), int(row[2] or 0)) for row in rows}
 

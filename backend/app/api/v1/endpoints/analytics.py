@@ -5,10 +5,22 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.db.session import get_db
-from backend.app.schemas.analytics import BillingCycleConfig, TrafficAnalyticsResponse
+from backend.app.schemas.analytics import (
+    BillingCycleConfig,
+    QuotaConfigDTO,
+    QuotaStatusDTO,
+    TrafficAnalyticsResponse,
+)
 from backend.app.schemas.common import APIResponse
-from backend.app.services.analytics_engine import AnalyticsEngine, resolve_date_range
+from backend.app.services.analytics_engine import AnalyticsEngine, get_billing_cycle_dates, resolve_date_range
+from backend.app.services.quota import (
+    QuotaConfig,
+    get_quota_config,
+    save_quota_config,
+    unfired_for_cycle,
+)
 from backend.app.services.router_manager import router_manager
+from backend.app.services.router_time import router_local_date
 
 router = APIRouter(prefix="/analytics", tags=["Traffic Analytics"])
 
@@ -35,7 +47,9 @@ async def get_traffic_analytics(
         preset=preset,
         start_date=start_date,
         end_date=end_date,
-        anchor_day=anchor_day
+        anchor_day=anchor_day,
+        # Presets follow the router's calendar, not the container's UTC one.
+        today=await router_local_date(db)
     )
 
     data = await AnalyticsEngine.get_historical_traffic(
@@ -107,3 +121,67 @@ async def set_billing_cycle_config(
     """Save the ISP billing cycle renewal day (1-31)."""
     saved_day = await AnalyticsEngine.set_billing_anchor_day(db, payload.anchor_day)
     return APIResponse(data=BillingCycleConfig(anchor_day=saved_day), message=f"Billing cycle anchor set to day {saved_day}")
+
+
+async def build_quota_status(db: AsyncSession, router_id: Optional[int] = None) -> QuotaStatusDTO:
+    """Consumption against the ISP allowance for the current billing cycle.
+
+    Usage is taken from the gateway figure for the cycle window, which is the
+    number an ISP actually bills on, rather than the per-device sum.
+    """
+    config = await get_quota_config(db)
+    anchor_day = await AnalyticsEngine.get_billing_anchor_day(db)
+    today = await router_local_date(db)
+    cycle_start, cycle_end = get_billing_cycle_dates(anchor_day, today, previous=False)
+
+    data = await AnalyticsEngine.get_historical_traffic(
+        session=db,
+        start_date=cycle_start,
+        end_date=min(cycle_end, today),
+        router_id=router_id,
+        range_preset="billing_current",
+        anchor_day=anchor_day,
+    )
+    used = data.gateway.total_bytes
+    limit = config.limit_bytes
+    # Inclusive of today: consuming the remainder over the rest of the cycle
+    # includes what is left of the current day.
+    days_remaining = max(0, (cycle_end - today).days + 1)
+
+    return QuotaStatusDTO(
+        limit_bytes=limit,
+        used_bytes=used,
+        remaining_bytes=max(0, limit - used) if limit else 0,
+        used_pct=round((used / limit) * 100, 2) if limit else 0.0,
+        cycle_start=cycle_start,
+        cycle_end=cycle_end,
+        days_remaining=days_remaining,
+        projected_daily_budget=(max(0, limit - used) // days_remaining) if (limit and days_remaining) else 0,
+        thresholds=config.thresholds,
+        thresholds_reached=await unfired_for_cycle(db, cycle_start),
+        enabled=limit > 0,
+    )
+
+
+@router.get("/quota", response_model=APIResponse[QuotaStatusDTO])
+async def get_quota_status(
+    router_id: Optional[int] = Query(None),
+    db: AsyncSession = Depends(get_db)
+):
+    """Quota consumption for the current billing cycle."""
+    return APIResponse(data=await build_quota_status(db, router_id))
+
+
+@router.post("/quota", response_model=APIResponse[QuotaStatusDTO])
+async def set_quota_config(
+    payload: QuotaConfigDTO,
+    router_id: Optional[int] = Query(None),
+    db: AsyncSession = Depends(get_db)
+):
+    """Set the ISP allowance and the percentages at which to warn."""
+    await save_quota_config(db, QuotaConfig(
+        limit_bytes=payload.limit_bytes,
+        thresholds=payload.thresholds,
+        notify_telegram=payload.notify_telegram,
+    ))
+    return APIResponse(data=await build_quota_status(db, router_id))

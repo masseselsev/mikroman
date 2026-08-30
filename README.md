@@ -76,7 +76,12 @@ An ultra-lightweight, high-performance companion app and Telegram bot for **Mikr
   * **Configurable telemetry interval** (1–10s) in Settings: each poll costs several REST calls, so a longer interval trades responsiveness for router CPU.
   * Rarely-changing values — WAN IP, router clock — are cached rather than re-read every frame.
 
+* **📉 ISP Cycle Data Limit:**
+  * Set an allowance for the billing cycle and watch consumption against it, with remaining bytes and the **daily budget** needed to stay inside it.
+  * **Multiple alert thresholds** (50/75/80/90/100%) fire **once per cycle** each and re-arm automatically when the cycle resets — checked on the background tick, so a warning arrives even with no browser open, optionally to Telegram.
+
 * **🕒 Router-Local Time:**
+  * **Daily boundaries follow the router's calendar.** The container almost always runs UTC while the router sits in a local zone, so on a UTC+5 router everything after 19:00 local was filed under the previous day and "today" meant a different day than the router's clock showed. Rollups, billing cycles and range presets are all keyed to the router's date.
   * The navbar shows the **router's own clock and timezone**, since every figure on the dashboard (lease ages, billing cycles, daily rollups) is anchored to the router while the container usually runs UTC. The offset is fetched once a minute and the browser advances the clock itself, so a live time costs no extra polling.
 
 * **🪶 Ultra-Lightweight Footprint:**

@@ -39,10 +39,16 @@ class UserUpdate(BaseModel):
     device_macs: Optional[List[str]] = None
 
 
+class UserReorderRequest(BaseModel):
+    """New card order, as user ids from first to last."""
+    user_ids: List[int]
+
+
 class UserDTO(UserBase):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
+    sort_order: int = 0
     created_at: datetime
     updated_at: datetime
     devices: List[DeviceDTO] = []

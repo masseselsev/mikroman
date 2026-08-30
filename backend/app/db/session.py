@@ -72,6 +72,14 @@ async def init_db() -> None:
             except Exception as e:
                 logger.warning(f"Could not apply device schema additions: {e}")
 
+            try:
+                res = await conn.execute(text("PRAGMA table_info(users)"))
+                columns = [row[1] for row in res.fetchall()]
+                if columns and "sort_order" not in columns:
+                    await conn.execute(text("ALTER TABLE users ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0"))
+            except Exception as e:
+                logger.warning(f"Could not apply user schema additions: {e}")
+
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
     """Dependency for providing database session to FastAPI endpoints."""

@@ -326,7 +326,11 @@ export function TelemetryBar({ router, activeRouter, interfaces = [] }) {
           label={t('wan_ip')}
           value={router.wan_ip || '—'}
           valueSize="0.85rem"
-          sub={router.version || ''}
+          // A carrier-grade NAT address on the WAN interface is not the address
+          // the outside world sees, so the public one is shown beneath it.
+          sub={router.public_ip && router.public_ip !== router.wan_ip
+            ? `↗ ${router.public_ip}`
+            : (router.version || '')}
         />
 
         <Tile

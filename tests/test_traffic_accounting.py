@@ -341,7 +341,7 @@ async def test_range_predating_accounting_is_partial_not_degraded(session):
 @pytest.mark.asyncio
 async def test_sync_records_accounting_start_date(session):
     """The start marker is written once, on the first rule creation."""
-    from datetime import date
+    from backend.app.services.router_time import router_local_date
 
     await _seed(session)
     router = FakeRouter()
@@ -349,7 +349,7 @@ async def test_sync_records_accounting_start_date(session):
 
     assert await svc.get_accounting_started(session) is None
     await svc.sync_counter_rules(session)
-    assert await svc.get_accounting_started(session) == date.today()
+    assert await svc.get_accounting_started(session) == await router_local_date(session)
 
 
 def test_compute_delta_edge_cases():
