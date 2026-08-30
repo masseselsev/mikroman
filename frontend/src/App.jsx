@@ -12,7 +12,7 @@ import { TrafficAnalytics } from './components/TrafficAnalytics';
 import { SettingsModal } from './components/SettingsModal';
 import { formatBytes } from './utils/formatters';
 import { SetupWizard } from './components/SetupWizard';
-import { Users, Laptop, Activity, BarChart2, Plus, AlertCircle, EyeOff } from 'lucide-react';
+import { Users, Laptop, Activity, BarChart2, Plus, AlertCircle, EyeOff, ChevronDown, ChevronRight, AlertTriangle } from 'lucide-react';
 
 export function App() {
   const { t } = useI18n();
@@ -73,6 +73,22 @@ export function App() {
     }, 6000);
     return () => clearInterval(pollInterval);
   }, []);
+
+  const [interfacesOpen, setInterfacesOpen] = useState(false);
+
+  // Link faults drive the collapsed header, so a failing cable is visible
+  // without expanding the section.
+  const interfaceSummary = {
+    running: interfaces.filter(i => i.running).length,
+    faulty: interfaces
+      .map(i => ({
+        name: i.name,
+        errors: (i.rx_error || 0) + (i.tx_error || 0),
+        drops: (i.rx_drop || 0) + (i.tx_drop || 0),
+      }))
+      .filter(i => i.errors > 0 || i.drops > 0)
+      .sort((a, b) => (b.errors - a.errors) || (b.drops - a.drops)),
+  };
 
   // Sum of all profiles' traffic today, used to show each profile's share.
   // Derived from the profiles themselves so the denominator always matches the
@@ -345,7 +361,62 @@ export function App() {
             <MetricCharts activeRouterId={activeRouter?.id} />
 
             <div>
-              <h2 style={{ fontSize: '1.25rem', fontWeight: 700, marginBottom: 14 }}>{t('network_interfaces')}</h2>
+              {/* Collapsed by default: on a router with a dozen ports this is
+                  mostly empty cards. Faults are summarised on the header so a
+                  problem is still visible without expanding. */}
+              <button
+                type="button"
+                onClick={() => setInterfacesOpen(o => !o)}
+                style={{
+                  width: '100%',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 10,
+                  background: 'transparent',
+                  border: 'none',
+                  padding: 0,
+                  marginBottom: interfacesOpen ? 14 : 0,
+                  cursor: 'pointer',
+                  color: 'inherit',
+                  textAlign: 'left'
+                }}
+              >
+                {interfacesOpen ? <ChevronDown size={18} /> : <ChevronRight size={18} />}
+                <h2 style={{ fontSize: '1.25rem', fontWeight: 700 }}>{t('network_interfaces')}</h2>
+                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                  {interfaceSummary.running}/{interfaces.length} {t('status_running').toLowerCase()}
+                </span>
+                <span style={{ flex: 1 }} />
+                {interfaceSummary.faulty.length > 0 ? (
+                  <span style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                    {interfaceSummary.faulty.slice(0, 4).map(f => (
+                      <span
+                        key={f.name}
+                        className="badge badge-chip badge-chip-warn"
+                        style={{
+                          color: f.errors > 0 ? 'var(--color-danger)' : 'var(--color-warning)',
+                          borderColor: f.errors > 0 ? 'rgba(239,68,68,0.35)' : 'rgba(234,179,8,0.35)'
+                        }}
+                        title={`${f.name}: ${f.errors} ${t('err_label')}, ${f.drops} ${t('drops_label')}`}
+                      >
+                        <AlertTriangle size={10} style={{ marginRight: 3 }} />
+                        {f.name} {f.errors > 0 ? `${t('err_label')} ${f.errors}` : `${t('drops_label')} ${f.drops}`}
+                      </span>
+                    ))}
+                    {interfaceSummary.faulty.length > 4 && (
+                      <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                        +{interfaceSummary.faulty.length - 4}
+                      </span>
+                    )}
+                  </span>
+                ) : (
+                  <span className="badge badge-success" style={{ fontSize: '0.65rem' }}>
+                    {t('no_link_faults')}
+                  </span>
+                )}
+              </button>
+
+              {interfacesOpen && (
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 14 }}>
                 {interfaces.map(iface => {
                   // Errors and drops are the earliest warning of a failing link,
@@ -402,6 +473,7 @@ export function App() {
                   );
                 })}
               </div>
+              )}
             </div>
 
             {/* Alert Event Stream */}

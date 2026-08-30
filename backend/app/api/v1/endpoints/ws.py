@@ -21,6 +21,46 @@ _WAN_IP_TTL_SECONDS = 60
 _wan_ip_cache: dict = {}
 
 
+async def _telemetry_interval(session) -> float:
+    """Seconds between telemetry frames, configurable at runtime.
+
+    Each frame costs several RouterOS REST calls, and on modest hardware that
+    polling measurably raises router CPU, so the rate is a setting rather than a
+    constant. Bounded to keep a mistyped value from hammering the router.
+    """
+    setting = await session.get(AppSetting, "telemetry_interval_seconds")
+    if setting and setting.value:
+        try:
+            return max(1.0, min(float(setting.value), 60.0))
+        except ValueError:
+            pass
+    return settings.TELEMETRY_STREAM_INTERVAL_SECONDS
+
+
+_CLOCK_TTL_SECONDS = 60
+_clock_cache: dict = {}
+
+
+async def _get_router_clock(client, router_id: Optional[int]) -> dict:
+    """Router timezone and offset, cached.
+
+    Only the offset is needed: the browser advances the clock from it, so a live
+    router time costs one request a minute rather than one per frame.
+    """
+    key = str(router_id)
+    cached = _clock_cache.get(key)
+    now = time.time()
+    if cached and (now - cached["at"]) < _CLOCK_TTL_SECONDS:
+        return cached["clock"]
+    try:
+        clock = await client.get_system_clock()
+    except Exception as e:
+        logger.debug(f"Could not read router clock: {e}")
+        return cached["clock"] if cached else {}
+    _clock_cache[key] = {"clock": clock, "at": now}
+    return clock
+
+
 async def _get_wan_ip(client, router_id: Optional[int], monitored: list) -> Optional[str]:
     """Public-facing address of the monitored uplink, cached briefly.
 
@@ -94,6 +134,8 @@ async def websocket_telemetry_endpoint(
 ):
     """WebSocket endpoint pushing real-time router resource and user bandwidth telemetry every 1s."""
     await ws_manager.connect(websocket)
+    # Seeded so a failure before the per-tick lookup still paces the retry.
+    tick_interval = settings.TELEMETRY_STREAM_INTERVAL_SECONDS
 
     try:
         while True:
@@ -106,9 +148,10 @@ async def websocket_telemetry_endpoint(
                             "message": "No active router configured",
                             "timestamp": time.time()
                         })
-                        await asyncio.sleep(settings.TELEMETRY_STREAM_INTERVAL_SECONDS)
+                        await asyncio.sleep(await _telemetry_interval(session))
                         continue
 
+                    tick_interval = await _telemetry_interval(session)
                     traffic_ctrl = TrafficController(client)
                     res = await client.get_system_resource()
                     health = await client.get_system_health()
@@ -173,6 +216,7 @@ async def websocket_telemetry_endpoint(
                         "wan_tx_bps": total_tx,
                         "monitored_interfaces": monitored_ifaces,
                         "wan_ip": await _get_wan_ip(client, eff_router_id, monitored_ifaces),
+                        "clock": await _get_router_clock(client, eff_router_id),
                         # Devices currently online across all profiles - answers
                         # "how many clients is this router actually serving".
                         "active_clients": sum(u.get("active_device_count", 0) for u in users_stats),
@@ -184,7 +228,7 @@ async def websocket_telemetry_endpoint(
                 logger.debug(f"Telemetry stream tick error: {e}")
                 await websocket.send_json({"type": "telemetry_error", "error": str(e), "timestamp": time.time()})
 
-            await asyncio.sleep(settings.TELEMETRY_STREAM_INTERVAL_SECONDS)
+            await asyncio.sleep(tick_interval)
     except WebSocketDisconnect:
         ws_manager.disconnect(websocket)
     except Exception as e:

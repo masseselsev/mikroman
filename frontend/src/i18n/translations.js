@@ -47,6 +47,9 @@ export const translations = {
     drops_label: "Drops",
     used_label: "used",
     first_seen: "First seen",
+    no_link_faults: "No link faults",
+    poll_interval_title: "Telemetry Poll Interval",
+    poll_interval_desc: "How often live figures are read from the router. Each poll costs several REST calls, so a longer interval lowers router CPU.",
     multi_adapter_hint: "One machine reachable over several network adapters",
     link_as_adapter: "Same machine",
     link_suggestion: "Looks like another adapter of {name}",
@@ -133,6 +136,8 @@ export const translations = {
     tg_admin_ids: "Admin Chat IDs (comma-separated)",
     tg_mode: "Bot Mode",
     tg_test_btn: "Send Test Notification",
+    tg_webhook_url: "Webhook URL (public HTTPS)",
+    tg_webhook_help: "Telegram must reach this URL from the internet over HTTPS on port 443, 80, 88 or 8443 with a valid certificate — a LAN address will not work. Point it at this app's /api/v1/telegram/webhook path, typically through a reverse proxy or tunnel. MikroMan registers a secret token with Telegram and rejects any delivery that does not carry it. Long Polling needs none of this and works behind NAT.",
     test_success: "Test notification sent successfully to Telegram!",
 
     // Setup Wizard
@@ -324,6 +329,9 @@ export const translations = {
     drops_label: "Потери",
     used_label: "занято",
     first_seen: "Впервые",
+    no_link_faults: "Ошибок нет",
+    poll_interval_title: "Интервал опроса",
+    poll_interval_desc: "Как часто читать live-данные с роутера. Каждый опрос — это несколько REST-запросов, поэтому больший интервал снижает нагрузку на CPU.",
     multi_adapter_hint: "Одна машина с несколькими сетевыми адаптерами",
     link_as_adapter: "Та же машина",
     link_suggestion: "Похоже на др. адаптер {name}",
@@ -410,6 +418,8 @@ export const translations = {
     tg_admin_ids: "ID админов (через запятую)",
     tg_mode: "Режим бота",
     tg_test_btn: "Тестовое уведомление",
+    tg_webhook_url: "Webhook URL (публичный HTTPS)",
+    tg_webhook_help: "Telegram должен достучаться до этого URL из интернета по HTTPS на порту 443, 80, 88 или 8443 с валидным сертификатом — локальный адрес не подойдёт. Укажите путь /api/v1/telegram/webhook этого приложения, обычно через реверс-прокси или туннель. MikroMan регистрирует секретный токен и отклоняет запросы без него. Long Polling ничего этого не требует и работает за NAT.",
     test_success: "Тестовое уведомление отправлено в Telegram!",
 
     // Setup Wizard

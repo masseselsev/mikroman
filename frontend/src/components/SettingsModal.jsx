@@ -11,7 +11,8 @@ export function SettingsModal({ isOpen, onClose, onReboot, onRoutersChanged }) {
   const [settings, setSettings] = useState({
     telegram_bot_token: '',
     telegram_admin_ids: '',
-    telegram_mode: 'polling'
+    telegram_mode: 'polling',
+    telegram_webhook_url: ''
   });
   const [isSaving, setIsSaving] = useState(false);
   const [testResult, setTestResult] = useState(null);
@@ -247,6 +248,24 @@ export function SettingsModal({ isOpen, onClose, onReboot, onRoutersChanged }) {
                   </div>
                 </div>
 
+                {/* Webhook mode needs a publicly reachable HTTPS URL; without
+                    this field the mode could be selected but never configured. */}
+                {settings.telegram_mode === 'webhook' && (
+                  <div className="form-group" style={{ marginBottom: 10 }}>
+                    <label className="form-label">{t('tg_webhook_url')}</label>
+                    <input
+                      type="text"
+                      className="form-input font-mono"
+                      value={settings.telegram_webhook_url || ''}
+                      onChange={e => setSettings({ ...settings, telegram_webhook_url: e.target.value })}
+                      placeholder="https://your-domain.example/api/v1/telegram/webhook"
+                    />
+                    <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: 5, lineHeight: 1.5 }}>
+                      {t('tg_webhook_help')}
+                    </div>
+                  </div>
+                )}
+
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                   <button
                     type="button"
@@ -273,6 +292,29 @@ export function SettingsModal({ isOpen, onClose, onReboot, onRoutersChanged }) {
               </div>
 
               <div style={{ height: 1, background: 'var(--border-color)', margin: '6px 0' }}></div>
+
+              <div>
+                <h3 style={{ fontSize: '0.9rem', fontWeight: 700, marginBottom: 4, color: 'var(--color-primary)' }}>
+                  {t('poll_interval_title')}
+                </h3>
+                <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: 10 }}>
+                  {t('poll_interval_desc')}
+                </p>
+                <div className="form-group" style={{ marginBottom: 6 }}>
+                  <select
+                    className="form-select font-mono"
+                    value={settings.telemetry_interval_seconds || '1'}
+                    onChange={e => setSettings({ ...settings, telemetry_interval_seconds: e.target.value })}
+                    style={{ width: '100%', height: 36, fontSize: '0.85rem' }}
+                  >
+                    <option value="1">1s — Most responsive, highest router load</option>
+                    <option value="2">2s — Responsive</option>
+                    <option value="3">3s — Balanced (recommended)</option>
+                    <option value="5">5s — Light</option>
+                    <option value="10">10s — Minimal router load</option>
+                  </select>
+                </div>
+              </div>
 
               {/* Background Device Auto-Discovery (Auto-Scan) */}
               <div>

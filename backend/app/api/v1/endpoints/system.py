@@ -137,6 +137,7 @@ async def save_settings(payload: Dict[str, str], db: AsyncSession = Depends(get_
             token = payload.get("telegram_bot_token")
             admin_ids_str = payload.get("telegram_admin_ids")
             mode = payload.get("telegram_mode")
+            webhook_url = payload.get("telegram_webhook_url")
 
             admin_ids = []
             if admin_ids_str:
@@ -148,7 +149,8 @@ async def save_settings(payload: Dict[str, str], db: AsyncSession = Depends(get_
             await telegram_bot_service.reconfigure(
                 token=token,
                 admin_ids=admin_ids if admin_ids_str is not None else None,
-                mode=mode
+                mode=mode,
+                webhook_url=webhook_url
             )
     except Exception as e:
         logger.debug(f"Failed to dynamically reconfigure Telegram bot: {e}")

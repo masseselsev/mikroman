@@ -1,4 +1,8 @@
 :root {
+  /* Tells the browser to render its own controls - notably the native date
+     picker popup, which cannot be styled directly - in the matching scheme. */
+  color-scheme: dark;
+
   --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   --font-mono: 'JetBrains Mono', monospace;
   
@@ -43,6 +47,8 @@
 }
 
 [data-theme="light"] {
+  color-scheme: light;
+
   /* RouterOS Light Mode (WebFig / Classic WinBox palette) */
   --bg-primary: #f1f5f9;
   --bg-secondary: #e2e8f0;
@@ -573,4 +579,47 @@ body {
 @keyframes spin {
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
+}
+
+/* Date inputs.
+   The calendar popup itself is drawn by the browser and follows `color-scheme`
+   above; what is styleable is the field and its trigger icon, which otherwise
+   stays black-on-dark and nearly invisible in the dark theme. */
+input[type="date"] {
+  color-scheme: inherit;
+  font-family: var(--font-mono);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  padding: 5px 8px;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+input[type="date"]:hover {
+  border-color: var(--border-focus);
+}
+
+input[type="date"]:focus {
+  outline: none;
+  border-color: var(--border-focus);
+  box-shadow: 0 0 0 3px var(--color-primary-light);
+}
+
+input[type="date"]::-webkit-calendar-picker-indicator {
+  cursor: pointer;
+  border-radius: 3px;
+  padding: 2px;
+  opacity: 0.65;
+  transition: opacity 0.15s ease, background 0.15s ease;
+}
+
+input[type="date"]::-webkit-calendar-picker-indicator:hover {
+  opacity: 1;
+  background: var(--color-primary-light);
+}
+
+/* The default indicator glyph is dark, so it disappears on a dark field. */
+:root:not([data-theme="light"]) input[type="date"]::-webkit-calendar-picker-indicator {
+  filter: invert(1);
 }

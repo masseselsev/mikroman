@@ -54,6 +54,8 @@ An ultra-lightweight, high-performance companion app and Telegram bot for **Mikr
 
 * **🤖 Dual-Mode Telegram Bot:**
   * Works in both **Long Polling** (zero-config behind NAT) and **Webhook** modes.
+  * **Authenticated Webhooks**: MikroMan registers a per-process secret with `setWebhook` and verifies the `X-Telegram-Bot-Api-Secret-Token` header on every delivery, rejecting anything unsigned — without which any host able to reach the endpoint could inject bot commands such as `/reboot`. It **fails closed**: if no secret has been established, deliveries are refused.
+  * **Webhook setup**: Telegram must reach the URL from the internet over HTTPS on port 443, 80, 88 or 8443 with a valid certificate, so a LAN address will not work — point it at this app's `/api/v1/telegram/webhook` through a reverse proxy or tunnel. Switching back to Long Polling clears the registered webhook automatically, since Telegram refuses polling while one is set.
   * Remote router status snapshot: `/status`.
   * Interactive traffic management with inline buttons: `/users`, `/pause`, `/limit`, `/reboot`.
   * Proactive alerts for newly discovered devices, high CPU load, temperature warnings, and WAN IP changes.
@@ -68,6 +70,14 @@ An ultra-lightweight, high-performance companion app and Telegram bot for **Mikr
   * Native **RouterOS Dark Mode** (WinBox slate/blue) and **RouterOS Light Mode** (WebFig).
   * Full bilingual **English (`en`)** and **Russian (`ru`)** language switching.
   * Compact, responsive layouts tailored for mobile, tablet, and desktop viewports.
+
+* **⚙️ Router-Friendly Polling:**
+  * **Pooled keep-alive connections**: the RouterOS client holds one connection instead of opening a new TLS session per request. Measured on a live hAP be^3, this cut the app's CPU cost on the router from **+6.6 to +2.4 percentage points** over idle (median 8% → 5% against a 2% baseline), with peaks halved.
+  * **Configurable telemetry interval** (1–10s) in Settings: each poll costs several REST calls, so a longer interval trades responsiveness for router CPU.
+  * Rarely-changing values — WAN IP, router clock — are cached rather than re-read every frame.
+
+* **🕒 Router-Local Time:**
+  * The navbar shows the **router's own clock and timezone**, since every figure on the dashboard (lease ages, billing cycles, daily rollups) is anchored to the router while the container usually runs UTC. The offset is fetched once a minute and the browser advances the clock itself, so a live time costs no extra polling.
 
 * **🪶 Ultra-Lightweight Footprint:**
   * Consumes **< 45MB RAM** and negligible CPU.

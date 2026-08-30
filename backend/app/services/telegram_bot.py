@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import secrets
 from typing import Optional
 
 from aiogram import Bot, Dispatcher, F, Router
@@ -41,6 +42,10 @@ class TelegramBotService:
         self.dp: Optional[Dispatcher] = None
         self.polling_task: Optional[asyncio.Task] = None
         self.lang = self.config.TELEGRAM_DEFAULT_LANG
+        # Shared secret Telegram echoes back on every webhook delivery, so a
+        # forged POST to the public webhook route can be told apart from a real
+        # update. Generated per process and re-established on every set_webhook.
+        self.webhook_secret: Optional[str] = None
 
         if self.config.TELEGRAM_BOT_TOKEN:
             self._init_bot()
@@ -343,25 +348,62 @@ class TelegramBotService:
             return
 
         if self.config.TELEGRAM_MODE == "polling":
+            # Telegram refuses long polling while a webhook is registered, so a
+            # webhook left over from a previous configuration must be cleared.
+            try:
+                await self.bot.delete_webhook(drop_pending_updates=False)
+            except Exception as e:
+                logger.debug(f"Could not clear a previous webhook before polling: {e}")
+            self.webhook_secret = None
             logger.info("Starting Telegram Bot in Long Polling mode...")
             self.polling_task = asyncio.create_task(self.dp.start_polling(self.bot))
-        elif self.config.TELEGRAM_MODE == "webhook" and self.config.TELEGRAM_WEBHOOK_URL:
-            logger.info(f"Setting Telegram Webhook to {self.config.TELEGRAM_WEBHOOK_URL}...")
-            await self.bot.set_webhook(self.config.TELEGRAM_WEBHOOK_URL)
+        elif self.config.TELEGRAM_MODE == "webhook":
+            url = (self.config.TELEGRAM_WEBHOOK_URL or "").strip()
+            if not url:
+                logger.error(
+                    "Telegram webhook mode selected but TELEGRAM_WEBHOOK_URL is empty. "
+                    "Set the public HTTPS URL of /api/v1/telegram/webhook."
+                )
+                return
+            self.webhook_secret = secrets.token_urlsafe(32)
+            try:
+                await self.bot.set_webhook(
+                    url,
+                    secret_token=self.webhook_secret,
+                    drop_pending_updates=True,
+                )
+                logger.info(f"Telegram webhook registered at {url}")
+            except Exception as e:
+                self.webhook_secret = None
+                logger.error(f"Failed to register Telegram webhook at {url}: {e}")
 
     async def stop(self) -> None:
-        """Stop Telegram bot."""
+        """Stop Telegram bot and release any registered webhook."""
+        if self.bot and self.webhook_secret:
+            try:
+                await self.bot.delete_webhook(drop_pending_updates=False)
+            except Exception as e:
+                logger.debug(f"Could not delete Telegram webhook on shutdown: {e}")
+            self.webhook_secret = None
         if self.polling_task:
             self.polling_task.cancel()
             try:
                 await self.polling_task
             except asyncio.CancelledError:
                 pass
-    async def reconfigure(self, token: Optional[str] = None, admin_ids: Optional[list] = None, mode: Optional[str] = None) -> None:
+    async def reconfigure(
+        self,
+        token: Optional[str] = None,
+        admin_ids: Optional[list] = None,
+        mode: Optional[str] = None,
+        webhook_url: Optional[str] = None
+    ) -> None:
         """Dynamically reconfigure and restart the Telegram bot service in memory."""
         await self.stop()
         if token is not None:
             self.config.TELEGRAM_BOT_TOKEN = token
+        if webhook_url is not None:
+            self.config.TELEGRAM_WEBHOOK_URL = webhook_url or None
         if admin_ids is not None:
             self.config.TELEGRAM_ADMIN_CHAT_IDS = admin_ids
         if mode is not None:

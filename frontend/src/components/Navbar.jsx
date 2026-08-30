@@ -2,7 +2,61 @@ import React from 'react';
 import { useTheme } from '../context/ThemeContext';
 import { useI18n } from '../context/I18nContext';
 import { RouterSelector } from './RouterSelector';
-import { Sun, Moon, Globe, Settings as SettingsIcon, Activity } from 'lucide-react';
+import { Sun, Moon, Globe, Settings as SettingsIcon, Activity, Clock } from 'lucide-react';
+
+/**
+ * Live clock in the router's own timezone.
+ *
+ * Every time the dashboard shows - lease ages, billing cycles, daily rollups -
+ * is anchored to the router, while the container commonly runs UTC. Showing the
+ * router's clock makes it obvious which "today" is meant.
+ *
+ * The offset arrives with telemetry and the tick happens here, so a live clock
+ * costs no additional polling.
+ */
+function RouterClock({ clock }) {
+  const [now, setNow] = React.useState(() => Date.now());
+
+  React.useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  if (!clock || clock.gmt_offset_minutes == null) return null;
+
+  // Shift real UTC by the router's offset, then read the result as UTC.
+  const shifted = new Date(now + clock.gmt_offset_minutes * 60000);
+  const hh = String(shifted.getUTCHours()).padStart(2, '0');
+  const mm = String(shifted.getUTCMinutes()).padStart(2, '0');
+  const ss = String(shifted.getUTCSeconds()).padStart(2, '0');
+
+  return (
+    <div
+      title={`${clock.timezone || 'Router time'}${clock.dst_active ? ' (DST)' : ''}`}
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 6,
+        padding: '4px 9px',
+        borderRadius: 'var(--radius-md)',
+        background: 'var(--bg-secondary)',
+        border: '1px solid var(--border-color)',
+        color: 'var(--text-secondary)',
+        whiteSpace: 'nowrap'
+      }}
+    >
+      <Clock size={13} style={{ color: 'var(--color-primary)', flexShrink: 0 }} />
+      <span className="font-mono" style={{ fontSize: '0.8rem', fontWeight: 700, color: 'var(--text-primary)' }}>
+        {hh}:{mm}:{ss}
+      </span>
+      {clock.timezone && (
+        <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>
+          {clock.timezone.split('/').pop().replace(/_/g, ' ')}
+        </span>
+      )}
+    </div>
+  );
+}
 
 export function Navbar({ isConnected, routerInfo, routers = [], activeRouter, onSelectRouter, onOpenSettings, onAddRouter }) {
   const { theme, toggleTheme } = useTheme();
@@ -72,6 +126,9 @@ export function Navbar({ isConnected, routerInfo, routers = [], activeRouter, on
 
         {/* Action Controls */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          {/* Router's own local time, left of the language switcher */}
+          <RouterClock clock={routerInfo?.clock} />
+
           {/* Language Switcher */}
           <button
             className="btn btn-secondary btn-sm"

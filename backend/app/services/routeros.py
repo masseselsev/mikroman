@@ -1,6 +1,7 @@
 import asyncio
 import logging
-from typing import Any, Dict, List, Optional
+from contextlib import asynccontextmanager
+from typing import Any, AsyncIterator, Dict, List, Optional
 
 import httpx
 
@@ -34,6 +35,36 @@ def parse_signal_list(raw: Optional[Any]) -> List[int]:
         if token and token.lstrip("-").isdigit():
             values.append(int(token))
     return values
+
+
+def parse_gmt_offset_minutes(raw: Optional[str]) -> Optional[int]:
+    """Parse a RouterOS ``gmt-offset`` into minutes east of UTC.
+
+    Accepts the ``+05:00`` form, a bare ``+05``, and the raw-seconds form some
+    RouterOS versions report. Returns None when the value cannot be understood,
+    so the dashboard shows no router clock rather than a wrong one.
+    """
+    if raw is None:
+        return None
+    token = str(raw).strip()
+    if not token:
+        return None
+
+    # Raw seconds, e.g. "18000" or "-10800".
+    if token.lstrip("+-").isdigit() and ":" not in token:
+        value = int(token)
+        # Values small enough to be hours are treated as hours, not seconds.
+        return value // 60 if abs(value) > 60 else value * 60
+
+    sign = -1 if token.startswith("-") else 1
+    body = token.lstrip("+-")
+    parts = body.split(":")
+    try:
+        hours = int(parts[0])
+        minutes = int(parts[1]) if len(parts) > 1 else 0
+    except ValueError:
+        return None
+    return sign * (hours * 60 + minutes)
 
 
 def build_wifi_links(
@@ -104,19 +135,39 @@ class RouterOSClient:
         self.auth = (self.username, self.password)
         self.verify_ssl = self.ssl_verify if self.use_ssl else False
         self.timeout = httpx.Timeout(timeout_val)
+        self._client: Optional[httpx.AsyncClient] = None
 
-    def _get_client(self) -> httpx.AsyncClient:
+    def _build_client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(
             base_url=self.base_url,
             auth=self.auth,
             verify=self.verify_ssl,
             timeout=self.timeout,
-            headers={"Content-Type": "application/json", "Accept": "application/json"}
+            headers={"Content-Type": "application/json", "Accept": "application/json"},
+            # Keep-alive connections are the whole point: without them every
+            # request repeats the TLS handshake, which is what made the polling
+            # loop dominate router CPU.
+            limits=httpx.Limits(max_keepalive_connections=4, max_connections=8, keepalive_expiry=60.0),
         )
 
+    @asynccontextmanager
+    async def _get_client(self) -> AsyncIterator[httpx.AsyncClient]:
+        """Yield the pooled HTTP client, creating it on first use.
+
+        Deliberately does not close the client on exit: callers use
+        ``async with self._get_client() as client`` for every request, and
+        closing it there would discard the connection pool - and with it the
+        keep-alive that avoids a TLS handshake per request.
+        """
+        if self._client is None or self._client.is_closed:
+            self._client = self._build_client()
+        yield self._client
+
     async def aclose(self) -> None:
-        """Cleanup handler."""
-        pass
+        """Release the pooled connections."""
+        if self._client is not None and not self._client.is_closed:
+            await self._client.aclose()
+        self._client = None
 
     async def check_ssl_status(self) -> Dict[str, Any]:
         """Check /ip/service for www-ssl and /certificate status."""
@@ -660,6 +711,27 @@ class RouterOSClient:
         async with self._get_client() as client:
             resp = await client.patch(f"/ip/firewall/filter/{rule_id}", json=payload)
             return resp.status_code in (200, 201, 204)
+
+    async def get_system_clock(self) -> Dict[str, Any]:
+        """Router date, time and timezone.
+
+        Returns the UTC offset in minutes so a client can advance the clock
+        itself rather than polling for every tick.
+        """
+        async with self._get_client() as client:
+            resp = await client.get("/system/clock")
+            if resp.status_code != 200:
+                return {}
+            raw = resp.json()
+            if not isinstance(raw, dict):
+                return {}
+            return {
+                "date": raw.get("date"),
+                "time": raw.get("time"),
+                "timezone": raw.get("time-zone-name"),
+                "gmt_offset_minutes": parse_gmt_offset_minutes(raw.get("gmt-offset")),
+                "dst_active": str(raw.get("dst-active", "false")).lower() == "true",
+            }
 
     async def get_ip_addresses(self) -> List[Dict[str, Any]]:
         """Fetch configured IP addresses (``/ip/address``) with their interfaces."""

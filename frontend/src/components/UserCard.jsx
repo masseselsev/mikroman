@@ -265,68 +265,75 @@ function DeviceRow({ group, t, lang, onOpen, onUpdate }) {
           </span>
         </div>
 
-        {/* Line 2 — where it is, and what it has consumed today */}
+        {/* Line 2 - identity. Kept apart from connectivity so neither has to
+            compete for width; the vendor is the only element allowed to give way. */}
+        <div style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 5,
+          marginTop: 2,
+          paddingLeft: 14,
+          fontSize: '0.6875rem',
+          color: 'var(--text-muted)',
+          minWidth: 0,
+          overflow: 'hidden'
+        }}>
+          <span className="font-mono" style={{ flexShrink: 0 }}>{d.ip_address || d.mac_address}</span>
+          {d.vendor && <>{META_SEP}<span style={{
+            minWidth: 0,
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap'
+          }}>{d.vendor}</span></>}
+          {offline && d.last_seen && (
+            <>{META_SEP}<span style={{ flexShrink: 0 }}>
+              {t('last_seen_ago', { time: formatRelativeTime(d.last_seen, lang) })}
+            </span></>
+          )}
+        </div>
+
+        {/* Line 3 - how it is connected, and what it has consumed today */}
         <div style={{
           display: 'flex',
           alignItems: 'center',
           gap: 6,
-          marginTop: 3,
+          marginTop: 2,
           paddingLeft: 14,
           fontSize: '0.6875rem',
           color: 'var(--text-muted)',
           minWidth: 0
         }}>
-          {/* Identity group. Everything here is fixed-width except the vendor,
-              so on a narrow card the vendor is the only thing that gives way. */}
           <div style={{
             display: 'flex',
             alignItems: 'center',
-            gap: 5,
+            gap: 6,
             minWidth: 0,
             overflow: 'hidden',
             flex: '1 1 auto'
           }}>
-            <span className="font-mono" style={{ flexShrink: 0 }}>{d.ip_address || d.mac_address}</span>
-
-            {d.vendor && <>{META_SEP}<span style={{
-              minWidth: 0,
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              whiteSpace: 'nowrap'
-            }}>{d.vendor}</span></>}
-
             {/* One entry per live connection. A dual-homed machine shows both
                 its adapters; a WiFi 7 multi-link client shows each radio it is
                 bonded over, since 'mld1' names no actual radio. */}
             {group.adapters.filter(a => a.is_active).flatMap(adapter =>
               connectionLinks(adapter).map((link, i) => (
-                <React.Fragment key={`${adapter.id}-${link.interface}-${i}`}>
-                  {META_SEP}
-                  <span style={{ display: 'flex', alignItems: 'center', gap: 3, flexShrink: 0 }}
-                        title={link.band ? `${link.interface} - ${link.band}` : link.interface}>
-                    {link.wireless ? <Wifi size={10} /> : <Cable size={10} />}
-                    {link.interface}
-                    {link.band && (
-                      <span style={{ opacity: 0.7 }}>{bandLabel(link.band)}</span>
-                    )}
-                    {link.signal != null && (
-                      <span className="font-mono" style={{ color: signalColor(link.signal) }}>
-                        {link.signal}
-                      </span>
-                    )}
-                  </span>
-                </React.Fragment>
+                <span
+                  key={`${adapter.id}-${link.interface}-${i}`}
+                  style={{ display: 'flex', alignItems: 'center', gap: 3, flexShrink: 0 }}
+                  title={link.band ? `${link.interface} - ${link.band}` : link.interface}
+                >
+                  {link.wireless ? <Wifi size={10} /> : <Cable size={10} />}
+                  {link.interface}
+                  {link.band && <span style={{ opacity: 0.65 }}>{bandLabel(link.band)}</span>}
+                  {link.signal != null && (
+                    <span className="font-mono" style={{ color: signalColor(link.signal) }}>
+                      {link.signal}
+                    </span>
+                  )}
+                </span>
               ))
-            )}
-
-            {offline && d.last_seen && (
-              <>{META_SEP}<span style={{ flexShrink: 0 }}>
-                {t('last_seen_ago', { time: formatRelativeTime(d.last_seen, lang) })}
-              </span></>
             )}
           </div>
 
-          {/* Today's volume for this specific device */}
           <span className="font-mono" style={{ display: 'flex', gap: 7, flexShrink: 0 }}>
             <span title={t('today_download')}>↓ {formatBytes(group.bytesIn)}</span>
             <span title={t('today_upload')}>↑ {formatBytes(group.bytesOut)}</span>

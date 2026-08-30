@@ -32,7 +32,7 @@ import {
 } from 'lucide-react';
 
 export function SetupWizard({ onComplete }) {
-  const { t, lang, changeLang } = useI18n();
+  const { t, lang, setLang } = useI18n();
   const { theme, toggleTheme } = useTheme();
 
   const [step, setStep] = useState(1);
@@ -290,6 +290,31 @@ export function SetupWizard({ onComplete }) {
           boxShadow: '0 24px 64px rgba(0, 0, 0, 0.55)'
         }}
       >
+        {/* Appearance and language controls. The wizard is shown before any
+            router exists, so without these the first-run screen could not be
+            switched out of the default theme. */}
+        <div style={{ position: 'absolute', top: 16, right: 16, display: 'flex', gap: 6, zIndex: 1 }}>
+          <button
+            type="button"
+            className="btn btn-secondary btn-sm"
+            onClick={() => setLang(lang === 'en' ? 'ru' : 'en')}
+            title="Switch Language (EN / RU)"
+            style={{ fontWeight: 700 }}
+          >
+            <Globe size={14} />
+            {lang.toUpperCase()}
+          </button>
+          <button
+            type="button"
+            className="btn-icon"
+            onClick={toggleTheme}
+            title={theme === 'dark' ? 'Switch to Light Theme' : 'Switch to Dark Theme'}
+            style={{ width: 32, height: 32 }}
+          >
+            {theme === 'dark' ? <Sun size={15} /> : <Moon size={15} />}
+          </button>
+        </div>
+
         {/* Header */}
         <div style={{ textAlign: 'center', marginBottom: 22 }}>
           <div
@@ -959,7 +984,7 @@ export function SetupWizard({ onComplete }) {
                     type="button"
                     className={`btn ${lang === 'en' ? 'btn-primary' : 'btn-secondary'}`}
                     style={{ padding: '14px 16px', fontSize: '0.95rem' }}
-                    onClick={() => changeLang('en')}
+                    onClick={() => setLang('en')}
                   >
                     🇬🇧 English
                   </button>
@@ -967,7 +992,7 @@ export function SetupWizard({ onComplete }) {
                     type="button"
                     className={`btn ${lang === 'ru' ? 'btn-primary' : 'btn-secondary'}`}
                     style={{ padding: '14px 16px', fontSize: '0.95rem' }}
-                    onClick={() => changeLang('ru')}
+                    onClick={() => setLang('ru')}
                   >
                     🇷🇺 Русский
                   </button>

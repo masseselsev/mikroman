@@ -1,3 +1,5 @@
+import logging
+import secrets
 from typing import Optional
 
 from aiogram import Bot
@@ -9,6 +11,7 @@ from backend.app.db.models import AppSetting
 from backend.app.db.session import get_db
 from backend.app.schemas.common import APIResponse
 
+logger = logging.getLogger("mikroman.telegram")
 router = APIRouter(prefix="/telegram", tags=["Telegram Bot"])
 
 # Reference to telegram bot service instance (attached on app startup)
@@ -27,9 +30,24 @@ class TelegramTestRequest(BaseModel):
 
 @router.post("/webhook")
 async def telegram_webhook(request: Request):
-    """Receive and process Telegram updates via Webhook."""
+    """Receive and process Telegram updates via Webhook.
+
+    Telegram echoes the secret chosen at ``set_webhook`` time in the
+    ``X-Telegram-Bot-Api-Secret-Token`` header. Verifying it is what separates a
+    genuine delivery from anyone else who can reach this endpoint - without the
+    check, a forged POST could invoke privileged commands such as /reboot.
+
+    Fails closed: if no secret has been established there is no way to
+    distinguish Telegram from an attacker, so updates are refused.
+    """
     if not telegram_bot_service:
         raise HTTPException(status_code=503, detail="Telegram bot service not initialized")
+
+    expected = getattr(telegram_bot_service, "webhook_secret", None)
+    provided = request.headers.get("X-Telegram-Bot-Api-Secret-Token")
+    if not expected or not provided or not secrets.compare_digest(provided, expected):
+        logger.warning("Rejected a Telegram webhook delivery with a missing or invalid secret token")
+        raise HTTPException(status_code=403, detail="Invalid webhook secret token")
 
     update_data = await request.json()
     await telegram_bot_service.process_webhook_update(update_data)
