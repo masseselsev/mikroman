@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import List, Optional
 
 from pydantic import BaseModel, ConfigDict
 
@@ -59,6 +59,21 @@ class WiFiRegistrationDTO(BaseModel):
     tx_rate: Optional[str] = None
     rx_rate: Optional[str] = None
     uptime: Optional[str] = None
+    band: Optional[str] = None  # e.g. '5ghz-be', '2ghz-ax'
+    # WiFi 7 multi-link: one client associates over several radios at once.
+    # RouterOS reports it as a single mld* entry carrying parallel lists of the
+    # member radios and the per-link MAC addresses.
+    links: List["WiFiLinkDTO"] = []
+
+
+class WiFiLinkDTO(BaseModel):
+    """One radio link of a (possibly multi-link) wireless association."""
+    model_config = ConfigDict(from_attributes=True)
+
+    interface: str
+    mac_address: Optional[str] = None
+    signal_strength: Optional[int] = None  # dBm
+    band: Optional[str] = None
 
 
 class InterfaceDTO(BaseModel):
@@ -81,3 +96,7 @@ class InterfaceDTO(BaseModel):
     tx_drop: int = 0
     mac_address: Optional[str] = None
     mtu: Optional[str] = None
+
+
+# WiFiRegistrationDTO references WiFiLinkDTO before it is declared.
+WiFiRegistrationDTO.model_rebuild()

@@ -11,11 +11,18 @@ from backend.app.schemas.common import APIResponse
 from backend.app.schemas.device import (
     DeviceDTO,
     DeviceHistoryDTO,
+    DeviceLinkRequest,
     DeviceMergeRequest,
     DevicePauseUpdate,
     DeviceSpeedLimitUpdate,
     DeviceSuggestionDTO,
     DeviceUpdate,
+)
+from backend.app.services.device_linking import (
+    LinkSuggestion,
+    find_link_suggestions,
+    link_device,
+    unlink_device,
 )
 from backend.app.services.device_manager import DeviceManager
 from backend.app.services.router_manager import router_manager
@@ -86,6 +93,41 @@ async def get_merge_suggestions(
     dev_mgr = DeviceManager(client or RouterOSClient())
     suggestions = await dev_mgr.find_merge_suggestions(db)
     return APIResponse(data=suggestions)
+
+
+@router.get("/link-suggestions", response_model=APIResponse[List[LinkSuggestion]])
+async def get_link_suggestions(db: AsyncSession = Depends(get_db)):
+    """Devices that look like separate adapters of the same physical machine."""
+    return APIResponse(data=await find_link_suggestions(db))
+
+
+@router.post("/{device_id}/link", response_model=APIResponse[DeviceDTO])
+async def link_device_endpoint(
+    device_id: int,
+    payload: DeviceLinkRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """Attach a device to another as an additional network adapter.
+
+    Unlike merging - which exists for MAC rotation and collapses two records
+    because only one address is real - both addresses remain valid here and both
+    records are kept, simply presented as one machine.
+    """
+    try:
+        device = await link_device(db, device_id=device_id, primary_device_id=payload.primary_device_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return APIResponse(data=DeviceDTO.model_validate(device))
+
+
+@router.post("/{device_id}/unlink", response_model=APIResponse[DeviceDTO])
+async def unlink_device_endpoint(device_id: int, db: AsyncSession = Depends(get_db)):
+    """Detach an adapter so it stands as its own device again."""
+    try:
+        device = await unlink_device(db, device_id=device_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return APIResponse(data=DeviceDTO.model_validate(device))
 
 
 @router.get("/{device_id}/history", response_model=APIResponse[List[DeviceHistoryDTO]])

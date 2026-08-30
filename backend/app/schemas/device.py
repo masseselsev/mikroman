@@ -30,6 +30,13 @@ class DeviceBase(BaseModel):
     speed_limit: str = "default"  # "default" (inherits user limit), "unlimited", or "10M/30M"
     is_paused: bool = False
     priority: int = 1  # 0 = Low, 1 = Normal, 2 = High
+    # Set when this record is a secondary adapter of another physical device.
+    linked_to_device_id: Optional[int] = None
+    connection_kind: Optional[str] = None  # 'wired' | 'wireless'
+    # Radio links of the current wireless association. A WiFi 7 multi-link
+    # client is bonded over several radios at once, each with its own signal,
+    # which the 'mld1' interface name alone does not convey.
+    wifi_links: Optional[List[dict]] = None
 
 
 class DeviceCreate(DeviceBase):
@@ -57,6 +64,11 @@ class DevicePauseUpdate(BaseModel):
 class DeviceMergeRequest(BaseModel):
     target_device_id: int
     note: Optional[str] = None
+
+
+class DeviceLinkRequest(BaseModel):
+    """Attach this device to another as an additional network adapter."""
+    primary_device_id: int
 
 
 class DeviceSuggestionDTO(BaseModel):

@@ -12,11 +12,68 @@ from backend.app.schemas.routeros import (
     InterfaceDTO,
     RouterSystemHealth,
     RouterSystemResource,
+    WiFiLinkDTO,
     WiFiRegistrationDTO,
 )
 from backend.app.schemas.traffic import SimpleQueueItem
 
 logger = logging.getLogger("mikroman.routeros")
+
+
+def parse_signal_list(raw: Optional[Any]) -> List[int]:
+    """Parse a RouterOS signal field into dBm values.
+
+    A single-link association reports one value ("-62"). A multi-link (WiFi 7
+    MLO) association may report one value per link, comma separated.
+    """
+    if raw is None:
+        return []
+    values = []
+    for part in str(raw).split(","):
+        token = part.strip()
+        if token and token.lstrip("-").isdigit():
+            values.append(int(token))
+    return values
+
+
+def build_wifi_links(
+    interface: str,
+    band: Optional[str],
+    signals: List[int],
+    mld_interfaces: Optional[str],
+    mld_link_addresses: Optional[str],
+) -> List[WiFiLinkDTO]:
+    """Expand a registration entry into its individual radio links.
+
+    RouterOS reports a WiFi 7 multi-link client as one entry on the ``mld*``
+    interface, carrying parallel comma-separated lists of the member radios
+    (``mld-interfaces``) and the per-link MAC addresses (``mld-link-addresses``).
+    A conventional single-link client has neither, and yields one link.
+
+    When the router reports fewer signal readings than links, the readings are
+    assigned in order and the remaining links report no signal rather than
+    repeating a value that was not measured for them.
+    """
+    members = [p.strip() for p in (mld_interfaces or "").split(",") if p.strip()]
+    addresses = [p.strip().upper() for p in (mld_link_addresses or "").split(",") if p.strip()]
+
+    if not members:
+        return [WiFiLinkDTO(
+            interface=interface,
+            mac_address=addresses[0] if addresses else None,
+            signal_strength=signals[0] if signals else None,
+            band=band,
+        )]
+
+    links = []
+    for index, member in enumerate(members):
+        links.append(WiFiLinkDTO(
+            interface=member,
+            mac_address=addresses[index] if index < len(addresses) else None,
+            signal_strength=signals[index] if index < len(signals) else None,
+            band=band,
+        ))
+    return links
 
 
 class RouterOSClient:
@@ -420,16 +477,25 @@ class RouterOSClient:
                             mac = item.get("mac-address") or item.get("mac")
                             if not mac:
                                 continue
-                            sig = item.get("signal-strength") or item.get("signal")
-                            sig_int = int(sig) if sig is not None and str(sig).lstrip('-').isdigit() else None
+                            signals = parse_signal_list(item.get("signal-strength") or item.get("signal"))
+                            iface = item.get("interface", "wifi")
+                            band = item.get("band")
                             results.append(WiFiRegistrationDTO(
                                 mac_address=mac.upper(),
-                                interface=item.get("interface", "wifi"),
+                                interface=iface,
                                 ssid=item.get("ssid"),
-                                signal_strength=sig_int,
+                                signal_strength=signals[0] if signals else None,
                                 tx_rate=str(item.get("tx-rate", "")),
                                 rx_rate=str(item.get("rx-rate", "")),
-                                uptime=item.get("uptime")
+                                uptime=item.get("uptime"),
+                                band=band,
+                                links=build_wifi_links(
+                                    interface=iface,
+                                    band=band,
+                                    signals=signals,
+                                    mld_interfaces=item.get("mld-interfaces"),
+                                    mld_link_addresses=item.get("mld-link-addresses"),
+                                )
                             ))
                         return results
                 except Exception:

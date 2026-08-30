@@ -31,6 +31,8 @@ export function DeviceInbox({ devices = [], users = [], onAssign, onScan, isScan
   const [deviceHistory, setDeviceHistory] = useState([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [mergingId, setMergingId] = useState(null);
+  const [linkSuggestions, setLinkSuggestions] = useState([]);
+  const [linkingId, setLinkingId] = useState(null);
   const [showHidden, setShowHidden] = useState(false);
   const [autoScanEnabled, setAutoScanEnabled] = useState(true);
 
@@ -60,10 +62,26 @@ export function DeviceInbox({ devices = [], users = [], onAssign, onScan, isScan
 
   const loadSuggestions = async () => {
     try {
-      const res = await api.getMergeSuggestions();
-      setSuggestions(res.data || []);
+      const [merge, links] = await Promise.all([
+        api.getMergeSuggestions().catch(() => ({ data: [] })),
+        api.getLinkSuggestions().catch(() => ({ data: [] })),
+      ]);
+      setSuggestions(merge.data || []);
+      setLinkSuggestions(links.data || []);
     } catch (e) {
       console.debug('Failed to load suggestions', e);
+    }
+  };
+
+  const handleLinkClick = async (deviceId, primaryDeviceId) => {
+    setLinkingId(deviceId);
+    try {
+      await api.linkDevice(deviceId, primaryDeviceId);
+      if (onScan) onScan();
+    } catch (err) {
+      alert(`Link failed: ${err.message}`);
+    } finally {
+      setLinkingId(null);
     }
   };
 
@@ -195,6 +213,7 @@ export function DeviceInbox({ devices = [], users = [], onAssign, onScan, isScan
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(360px, 1fr))', gap: 16 }}>
           {visibleDevices.map(device => {
             const suggestion = suggestions.find(s => s.unassigned_device_id === device.id);
+            const linkSuggestion = linkSuggestions.find(s => s.device_id === device.id);
 
             return (
               <div key={device.id} className="card" style={{ display: 'flex', flexDirection: 'column', justifyContent: 'space-between', gap: 12 }}>
@@ -228,6 +247,41 @@ export function DeviceInbox({ devices = [], users = [], onAssign, onScan, isScan
                         onClick={() => handleMergeClick(device.id, suggestion.suggested_target_device_id, suggestion.target_device_name)}
                       >
                         {mergingId === device.id ? 'Linking...' : t('merge_with', { name: suggestion.target_device_name })}
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Adapter link proposal. Distinct from a merge: both MAC
+                      addresses are real and stay, they are simply shown as one
+                      machine with several network connections. */}
+                  {linkSuggestion && (
+                    <div style={{
+                      background: 'rgba(16, 185, 129, 0.10)',
+                      border: '1px solid rgba(16, 185, 129, 0.32)',
+                      borderRadius: 'var(--radius-sm)',
+                      padding: '8px 10px',
+                      marginBottom: 10,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      gap: 8
+                    }}>
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 700, fontSize: '0.775rem' }}>
+                          <Link size={13} style={{ color: 'var(--color-success)' }} />
+                          <span>{t('link_as_adapter')}</span>
+                        </div>
+                        <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                          {linkSuggestion.reason}
+                        </div>
+                      </div>
+                      <button
+                        className="btn btn-secondary btn-sm"
+                        style={{ fontSize: '0.725rem', padding: '4px 8px', whiteSpace: 'nowrap' }}
+                        disabled={linkingId === device.id}
+                        onClick={() => handleLinkClick(device.id, linkSuggestion.primary_device_id)}
+                      >
+                        {linkingId === device.id ? '...' : t('link_suggestion', { name: linkSuggestion.primary_device_name })}
                       </button>
                     </div>
                   )}

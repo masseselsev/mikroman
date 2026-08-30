@@ -10,6 +10,7 @@ from sqlalchemy.orm import selectinload
 from backend.app.db.models import AlertLog, AppSetting, Device, DeviceHistory
 from backend.app.schemas.device import DeviceSuggestionDTO
 from backend.app.schemas.routeros import ARPTableEntry, DHCPLeaseDTO, WiFiRegistrationDTO
+from backend.app.services.device_linking import classify_connection
 from backend.app.services.routeros import RouterOSClient
 from backend.app.services.vendor_lookup import vendor_service
 
@@ -19,6 +20,33 @@ logger = logging.getLogger("mikroman.device_manager")
 def lookup_vendor(mac: str) -> str:
     """Lookup hardware vendor using synchronous cache."""
     return vendor_service.lookup_sync(mac)
+
+
+def apply_wifi_registration(device: Device, wifi: WiFiRegistrationDTO) -> None:
+    """Record a wireless association, including its individual radio links.
+
+    For a WiFi 7 multi-link client the reported interface is an ``mld*`` alias
+    that names no actual radio, so the member links are stored alongside it and
+    the strongest of them is used as the device's headline signal.
+    """
+    device.last_interface = wifi.interface
+    device.connection_kind = "wireless"
+
+    links = [
+        {
+            "interface": link.interface,
+            "mac_address": link.mac_address,
+            "signal": link.signal_strength,
+            "band": link.band,
+        }
+        for link in (wifi.links or [])
+    ]
+    device.wifi_links = links or None
+
+    measured = [link.signal_strength for link in (wifi.links or []) if link.signal_strength is not None]
+    # Best link is what the user experiences; a weak secondary link should not
+    # make a well-connected device look bad.
+    device.last_wifi_signal = max(measured) if measured else wifi.signal_strength
 
 
 class DeviceManager:
@@ -117,10 +145,17 @@ class DeviceManager:
                     ))
 
                 if wifi_info:
-                    device.last_wifi_signal = wifi_info.signal_strength
-                    device.last_interface = wifi_info.interface
+                    apply_wifi_registration(device, wifi_info)
                 elif arp_info and arp_info.interface:
                     device.last_interface = arp_info.interface
+                    kind = classify_connection(arp_info.interface, None)
+                    device.connection_kind = kind
+                    if kind == "wired":
+                        # The machine has moved onto cable. Keeping the last
+                        # wireless reading would report a signal for a link that
+                        # no longer exists.
+                        device.wifi_links = None
+                        device.last_wifi_signal = None
 
                 device.is_active = True
                 device.last_seen = now_utc
@@ -193,8 +228,7 @@ class DeviceManager:
                 if arp.address and (not device.ip_address or device.ip_address == "0.0.0.0"):
                     device.ip_address = arp.address
                 if wifi_info:
-                    device.last_wifi_signal = wifi_info.signal_strength
-                    device.last_interface = wifi_info.interface
+                    apply_wifi_registration(device, wifi_info)
                 elif arp.interface and not device.last_interface:
                     device.last_interface = arp.interface
             else:
@@ -224,6 +258,19 @@ class DeviceManager:
 
                 newly_discovered.append(device)
                 db_devices[mac] = device
+
+        # An authorized wireless association is direct proof of presence, and is
+        # more reliable than ARP: a client can hold a stable radio link while its
+        # ARP entry expires, and a client that roams onto Wi-Fi may have no DHCP
+        # lease of its own. Without this, such devices went dark in the UI.
+        for wifi in wifis:
+            mac = wifi.mac_address
+            if not mac:
+                continue
+            active_macs.add(mac)
+            device = db_devices.get(mac)
+            if device:
+                apply_wifi_registration(device, wifi)
 
         # Mark active / inactive devices
         for mac, device in db_devices.items():

@@ -67,6 +67,84 @@ function signalColor(dbm) {
 const META_SEP = <span style={{ opacity: 0.4 }}>·</span>;
 
 /**
+ * Collapse a device list into logical machines.
+ *
+ * A machine with more than one network adapter (a laptop docked over Ethernet
+ * and roaming over Wi-Fi) has a MAC per adapter and is therefore discovered as
+ * several devices. Linked adapters are grouped behind their primary so the
+ * machine appears once, with each connection shown separately.
+ */
+export function groupDevices(devices) {
+  const byId = new Map(devices.map(d => [d.id, d]));
+  const groups = new Map();
+
+  for (const device of devices) {
+    // An adapter whose primary is filtered out stands on its own rather than
+    // vanishing from the list.
+    const headId = byId.has(device.linked_to_device_id) ? device.linked_to_device_id : device.id;
+    if (!groups.has(headId)) groups.set(headId, []);
+    groups.get(headId).push(device);
+  }
+
+  return [...groups.entries()].map(([headId, adapters]) => {
+    adapters.sort((a, b) => (a.id === headId ? -1 : b.id === headId ? 1 : a.id - b.id));
+    const primary = byId.get(headId) || adapters[0];
+    const sum = (field) => adapters.reduce((acc, a) => acc + (a[field] || 0), 0);
+    return {
+      key: headId,
+      primary,
+      adapters,
+      // The machine is online while any of its adapters is, and its traffic is
+      // the total across them - otherwise a dual-homed machine reads as two
+      // half-idle devices.
+      isActive: adapters.some(a => a.is_active),
+      isPaused: adapters.every(a => a.is_paused),
+      rateIn: sum('current_rate_in'),
+      rateOut: sum('current_rate_out'),
+      bytesIn: sum('bytes_today_in'),
+      bytesOut: sum('bytes_today_out'),
+    };
+  });
+}
+
+/**
+ * The radio links of a wireless adapter, or a single wired entry.
+ *
+ * A WiFi 7 multi-link client associates over several radios at once and
+ * RouterOS names the bundle 'mld1', which identifies no actual radio. The
+ * member links carry the interface and signal that are actually useful.
+ */
+function connectionLinks(device) {
+  if (device.wifi_links && device.wifi_links.length > 0) {
+    return device.wifi_links.map(link => ({
+      wireless: true,
+      interface: link.interface,
+      signal: link.signal,
+      band: link.band,
+    }));
+  }
+  // connection_kind is authoritative when known: a machine that moved onto
+  // cable must not be drawn as wireless because of a stale signal reading.
+  const wireless = device.connection_kind
+    ? device.connection_kind === 'wireless'
+    : device.last_wifi_signal != null;
+  return [{
+    wireless,
+    interface: device.last_interface,
+    signal: wireless ? device.last_wifi_signal : null,
+    band: null,
+  }];
+}
+
+/** Compact label for a radio band, e.g. '5ghz-be' -> '5G·BE'. */
+function bandLabel(band) {
+  if (!band) return null;
+  const [freq, mode] = band.split('-');
+  const shortFreq = freq.replace('ghz', 'G').replace('2', '2.4');
+  return mode ? `${shortFreq}·${mode.toUpperCase()}` : shortFreq;
+}
+
+/**
  * A single device, rendered on two lines.
  *
  * Line 1 answers "is this device using bandwidth right now"; line 2 answers
@@ -74,19 +152,24 @@ const META_SEP = <span style={{ opacity: 0.4 }}>·</span>;
  * the name no longer has to compete with the metadata for width, so it stops
  * being truncated to "Nama...".
  */
-function DeviceRow({ device: d, t, lang, onOpen, onUpdate }) {
+function DeviceRow({ group, t, lang, onOpen, onUpdate }) {
   const [busy, setBusy] = useState(false);
 
-  const rateIn = d.current_rate_in || 0;
-  const rateOut = d.current_rate_out || 0;
+  const d = group.primary;
+  const rateIn = group.rateIn;
+  const rateOut = group.rateOut;
   const isMoving = rateIn > 0 || rateOut > 0;
-  const offline = !d.is_active;
+  const offline = !group.isActive;
+  const multiHomed = group.adapters.length > 1;
 
   const togglePause = async (e) => {
     e.stopPropagation();
     setBusy(true);
     try {
-      await api.toggleDevicePause(d.id, !d.is_paused);
+      // Pausing a machine must cut every adapter, or it simply hops media.
+      await Promise.all(
+        group.adapters.map(a => api.toggleDevicePause(a.id, !group.isPaused))
+      );
       if (onUpdate) onUpdate();
     } catch (err) {
       console.error('Failed to toggle device pause:', err);
@@ -100,135 +183,190 @@ function DeviceRow({ device: d, t, lang, onOpen, onUpdate }) {
       onClick={onOpen}
       title={t('device_row_hint')}
       style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
         padding: '6px 9px',
         background: 'var(--bg-secondary)',
         borderRadius: 'var(--radius-sm)',
         border: '1px solid var(--border-color)',
-        opacity: d.is_paused ? 0.6 : (offline ? 0.78 : 1),
+        opacity: group.isPaused ? 0.6 : (offline ? 0.78 : 1),
         cursor: 'pointer',
         transition: 'border-color 0.15s ease'
       }}
     >
-      {/* Line 1 — identity and live throughput */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
-        <span
-          style={{
-            width: 7,
-            height: 7,
-            borderRadius: '50%',
+      {/* Text column. minWidth:0 lets it shrink below its content width, which
+          is what stops the action buttons being pushed outside the card. */}
+      <div style={{ flex: '1 1 auto', minWidth: 0 }}>
+        {/* Line 1 — identity and live throughput */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+          <span
+            style={{
+              width: 7,
+              height: 7,
+              borderRadius: '50%',
+              flexShrink: 0,
+              background: group.isPaused ? 'var(--color-danger)' : (group.isActive ? 'var(--color-success)' : 'var(--text-muted)'),
+              boxShadow: group.isActive && !group.isPaused ? '0 0 6px rgba(16, 185, 129, 0.5)' : 'none'
+            }}
+            title={group.isPaused ? t('paused') : (group.isActive ? t('online') : t('offline'))}
+          />
+          <span style={{ flexShrink: 0, display: 'flex', color: 'var(--text-secondary)' }}>
+            {getDeviceIcon(d.vendor, d.hostname)}
+          </span>
+          <span style={{
+            fontWeight: 600,
+            fontSize: '0.8125rem',
+            color: 'var(--text-primary)',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+            minWidth: 0
+          }}>
+            {d.custom_name || d.hostname || d.vendor || 'Device'}
+          </span>
+
+          {multiHomed && (
+            <span className="badge badge-chip" title={t('multi_adapter_hint')}>
+              {group.adapters.length}×
+            </span>
+          )}
+          {d.is_hidden && (
+            <span className="badge badge-chip" title={t('hidden_badge')}>{t('hidden_badge')}</span>
+          )}
+          {d.speed_limit && d.speed_limit !== 'default' && (
+            <span className="badge badge-chip badge-chip-warn" title={`${t('table_speed_limit')}: ${d.speed_limit}`}>
+              ⚡ {d.speed_limit}
+            </span>
+          )}
+          {d.is_randomized_mac && (
+            <span className="badge badge-chip badge-chip-warn" title={t('private_mac_hint')}>
+              {t('private_badge')}
+            </span>
+          )}
+
+          <span style={{ flex: 1, minWidth: 4 }} />
+
+          {/* Live rate. Dimmed when idle so a quiet device reads as quiet. */}
+          <span className="font-mono" style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            fontSize: '0.75rem',
             flexShrink: 0,
-            background: d.is_paused ? 'var(--color-danger)' : (d.is_active ? 'var(--color-success)' : 'var(--text-muted)'),
-            boxShadow: d.is_active && !d.is_paused ? '0 0 6px rgba(16, 185, 129, 0.5)' : 'none'
-          }}
-          title={d.is_paused ? t('paused') : (d.is_active ? t('online') : t('offline'))}
-        />
-        <span style={{ flexShrink: 0, display: 'flex', color: 'var(--text-secondary)' }}>
-          {getDeviceIcon(d.vendor, d.hostname)}
-        </span>
-        <span style={{
-          fontWeight: 600,
-          fontSize: '0.8125rem',
-          color: 'var(--text-primary)',
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-          whiteSpace: 'nowrap',
-          minWidth: 0
-        }}>
-          {d.custom_name || d.hostname || d.vendor || 'Device'}
-        </span>
-
-        {d.is_hidden && (
-          <span className="badge badge-chip" title={t('hidden_badge')}>{t('hidden_badge')}</span>
-        )}
-        {d.speed_limit && d.speed_limit !== 'default' && (
-          <span className="badge badge-chip badge-chip-warn" title={`${t('table_speed_limit')}: ${d.speed_limit}`}>
-            ⚡ {d.speed_limit}
+            fontWeight: 700
+          }}>
+            <span style={{ color: isMoving && rateIn ? 'var(--color-success)' : 'var(--text-muted)' }}>
+              ↓ {formatSpeed(rateIn)}
+            </span>
+            <span style={{ color: isMoving && rateOut ? 'var(--color-primary)' : 'var(--text-muted)' }}>
+              ↑ {formatSpeed(rateOut)}
+            </span>
           </span>
-        )}
-        {d.is_randomized_mac && (
-          <span className="badge badge-chip badge-chip-warn" title={t('private_mac_hint')}>
-            {t('private_badge')}
-          </span>
-        )}
+        </div>
 
-        <span style={{ flex: 1 }} />
-
-        {/* Live rate. Dimmed when idle so a quiet device reads as quiet. */}
-        <span className="font-mono" style={{
+        {/* Line 2 — where it is, and what it has consumed today */}
+        <div style={{
           display: 'flex',
           alignItems: 'center',
-          gap: 8,
-          fontSize: '0.75rem',
-          flexShrink: 0,
-          fontWeight: 700
+          gap: 6,
+          marginTop: 3,
+          paddingLeft: 14,
+          fontSize: '0.6875rem',
+          color: 'var(--text-muted)',
+          minWidth: 0
         }}>
-          <span style={{ color: isMoving && rateIn ? 'var(--color-success)' : 'var(--text-muted)' }}>
-            ↓ {formatSpeed(rateIn)}
+          {/* Identity group. Everything here is fixed-width except the vendor,
+              so on a narrow card the vendor is the only thing that gives way. */}
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 5,
+            minWidth: 0,
+            overflow: 'hidden',
+            flex: '1 1 auto'
+          }}>
+            <span className="font-mono" style={{ flexShrink: 0 }}>{d.ip_address || d.mac_address}</span>
+
+            {d.vendor && <>{META_SEP}<span style={{
+              minWidth: 0,
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap'
+            }}>{d.vendor}</span></>}
+
+            {/* One entry per live connection. A dual-homed machine shows both
+                its adapters; a WiFi 7 multi-link client shows each radio it is
+                bonded over, since 'mld1' names no actual radio. */}
+            {group.adapters.filter(a => a.is_active).flatMap(adapter =>
+              connectionLinks(adapter).map((link, i) => (
+                <React.Fragment key={`${adapter.id}-${link.interface}-${i}`}>
+                  {META_SEP}
+                  <span style={{ display: 'flex', alignItems: 'center', gap: 3, flexShrink: 0 }}
+                        title={link.band ? `${link.interface} - ${link.band}` : link.interface}>
+                    {link.wireless ? <Wifi size={10} /> : <Cable size={10} />}
+                    {link.interface}
+                    {link.band && (
+                      <span style={{ opacity: 0.7 }}>{bandLabel(link.band)}</span>
+                    )}
+                    {link.signal != null && (
+                      <span className="font-mono" style={{ color: signalColor(link.signal) }}>
+                        {link.signal}
+                      </span>
+                    )}
+                  </span>
+                </React.Fragment>
+              ))
+            )}
+
+            {offline && d.last_seen && (
+              <>{META_SEP}<span style={{ flexShrink: 0 }}>
+                {t('last_seen_ago', { time: formatRelativeTime(d.last_seen, lang) })}
+              </span></>
+            )}
+          </div>
+
+          {/* Today's volume for this specific device */}
+          <span className="font-mono" style={{ display: 'flex', gap: 7, flexShrink: 0 }}>
+            <span title={t('today_download')}>↓ {formatBytes(group.bytesIn)}</span>
+            <span title={t('today_upload')}>↑ {formatBytes(group.bytesOut)}</span>
           </span>
-          <span style={{ color: isMoving && rateOut ? 'var(--color-primary)' : 'var(--text-muted)' }}>
-            ↑ {formatSpeed(rateOut)}
-          </span>
-        </span>
+        </div>
       </div>
 
-      {/* Line 2 — where it is, and what it has consumed today */}
-      <div style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: 6,
-        marginTop: 3,
-        paddingLeft: 14,
-        fontSize: '0.6875rem',
-        color: 'var(--text-muted)',
-        minWidth: 0
-      }}>
-        <span className="font-mono" style={{ flexShrink: 0 }}>{d.ip_address || d.mac_address}</span>
-
-        {d.vendor && <>{META_SEP}<span style={{
-          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'
-        }}>{d.vendor}</span></>}
-
-        {d.last_interface && <>{META_SEP}<span style={{ display: 'flex', alignItems: 'center', gap: 3, flexShrink: 0 }}>
-          {d.last_wifi_signal ? <Wifi size={10} /> : <Cable size={10} />}
-          {d.last_interface}
-        </span></>}
-
-        {/* A stale signal reading is meaningless once the device has left. */}
-        {!offline && d.last_wifi_signal ? (
-          <>{META_SEP}<span className="font-mono" style={{ color: signalColor(d.last_wifi_signal), flexShrink: 0 }}>
-            {d.last_wifi_signal} dBm
-          </span></>
-        ) : null}
-
-        {offline && d.last_seen && (
-          <>{META_SEP}<span style={{ flexShrink: 0 }}>
-            {t('last_seen_ago', { time: formatRelativeTime(d.last_seen, lang) })}
-          </span></>
-        )}
-
-        <span style={{ flex: 1 }} />
-
-        {/* Today's volume for this specific device */}
-        <span className="font-mono" style={{ display: 'flex', gap: 7, flexShrink: 0 }}>
-          <span title={t('today_download')}>↓ {formatBytes(d.bytes_today_in || 0)}</span>
-          <span title={t('today_upload')}>↑ {formatBytes(d.bytes_today_out || 0)}</span>
-        </span>
-
+      {/* Action column, outside the text flow so it can never be clipped. */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }}>
         <button
           type="button"
           onClick={togglePause}
           disabled={busy}
           className="btn-icon"
           style={{
-            width: 22,
-            height: 22,
-            flexShrink: 0,
-            background: d.is_paused ? 'var(--color-danger)' : 'transparent',
-            color: d.is_paused ? '#fff' : 'var(--text-muted)'
+            width: 26,
+            height: 26,
+            background: group.isPaused ? 'var(--color-danger)' : 'var(--bg-card)',
+            color: group.isPaused ? '#fff' : 'var(--text-secondary)',
+            border: '1px solid var(--border-color)'
           }}
-          title={d.is_paused ? t('resume_device') : t('pause_device')}
+          title={group.isPaused ? t('resume_device') : t('pause_device')}
         >
-          {d.is_paused ? <Play size={11} /> : <Pause size={11} />}
+          {group.isPaused ? <Play size={12} /> : <Pause size={12} />}
+        </button>
+
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); onOpen(); }}
+          className="btn-icon"
+          style={{
+            width: 26,
+            height: 26,
+            background: 'var(--bg-card)',
+            color: 'var(--text-secondary)',
+            border: '1px solid var(--border-color)'
+          }}
+          title={t('edit_device')}
+        >
+          <Sliders size={12} />
         </button>
       </div>
     </div>
@@ -244,7 +382,9 @@ export function UserCard({ user, onEdit, onDelete, onLimitChange, onPauseToggle,
   const [selectedDevice, setSelectedDevice] = useState(null);
 
   const visibleDevices = (user.devices || []).filter(d => showHidden || !d.is_hidden);
-  const activeDevices = visibleDevices.filter(d => d.is_active);
+  // Adapters of one machine collapse into a single row.
+  const deviceGroups = groupDevices(visibleDevices);
+  const activeDevices = deviceGroups.filter(g => g.isActive);
   const isPaused = user.is_paused;
   const isOnline = activeDevices.length > 0 && !isPaused;
 
@@ -348,7 +488,7 @@ export function UserCard({ user, onEdit, onDelete, onLimitChange, onPauseToggle,
                 {user.name}
               </div>
               <div style={{ fontSize: '0.6875rem', color: 'var(--text-muted)' }}>
-                {activeDevices.length}/{visibleDevices.length} {t('online_of_devices')}
+                {activeDevices.length}/{deviceGroups.length} {t('online_of_devices')}
               </div>
             </div>
           </div>
@@ -418,17 +558,17 @@ export function UserCard({ user, onEdit, onDelete, onLimitChange, onPauseToggle,
 
         {/* Associated devices — two lines each, see DeviceRow */}
         <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 5 }}>
-          {visibleDevices.map(d => (
+          {deviceGroups.map(g => (
             <DeviceRow
-              key={d.id}
-              device={d}
+              key={g.key}
+              group={g}
               t={t}
               lang={lang}
-              onOpen={() => setSelectedDevice(d)}
+              onOpen={() => setSelectedDevice(g.primary)}
               onUpdate={onUpdate}
             />
           ))}
-          {visibleDevices.length === 0 && (
+          {deviceGroups.length === 0 && (
             <div style={{
               fontSize: '0.75rem',
               color: 'var(--text-muted)',

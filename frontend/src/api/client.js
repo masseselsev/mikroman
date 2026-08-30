@@ -54,6 +54,15 @@ export const api = {
   toggleHideDevice: (id, isHidden) => request(`/devices/${id}`, { method: 'PATCH', body: JSON.stringify({ is_hidden: isHidden }) }),
   getDeviceHistory: (id) => request(`/devices/${id}/history`),
   getMergeSuggestions: () => request('/devices/suggestions'),
+  // Linking keeps both records and presents them as one machine with several
+  // network adapters; merging collapses two records into one and exists for
+  // MAC rotation, where only one address was ever real.
+  getLinkSuggestions: () => request('/devices/link-suggestions'),
+  linkDevice: (id, primaryDeviceId) => request(`/devices/${id}/link`, {
+    method: 'POST',
+    body: JSON.stringify({ primary_device_id: primaryDeviceId })
+  }),
+  unlinkDevice: (id) => request(`/devices/${id}/unlink`, { method: 'POST' }),
   mergeDevice: (id, targetDeviceId, note = '') => request(`/devices/${id}/merge`, {
     method: 'POST',
     body: JSON.stringify({ target_device_id: targetDeviceId, note })

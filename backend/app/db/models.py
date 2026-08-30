@@ -60,6 +60,16 @@ class Device(Base):
     last_wifi_signal: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # in dBm e.g. -65
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     is_hidden: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # One physical machine can reach the network through several adapters - a
+    # laptop docked over Ethernet and roaming over Wi-Fi has a MAC per adapter.
+    # A secondary adapter points at the primary device; the primary holds NULL.
+    linked_to_device_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("devices.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    connection_kind: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)  # 'wired' | 'wireless'
+    # Radio links of the current wireless association. A WiFi 7 multi-link
+    # client is bonded over several radios at once, each with its own signal.
+    wifi_links: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
     speed_limit: Mapped[str] = mapped_column(String(50), default="default", nullable=False)  # "default", "unlimited", "10M/30M"
     is_paused: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     priority: Mapped[int] = mapped_column(Integer, default=1, nullable=False)  # 1 = Normal, 2 = High, 0 = Low
@@ -67,6 +77,19 @@ class Device(Base):
 
     user: Mapped[Optional["User"]] = relationship("User", back_populates="devices")
     router: Mapped[Optional["Router"]] = relationship("Router", back_populates="devices")
+    linked_adapters: Mapped[List["Device"]] = relationship(
+        "Device",
+        back_populates="primary_device",
+        lazy="selectin",
+        remote_side=None,
+        foreign_keys=[linked_to_device_id],
+    )
+    primary_device: Mapped[Optional["Device"]] = relationship(
+        "Device",
+        back_populates="linked_adapters",
+        remote_side=[id],
+        foreign_keys=[linked_to_device_id],
+    )
     history: Mapped[List["DeviceHistory"]] = relationship("DeviceHistory", back_populates="device", cascade="all, delete-orphan", lazy="selectin", order_by="desc(DeviceHistory.created_at)")
     traffic_rollups: Mapped[List["DeviceTrafficRollup"]] = relationship("DeviceTrafficRollup", back_populates="device", cascade="all, delete-orphan", lazy="selectin")
 

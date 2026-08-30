@@ -1,3 +1,4 @@
+import logging
 import os
 from typing import AsyncGenerator
 
@@ -6,6 +7,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from backend.app.core.config import settings
 from backend.app.db.models import Base
+
+logger = logging.getLogger("mikroman.db")
 
 # Ensure data directory exists for SQLite
 if "sqlite" in settings.DATABASE_URL:
@@ -52,10 +55,22 @@ async def init_db() -> None:
             try:
                 res = await conn.execute(text("PRAGMA table_info(devices)"))
                 columns = [row[1] for row in res.fetchall()]
-                if columns and "is_hidden" not in columns:
-                    await conn.execute(text("ALTER TABLE devices ADD COLUMN is_hidden BOOLEAN NOT NULL DEFAULT 0"))
-            except Exception:
-                pass
+                if not columns:
+                    return
+                # create_all() never alters an existing table, so columns added
+                # after a database was first created are applied here as well as
+                # in the Alembic migrations.
+                additions = {
+                    "is_hidden": "BOOLEAN NOT NULL DEFAULT 0",
+                    "linked_to_device_id": "INTEGER",
+                    "connection_kind": "VARCHAR(20)",
+                    "wifi_links": "TEXT",
+                }
+                for column, ddl in additions.items():
+                    if column not in columns:
+                        await conn.execute(text(f"ALTER TABLE devices ADD COLUMN {column} {ddl}"))
+            except Exception as e:
+                logger.warning(f"Could not apply device schema additions: {e}")
 
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
