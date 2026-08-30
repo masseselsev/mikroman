@@ -1,3 +1,4 @@
+import json
 import logging
 from datetime import datetime, timezone
 from typing import List, Optional, Tuple
@@ -27,6 +28,24 @@ class DeviceManager:
         self.router_client = router_client
         self.router_id = router_id
 
+    async def _get_wan_interfaces(self, session: AsyncSession) -> set:
+        """Interface names treated as uplinks rather than LAN ports.
+
+        The ARP table also lists the upstream ISP gateway, which sits on the WAN
+        port. Without this filter it was ingested as an ordinary client and
+        given a quarantine queue and an accounting rule of its own.
+        """
+        key = f"monitored_interfaces_{self.router_id}" if self.router_id else "monitored_interfaces_default"
+        setting = await session.get(AppSetting, key)
+        if setting and setting.value:
+            try:
+                names = json.loads(setting.value)
+                if isinstance(names, list) and names:
+                    return {str(n) for n in names}
+            except (json.JSONDecodeError, TypeError):
+                logger.debug(f"Could not parse {key}; falling back to default WAN interface")
+        return {"ether1"}
+
     async def sync_devices_from_router(self, session: AsyncSession) -> Tuple[List[Device], List[Device]]:
         """Syncs RouterOS DHCP leases and ARP table into SQLite DB and logs state changes.
 
@@ -40,6 +59,15 @@ class DeviceManager:
         except Exception as e:
             logger.error(f"Failed to query network discovery endpoints: {e}")
             return [], []
+
+        # Drop uplink-side ARP entries before they are treated as LAN clients, and
+        # unresolved ones, which RouterOS keeps after a host has left the network
+        # and which are therefore no evidence that the device is still online.
+        wan_interfaces = await self._get_wan_interfaces(session)
+        arps = [
+            a for a in arps
+            if (a.interface or "") not in wan_interfaces and a.complete
+        ]
 
         wifi_map = {w.mac_address: w for w in wifis}
         arp_map = {a.mac_address: a for a in arps}

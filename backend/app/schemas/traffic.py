@@ -22,6 +22,9 @@ class SimpleQueueItem(BaseModel):
     bytes: Optional[str] = "0/0"
     comment: Optional[str] = None
     disabled: bool = False
+    # RouterOS reports "none" for a top-level queue; required to detect drift in
+    # the hierarchical parent/child shaping tree.
+    parent: Optional[str] = None
 
 
 class RealtimeTelemetrySnapshot(BaseModel):

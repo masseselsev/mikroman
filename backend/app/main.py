@@ -66,6 +66,12 @@ async def background_sync_worker():
                                 )
                                 for dev in devs_res.scalars().all():
                                     await tc.sync_device_queue(dev.id, session)
+
+                                # Remove managed queues whose owning user or device
+                                # is gone, or that no longer needs its own queue.
+                                # Runs after the syncs so freshly created queues
+                                # are already accounted for.
+                                await tc.reconcile_managed_queues(session)
                             except Exception as qe:
                                 logger.debug(f"Queue sync tick error for router {r.id}: {qe}")
 
@@ -76,12 +82,24 @@ async def background_sync_worker():
                             except Exception as me:
                                 logger.debug(f"Metrics collection tick error for router {r.id}: {me}")
 
-                            # Collect and record cumulative traffic rollups for analytics
+                            # Record gateway-level rollups from WAN interface counters
                             try:
                                 from backend.app.services.analytics_engine import AnalyticsEngine
                                 await AnalyticsEngine.record_traffic_snapshot(session, r.id, client)
                             except Exception as te:
-                                logger.debug(f"Traffic rollups tick error for router {r.id}: {te}")
+                                logger.warning(f"Gateway rollup tick error for router {r.id}: {te}")
+
+                            # Per-device accounting via firewall mangle counters.
+                            # Simple Queue byte counters are unreliable on RouterOS 7.x
+                            # (measured frozen at zero while traffic flowed), so device
+                            # and user volume is measured in the firewall forward chain.
+                            try:
+                                from backend.app.services.traffic_accounting import TrafficAccountingService
+                                acct = TrafficAccountingService(client, router_id=r.id)
+                                await acct.sync_counter_rules(session)
+                                await acct.collect(session)
+                            except Exception as ae:
+                                logger.warning(f"Traffic accounting tick error for router {r.id}: {ae}")
 
                             if new_devices:
                                 try:

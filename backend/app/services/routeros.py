@@ -481,7 +481,8 @@ class RouterOSClient:
                     rate=item.get("rate", "0/0"),
                     bytes=item.get("bytes", "0/0"),
                     comment=item.get("comment"),
-                    disabled=item.get("disabled", "false") == "true" or item.get("disabled") is True
+                    disabled=item.get("disabled", "false") == "true" or item.get("disabled") is True,
+                    parent=item.get("parent")
                 ))
             return results
 
@@ -587,6 +588,41 @@ class RouterOSClient:
         async with self._get_client() as client:
             resp = await client.patch(f"/ip/firewall/filter/{rule_id}", json=payload)
             return resp.status_code in (200, 201, 204)
+
+    # --- Firewall Mangle Operations (per-device traffic accounting) ---
+    #
+    # Simple Queue byte counters proved unusable for accounting on RouterOS 7.25
+    # (they stay frozen at zero even while traffic flows), so per-device volume is
+    # measured with `action=passthrough` mangle rules instead. Passthrough only
+    # increments a counter and hands the packet on - it never alters traffic.
+
+    async def get_mangle_rules(self) -> List[Dict[str, Any]]:
+        """Fetch all firewall mangle rules from RouterOS."""
+        async with self._get_client() as client:
+            resp = await client.get("/ip/firewall/mangle")
+            if resp.status_code != 200:
+                return []
+            raw = resp.json()
+            return raw if isinstance(raw, list) else [raw]
+
+    async def create_mangle_rule(self, payload: Dict[str, Any]) -> str:
+        """Create a firewall mangle rule and return its RouterOS id."""
+        async with self._get_client() as client:
+            resp = await client.put("/ip/firewall/mangle", json=payload)
+            resp.raise_for_status()
+            return resp.json().get(".id", "")
+
+    async def update_mangle_rule(self, rule_id: str, payload: Dict[str, Any]) -> bool:
+        """Update an existing firewall mangle rule."""
+        async with self._get_client() as client:
+            resp = await client.patch(f"/ip/firewall/mangle/{rule_id}", json=payload)
+            return resp.status_code in (200, 201, 204)
+
+    async def delete_mangle_rule(self, rule_id: str) -> None:
+        """Delete a firewall mangle rule."""
+        async with self._get_client() as client:
+            resp = await client.delete(f"/ip/firewall/mangle/{rule_id}")
+            resp.raise_for_status()
 
     async def monitor_interface_traffic(self, interface_names: List[str]) -> List[Dict[str, Any]]:
         """Fetch real-time traffic bandwidth rates using /interface/monitor-traffic."""

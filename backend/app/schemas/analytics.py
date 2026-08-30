@@ -58,6 +58,28 @@ class DeviceTrafficSummary(BaseModel):
     is_hidden: bool = False
 
 
+class AccountingHealth(BaseModel):
+    """Cross-check between gateway volume and per-device accounted volume.
+
+    The gateway figure comes from WAN interface counters; the accounted figure is
+    the sum of per-device mangle counters. A large gap means the per-device
+    accounting path is broken and the breakdown below must not be trusted.
+
+    This exists because the previous implementation silently reported
+    ``max(gateway, users, devices)``, which made a totally dead per-device
+    accounting path look like a plausible dashboard for two days.
+    """
+    gateway_bytes: int = 0
+    accounted_bytes: int = 0
+    coverage_pct: float = 0.0
+    # 'ok'       - device counters track the gateway
+    # 'partial'  - range predates per-device accounting; breakdown is incomplete
+    # 'degraded' - accounting is active but attributing almost nothing (a fault)
+    # 'no_data'  - nothing recorded for this range yet
+    status: str = "ok"
+    message: Optional[str] = None
+
+
 class TrafficAnalyticsResponse(BaseModel):
     """Comprehensive historical traffic accounting across Gateway, Users, and Devices."""
     start_date: date
@@ -68,3 +90,4 @@ class TrafficAnalyticsResponse(BaseModel):
     users: List[UserTrafficSummary]
     devices: List[DeviceTrafficSummary]
     timeline: List[DailyTrafficPoint]
+    accounting_health: AccountingHealth = AccountingHealth()

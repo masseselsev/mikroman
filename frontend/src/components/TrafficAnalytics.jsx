@@ -18,7 +18,8 @@ import {
   Zap,
   Activity,
   Filter,
-  EyeOff
+  EyeOff,
+  AlertTriangle
 } from 'lucide-react';
 
 const PRESETS = [
@@ -112,6 +113,8 @@ export function TrafficAnalytics({ activeRouter }) {
   };
 
   const gateway = data?.gateway || { total_bytes_in: 0, total_bytes_out: 0, total_bytes: 0, monitored_interfaces: [] };
+  // Cross-check between WAN-measured gateway volume and per-device accounted volume.
+  const health = data?.accounting_health || { status: 'no_data', coverage_pct: 0, message: null };
   const users = data?.users || [];
   const devices = data?.devices || [];
   const timeline = data?.timeline || [];
@@ -222,6 +225,43 @@ export function TrafficAnalytics({ activeRouter }) {
       </div>
 
       {/* Gateway Executive Summary Cards */}
+      {/* Accounting coverage notice. The gateway total is measured at the WAN
+          interface; the per-user/per-device breakdown is measured per device.
+          When the two disagree the breakdown is incomplete and must say so
+          rather than quietly showing plausible-looking zeros. */}
+      {health.status !== 'ok' && health.status !== 'no_data' && (
+        <div
+          className="card"
+          style={{
+            padding: '12px 16px',
+            display: 'flex',
+            alignItems: 'flex-start',
+            gap: 12,
+            borderLeft: `3px solid ${health.status === 'degraded' ? 'var(--color-danger, #e74c3c)' : 'var(--color-warning, #f39c12)'}`
+          }}
+        >
+          <AlertTriangle
+            size={18}
+            style={{
+              flexShrink: 0,
+              marginTop: 2,
+              color: health.status === 'degraded' ? 'var(--color-danger, #e74c3c)' : 'var(--color-warning, #f39c12)'
+            }}
+          />
+          <div>
+            <div style={{ fontWeight: 700, fontSize: '0.82rem', color: 'var(--text-primary)' }}>
+              {health.status === 'degraded' ? t('acct_degraded_title') : t('acct_partial_title')}
+              <span className="font-mono" style={{ fontWeight: 600, color: 'var(--text-muted)', marginLeft: 8 }}>
+                {t('acct_coverage')}: {roundPct(health.coverage_pct)}%
+              </span>
+            </div>
+            <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginTop: 2 }}>
+              {health.message}
+            </div>
+          </div>
+        </div>
+      )}
+
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 14 }}>
         {/* Total Consumed */}
         <div className="card" style={{ padding: '16px 18px', display: 'flex', alignItems: 'center', gap: 14 }}>
@@ -476,7 +516,8 @@ export function TrafficAnalytics({ activeRouter }) {
                 <thead>
                   <tr style={{ borderBottom: '1px solid var(--border-color)', textAlign: 'left', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
                     <th style={{ padding: '8px 12px' }}>{t('table_user')}</th>
-                    <th style={{ padding: '8px 12px' }}>{t('tab_devices')}</th>
+                    {/* device count for this user - not the "Unassigned Devices" tab label */}
+                    <th style={{ padding: '8px 12px' }}>{t('table_devices')}</th>
                     <th style={{ padding: '8px 12px' }}>{t('total_download')} (RX)</th>
                     <th style={{ padding: '8px 12px' }}>{t('total_upload')} (TX)</th>
                     <th style={{ padding: '8px 12px' }}>{t('total_combined')}</th>

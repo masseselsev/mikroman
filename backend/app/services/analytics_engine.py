@@ -15,6 +15,7 @@ from backend.app.db.models import (
     User,
 )
 from backend.app.schemas.analytics import (
+    AccountingHealth,
     DailyTrafficPoint,
     DeviceTrafficSummary,
     GatewayTrafficSummary,
@@ -156,7 +157,11 @@ class AnalyticsEngine:
 
         devices_query = select(Device)
         if router_id:
-            devices_query = devices_query.where(Device.router_id == router_id)
+            # Devices discovered before multi-router support have a NULL router_id.
+            # Filtering them out silently removed real clients from every view.
+            devices_query = devices_query.where(
+                (Device.router_id == router_id) | (Device.router_id.is_(None))
+            )
         dev_res = await session.execute(devices_query)
         all_devices = dev_res.scalars().all()
 
@@ -267,15 +272,35 @@ class AnalyticsEngine:
             cur_d += timedelta(days=1)
 
         # 5. Calculate Total Gateway Consumption
+        #
+        # The gateway total is measured at the WAN interface and is authoritative.
+        # It is deliberately NOT max()'d with the user/device aggregations: doing
+        # so let a completely dead per-device accounting path masquerade as a
+        # healthy dashboard. When no gateway sample exists at all, fall back to
+        # the accounted sum so a fresh install still shows something, and report
+        # that fact through accounting_health.
         sum_dev_in = sum(v[0] for v in dev_totals.values())
         sum_dev_out = sum(v[1] for v in dev_totals.values())
         sum_user_in = sum(v[0] for v in user_totals.values())
         sum_user_out = sum(v[1] for v in user_totals.values())
+        accounted_in = max(sum_dev_in, sum_user_in)
+        accounted_out = max(sum_dev_out, sum_user_out)
 
-        # Effective total gateway bandwidth is the maximum of interface / user / device aggregations
-        gateway_in = max(r_gw_in, sum_dev_in, sum_user_in)
-        gateway_out = max(r_gw_out, sum_dev_out, sum_user_out)
+        has_gateway_sample = (r_gw_in + r_gw_out) > 0
+        if has_gateway_sample:
+            gateway_in, gateway_out = r_gw_in, r_gw_out
+        else:
+            gateway_in, gateway_out = accounted_in, accounted_out
         gateway_total = gateway_in + gateway_out
+
+        from backend.app.services.traffic_accounting import TrafficAccountingService
+        accounting_health = cls._assess_accounting_health(
+            gateway_bytes=gateway_total,
+            accounted_bytes=accounted_in + accounted_out,
+            has_gateway_sample=has_gateway_sample,
+            window_start=start_date,
+            accounting_started=await TrafficAccountingService.get_accounting_started(session),
+        )
 
         # 6. Build User Traffic Summaries
         user_summaries: List[UserTrafficSummary] = []
@@ -354,7 +379,77 @@ class AnalyticsEngine:
             gateway=gateway_summary,
             users=user_summaries,
             devices=device_summaries,
-            timeline=timeline
+            timeline=timeline,
+            accounting_health=accounting_health
+        )
+
+    @staticmethod
+    def _assess_accounting_health(
+        gateway_bytes: int,
+        accounted_bytes: int,
+        has_gateway_sample: bool,
+        window_start: Optional[date] = None,
+        accounting_started: Optional[date] = None
+    ) -> AccountingHealth:
+        """Compare per-device accounted volume against measured gateway volume.
+
+        Surfaces a broken accounting path instead of hiding it behind a plausible
+        looking total. Thresholds are deliberately loose: LAN-to-LAN traffic and
+        router-local traffic legitimately never appear in per-device counters.
+        """
+        if not has_gateway_sample and accounted_bytes == 0:
+            return AccountingHealth(
+                gateway_bytes=gateway_bytes,
+                accounted_bytes=accounted_bytes,
+                coverage_pct=0.0,
+                status="no_data",
+                message="No traffic samples recorded yet for this period."
+            )
+
+        coverage = round((accounted_bytes / gateway_bytes * 100), 2) if gateway_bytes > 0 else 0.0
+
+        # Gateway counters predate per-device accounting. Judging coverage over a
+        # window that starts earlier compares a full period of gateway volume
+        # against a partial period of device volume, which is not a fault.
+        if (
+            accounting_started is not None
+            and window_start is not None
+            # '<=' because the start day itself is only partially covered: gateway
+            # counters ran all day, device counters only from the moment the
+            # accounting rules were installed.
+            and window_start <= accounting_started
+        ):
+            return AccountingHealth(
+                gateway_bytes=gateway_bytes,
+                accounted_bytes=accounted_bytes,
+                coverage_pct=coverage,
+                status="partial",
+                message=(
+                    f"Per-device accounting started on {accounting_started.isoformat()}. "
+                    f"Gateway totals include earlier traffic that predates it, so the "
+                    f"per-user and per-device breakdown covers only part of this range."
+                )
+            )
+
+        if gateway_bytes > 0 and coverage < 50.0:
+            return AccountingHealth(
+                gateway_bytes=gateway_bytes,
+                accounted_bytes=accounted_bytes,
+                coverage_pct=coverage,
+                status="degraded",
+                message=(
+                    f"Only {coverage:.1f}% of gateway traffic could be attributed to "
+                    f"a device. The per-device accounting rules on RouterOS are "
+                    f"likely missing or not matching; per-user and per-device "
+                    f"figures below are incomplete."
+                )
+            )
+
+        return AccountingHealth(
+            gateway_bytes=gateway_bytes,
+            accounted_bytes=accounted_bytes,
+            coverage_pct=coverage,
+            status="ok"
         )
 
     @classmethod
@@ -401,15 +496,20 @@ class AnalyticsEngine:
         router_id: int,
         client: Any
     ) -> None:
-        """Periodic background snapshot to accumulate daily traffic deltas from RouterOS Simple Queues and Interfaces."""
+        """Accumulate daily gateway rollups from the monitored WAN interface counters.
+
+        Per-user and per-device volume is NOT derived here. Simple Queue byte
+        counters were measured to stay frozen at zero on RouterOS 7.25 while
+        traffic flowed, so that accounting lives in
+        ``backend.app.services.traffic_accounting`` which reads firewall mangle
+        counters instead. This method owns the gateway level only.
+        """
         today = date.today()
         today_str = str(today)
 
         try:
             baselines = await cls._get_baselines(session)
             r_baselines = baselines.setdefault("router", {})
-            u_baselines = baselines.setdefault("users", {})
-            d_baselines = baselines.setdefault("devices", {})
 
             # 1. Router WAN Interface Totals
             monitored_setting = await session.get(AppSetting, f"monitored_interfaces_{router_id}" if router_id else "monitored_interfaces_default")
@@ -469,127 +569,6 @@ class AnalyticsEngine:
                         bytes_in=d_rx,
                         bytes_out=d_tx
                     ))
-
-            # 2. Simple Queues for Users & Devices
-            queues = await client.get_simple_queues()
-            q_map = {q.name: q for q in queues if getattr(q, "name", None)}
-
-            # Users
-            users_res = await session.execute(select(User))
-            users = users_res.scalars().all()
-            for u in users:
-                matched_q = q_map.get(f"mikroman-{u.name}") or q_map.get(f"mikroman-user-{u.id}")
-                if not matched_q:
-                    for q in queues:
-                        comment = getattr(q, "comment", "") or ""
-                        if f"user_{u.id}" in comment or f":managed:{u.name}" in comment:
-                            matched_q = q
-                            break
-
-                if matched_q:
-                    raw_bytes = getattr(matched_q, "bytes", "0/0") or "0/0"
-                    if "/" in raw_bytes:
-                        out_str, in_str = raw_bytes.split("/", 1)
-                        b_out, b_in = int(out_str or 0), int(in_str or 0)
-                    else:
-                        b_out, b_in = 0, 0
-
-                    u_key = str(u.id)
-                    prev_u = u_baselines.get(u_key)
-                    if prev_u is None:
-                        u_baselines[u_key] = {"rx": b_in, "tx": b_out, "last_date": today_str}
-                        u_stmt = select(TrafficRollup).where(
-                            TrafficRollup.user_id == u.id,
-                            TrafficRollup.record_date == today
-                        )
-                        u_res = await session.execute(u_stmt)
-                        if not u_res.scalar_one_or_none():
-                            session.add(TrafficRollup(
-                                user_id=u.id,
-                                record_date=today,
-                                bytes_in=0,
-                                bytes_out=0
-                            ))
-                    else:
-                        d_u_in = cls._compute_delta(b_in, prev_u.get("rx"))
-                        d_u_out = cls._compute_delta(b_out, prev_u.get("tx"))
-                        u_baselines[u_key] = {"rx": b_in, "tx": b_out, "last_date": today_str}
-
-                        u_stmt = select(TrafficRollup).where(
-                            TrafficRollup.user_id == u.id,
-                            TrafficRollup.record_date == today
-                        )
-                        u_res = await session.execute(u_stmt)
-                        u_rollup = u_res.scalar_one_or_none()
-                        if u_rollup:
-                            u_rollup.bytes_in += d_u_in
-                            u_rollup.bytes_out += d_u_out
-                        else:
-                            session.add(TrafficRollup(
-                                user_id=u.id,
-                                record_date=today,
-                                bytes_in=d_u_in,
-                                bytes_out=d_u_out
-                            ))
-
-            # Devices
-            devices_q = select(Device)
-            if router_id:
-                devices_q = devices_q.where(Device.router_id == router_id)
-            devices_res = await session.execute(devices_q)
-            devices = devices_res.scalars().all()
-            for d in devices:
-                matched_dev_q = None
-                for q in queues:
-                    comment = getattr(q, "comment", "") or ""
-                    if f"dev_{d.id}" in comment:
-                        matched_dev_q = q
-                        break
-                if matched_dev_q:
-                    raw_bytes = getattr(matched_dev_q, "bytes", "0/0") or "0/0"
-                    if "/" in raw_bytes:
-                        out_str, in_str = raw_bytes.split("/", 1)
-                        d_out, d_in = int(out_str or 0), int(in_str or 0)
-                    else:
-                        d_out, d_in = 0, 0
-
-                    d_key = str(d.id)
-                    prev_d = d_baselines.get(d_key)
-                    if prev_d is None:
-                        d_baselines[d_key] = {"rx": d_in, "tx": d_out, "last_date": today_str}
-                        d_stmt = select(DeviceTrafficRollup).where(
-                            DeviceTrafficRollup.device_id == d.id,
-                            DeviceTrafficRollup.record_date == today
-                        )
-                        d_res = await session.execute(d_stmt)
-                        if not d_res.scalar_one_or_none():
-                            session.add(DeviceTrafficRollup(
-                                device_id=d.id,
-                                record_date=today,
-                                bytes_in=0,
-                                bytes_out=0
-                            ))
-                    else:
-                        d_d_in = cls._compute_delta(d_in, prev_d.get("rx"))
-                        d_d_out = cls._compute_delta(d_out, prev_d.get("tx"))
-                        d_baselines[d_key] = {"rx": d_in, "tx": d_out, "last_date": today_str}
-
-                        d_stmt = select(DeviceTrafficRollup).where(
-                            DeviceTrafficRollup.device_id == d.id,
-                            DeviceTrafficRollup.record_date == today
-                        )
-                        d_res = await session.execute(d_stmt)
-                        d_rollup = d_res.scalar_one_or_none()
-                        if d_rollup:
-                            d_rollup.bytes_in += d_d_in
-                            d_rollup.bytes_out += d_d_out
-                        else:
-                            session.add(DeviceTrafficRollup(
-                                device_id=d.id,
-                                record_date=today,
-                                bytes_in=d_d_in,
-                                bytes_out=d_d_out
-                            ))
 
             # Persist updated baselines
             await cls._save_baselines(session, baselines)

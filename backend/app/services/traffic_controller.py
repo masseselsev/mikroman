@@ -6,6 +6,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.db.models import AppSetting, Device, User
 from backend.app.schemas.traffic import SimpleQueueItem
+from backend.app.services.queue_identity import (
+    DEVICE_QUEUE_COMMENT,
+    USER_QUEUE_COMMENT,
+    USER_QUEUED_COMMENT,
+    normalize_parent,
+    normalize_rate_limit,
+    normalize_target,
+    queue_matches_device,
+    queue_matches_user,
+)
 from backend.app.services.routeros import RouterOSClient
 
 logger = logging.getLogger("mikroman.traffic_controller")
@@ -94,9 +104,11 @@ class TrafficController:
         """
         valid_ips = [ip.strip() for ip in ip_addresses if ip and ip.strip()]
         queue_name = f"mikroman-{user_name}"
-        comment_tag = f"mikroman:managed:{user_name}"
+        comment_tag = USER_QUEUE_COMMENT.format(user_id=user_id)
         max_limit = parse_bandwidth_string(speed_limit)
-        target_str = ",".join(valid_ips)
+        # Send targets in the same /32 host form RouterOS stores them in, so the
+        # value read back on the next tick compares equal and no write is issued.
+        target_str = ",".join(f"{ip}/32" if "/" not in ip else ip for ip in valid_ips)
 
         try:
             existing_queues: List[SimpleQueueItem] = await self.router_client.get_simple_queues()
@@ -104,19 +116,23 @@ class TrafficController:
             logger.error(f"Failed to fetch queues for sync: {e}")
             return None
 
-        # Find existing queue for this user by comment tag or name variants
+        # Find existing queue for this user by exact comment tag or name variants
         matched_queue = None
         for q in existing_queues:
-            if (q.comment and (f"user_{user_id}" in q.comment or f":managed:{user_name}" in q.comment)) or q.name in (queue_name, f"mikroman-user-{user_id}", user_name):
+            if queue_matches_user(q, user_id, user_name):
                 matched_queue = q
                 break
 
         # Manage mikroman_queued address list for FastTrack bypass (required for Simple Queues accounting)
         try:
             existing_queued = await self.router_client.get_address_list("mikroman_queued")
+            queued_tag = USER_QUEUED_COMMENT.format(user_id=user_id)
+            legacy_tag = f"mikroman:queued:{user_name}"
+            # Exact tag matching only - a substring test let user "M" claim the
+            # entries belonging to "Mark".
             user_queued_entries = [
                 item for item in existing_queued
-                if (item.get("comment") and (f"user_{user_id}" in item.get("comment") or f":queued:{user_name}" in item.get("comment")))
+                if (item.get("comment") or "").strip() in (queued_tag, legacy_tag)
                 or item.get("address") in valid_ips
             ]
 
@@ -127,17 +143,17 @@ class TrafficController:
                         await self.router_client.add_to_address_list(
                             address=ip,
                             list_name="mikroman_queued",
-                            comment=f"mikroman:queued:{user_name}"
+                            comment=queued_tag
                         )
-                    elif matching_entry.get("comment") != f"mikroman:queued:{user_name}":
-                        # Refresh comment from legacy user_id to user_name
+                    elif (matching_entry.get("comment") or "").strip() != queued_tag:
+                        # Migrate a legacy name-based tag to the stable id-based one
                         item_id = matching_entry.get(".id")
                         if item_id:
                             await self.router_client.remove_from_address_list(item_id)
                             await self.router_client.add_to_address_list(
                                 address=ip,
                                 list_name="mikroman_queued",
-                                comment=f"mikroman:queued:{user_name}"
+                                comment=queued_tag
                             )
                 # Ensure FastTrack bypass rule is active
                 await self.ensure_fasttrack_exemption()
@@ -159,12 +175,15 @@ class TrafficController:
             return None
 
         if matched_queue and matched_queue.id:
-            # Only send update PATCH if fields actually changed
+            # Only send update PATCH if fields actually changed. Values are
+            # compared in RouterOS' own normalised form ("/32" targets, bps rate
+            # limits); comparing raw strings made this permanently true and
+            # rewrote every queue on every poll tick.
             needs_update = (
                 matched_queue.name != queue_name
-                or matched_queue.max_limit != max_limit
-                or (matched_queue.target and matched_queue.target.strip() != target_str.strip())
-                or matched_queue.comment != comment_tag
+                or normalize_rate_limit(matched_queue.max_limit) != normalize_rate_limit(max_limit)
+                or normalize_target(matched_queue.target) != normalize_target(target_str)
+                or (matched_queue.comment or "") != comment_tag
             )
             if needs_update:
                 await self.router_client.update_simple_queue(
@@ -267,7 +286,7 @@ class TrafficController:
         # Sanitize name for RouterOS
         safe_dev_name = "".join(c for c in dev_display if c.isalnum() or c in ("-", "_")).strip() or f"dev{device.id}"
         queue_name = f"mikroman-{user_name}-{safe_dev_name}"
-        comment_tag = f"mikroman:managed:dev_{device.id}"
+        comment_tag = DEVICE_QUEUE_COMMENT.format(device_id=device.id)
 
         try:
             existing_queues: List[SimpleQueueItem] = await self.router_client.get_simple_queues()
@@ -275,10 +294,10 @@ class TrafficController:
             logger.error(f"Failed to fetch queues for device sync: {e}")
             return None
 
-        # Find existing device child queue
+        # Find existing device child queue by exact comment tag
         matched_queue = None
         for q in existing_queues:
-            if (q.comment and f"dev_{device.id}" in q.comment) or q.name in (queue_name, f"mikroman-dev-{device.id}"):
+            if queue_matches_device(q, device.id):
                 matched_queue = q
                 break
 
@@ -326,10 +345,10 @@ class TrafficController:
             # Only send update PATCH if fields actually changed
             needs_update = (
                 matched_queue.name != queue_name
-                or matched_queue.max_limit != max_limit
-                or (matched_queue.target and matched_queue.target.strip() != target_str.strip())
-                or getattr(matched_queue, "parent", None) != parent_name
-                or matched_queue.comment != comment_tag
+                or normalize_rate_limit(matched_queue.max_limit) != normalize_rate_limit(max_limit)
+                or normalize_target(matched_queue.target) != normalize_target(target_str)
+                or normalize_parent(matched_queue.parent) != normalize_parent(parent_name)
+                or (matched_queue.comment or "") != comment_tag
             )
             if needs_update:
                 await self.router_client.update_simple_queue(
@@ -410,34 +429,124 @@ class TrafficController:
 
         return True
 
+    @staticmethod
+    async def _todays_user_volume(session: AsyncSession) -> Dict[int, Tuple[int, int]]:
+        """Today's accumulated (download, upload) bytes per user from the rollups."""
+        from datetime import date
+
+        from backend.app.db.models import TrafficRollup
+
+        stmt = select(
+            TrafficRollup.user_id, TrafficRollup.bytes_in, TrafficRollup.bytes_out
+        ).where(TrafficRollup.record_date == date.today())
+        rows = (await session.execute(stmt)).all()
+        return {row[0]: (int(row[1] or 0), int(row[2] or 0)) for row in rows}
+
+    async def reconcile_managed_queues(self, session: AsyncSession) -> int:
+        """Delete managed Simple Queues whose owning user or device is gone.
+
+        Per-object sync can only correct queues it is asked about, so a queue
+        whose owner was deleted - or a device child queue whose custom limit was
+        reverted to "inherit user" - was never revisited and stayed on RouterOS
+        indefinitely, still carrying its old target and ``max-limit``.
+
+        Only queues tagged as MikroMan-managed are considered; operator-created
+        queues are never touched.
+
+        Returns:
+            Number of stale queues removed.
+        """
+        try:
+            queues = await self.router_client.get_simple_queues()
+        except Exception as e:
+            logger.warning(f"Could not read queues for reconciliation: {e}")
+            return 0
+
+        users = (await session.execute(select(User))).scalars().all()
+        devices = (await session.execute(select(Device))).scalars().all()
+
+        # A user queue is wanted only while the user has somewhere to point it.
+        # Derived from the device rows directly rather than the ORM relationship,
+        # which can be stale on a long-lived session.
+        live_user_ids = {
+            d.user_id for d in devices
+            if d.user_id and d.is_active and d.ip_address
+        }
+        name_to_user_id = {u.name: u.id for u in users}
+        # A device keeps its own child queue only when it is shaped separately
+        # from its parent user: unassigned (quarantine) or a custom limit.
+        live_device_ids = {
+            d.id for d in devices
+            if d.is_active and d.ip_address and (d.user_id is None or d.speed_limit != "default")
+        }
+
+        removed = 0
+        for queue in queues:
+            comment = (queue.comment or "").strip()
+            if not comment.startswith("mikroman:managed:"):
+                continue
+            suffix = comment[len("mikroman:managed:"):]
+
+            if suffix.startswith("user_"):
+                keep = self._parse_id(suffix[5:]) in live_user_ids
+            elif suffix.startswith("dev_"):
+                keep = self._parse_id(suffix[4:]) in live_device_ids
+            else:
+                # Legacy name-based tag from an older version.
+                keep = name_to_user_id.get(suffix) in live_user_ids
+
+            if not keep and queue.id:
+                try:
+                    await self.router_client.delete_simple_queue(queue.id)
+                    removed += 1
+                    logger.info(f"Removed stale managed queue '{queue.name}' ({comment})")
+                except Exception as e:
+                    logger.warning(f"Could not remove stale queue {queue.id}: {e}")
+
+        return removed
+
+    @staticmethod
+    def _parse_id(raw: str) -> Optional[int]:
+        """Parse a numeric id out of a comment tag, or None if malformed."""
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return None
+
     async def get_realtime_traffic_stats(self, session: AsyncSession) -> List[Dict[str, Any]]:
-        """Fetch live queues and map metrics to active users."""
+        """Live per-user throughput and today's volume, measured from firewall counters.
+
+        Simple Queue ``rate``/``bytes`` are deliberately NOT used: on RouterOS 7.x
+        they were observed frozen (one user pinned at 488 Kbps / 2.4 Mbps for
+        hours while the WAN was idle, everyone else stuck at 0 bps). Rates are
+        differentiated from the per-device mangle counters, and today's totals
+        come from the same rollups the analytics view uses, so the dashboard and
+        the reports can never disagree.
+        """
+        from backend.app.services.traffic_accounting import (
+            aggregate_user_rates,
+            live_rate_tracker,
+        )
+
         result = await session.execute(select(User))
         users = result.scalars().all()
 
         try:
-            queues = await self.router_client.get_simple_queues()
-            queue_map = {q.name: q for q in queues}
+            rules = await self.router_client.get_mangle_rules()
         except Exception as e:
-            logger.error(f"Failed to fetch real-time queue stats: {e}")
-            queues = []
-            queue_map = {}
+            logger.warning(f"Failed to fetch accounting counters for live rates: {e}")
+            rules = []
+
+        per_device_rates = live_rate_tracker.sample(rules)
+        user_rates = await aggregate_user_rates(session, per_device_rates)
+        user_volume = await self._todays_user_volume(session)
 
         user_metrics = []
         for user in users:
-            matched_q = queue_map.get(f"mikroman-{user.name}") or queue_map.get(f"mikroman-user-{user.id}") or queue_map.get(user.name)
-            if not matched_q:
-                for q in queues:
-                    if q.comment and (f"user_{user.id}" in q.comment or f":managed:{user.name}" in q.comment):
-                        matched_q = q
-                        break
-
-            rate_in, rate_out = (0, 0)
-            bytes_in, bytes_out = (0, 0)
-            if matched_q:
-                # rate: "upload/download", bytes: "upload/download"
-                rate_out, rate_in = parse_rate_string(matched_q.rate)
-                bytes_out, bytes_in = parse_bytes_string(matched_q.bytes)
+            rates = user_rates.get(user.id, {})
+            rate_in = int(rates.get("rx_bps", 0))
+            rate_out = int(rates.get("tx_bps", 0))
+            bytes_in, bytes_out = user_volume.get(user.id, (0, 0))
 
             user_metrics.append({
                 "user_id": user.id,
