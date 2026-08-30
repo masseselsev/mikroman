@@ -76,7 +76,7 @@ export function RouterSelector({ routers = [], activeRouter, onSelectRouter, onA
             {t('switch_router')}
           </div>
 
-          <div style={{ maxHeight: 200, overflowY: 'auto' }}>
+          <div style={{ maxHeight: 240, overflowY: 'auto' }}>
             {routers.map(r => {
               const isSelected = r.id === current?.id;
               return (
@@ -98,23 +98,29 @@ export function RouterSelector({ routers = [], activeRouter, onSelectRouter, onA
                     textAlign: 'left',
                     color: 'var(--text-primary)',
                     cursor: 'pointer',
-                    fontSize: '0.85rem'
+                    fontSize: '0.85rem',
+                    gap: 8
                   }}
                 >
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, overflow: 'hidden' }}>
-                    <span
-                      style={{
-                        width: 8,
-                        height: 8,
-                        borderRadius: '50%',
-                        background: r.is_online ? 'var(--color-success)' : 'var(--text-muted)'
-                      }}
-                    />
-                    <span style={{ fontWeight: isSelected ? 700 : 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {r.name}
-                    </span>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 2, overflow: 'hidden', flex: 1 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <span
+                        style={{
+                          width: 7,
+                          height: 7,
+                          borderRadius: '50%',
+                          background: r.is_online ? 'var(--color-success)' : 'var(--text-muted)'
+                        }}
+                      />
+                      <span style={{ fontWeight: isSelected ? 700 : 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {r.name}
+                      </span>
+                    </div>
+                    <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', paddingLeft: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {r.board_name || r.model || 'MikroTik'} {r.ros_version ? `• ROS ${r.ros_version}` : ''}
+                    </div>
                   </div>
-                  {isSelected && <Check size={14} style={{ color: 'var(--color-primary)' }} />}
+                  {isSelected && <Check size={14} style={{ color: 'var(--color-primary)', flexShrink: 0 }} />}
                 </button>
               );
             })}

@@ -47,7 +47,9 @@ async def list_routers(
                     res = await client.get_system_resource()
                     item.is_online = True
                     item.ros_version = res.version
-                    item.board_name = res.board_name
+                    item.board_name = res.board_name or res.model
+                    item.model = res.model
+                    item.architecture = res.architecture_name
                     item.cpu_load = res.cpu_load
                 else:
                     item.is_online = False

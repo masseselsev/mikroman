@@ -48,11 +48,26 @@ export const api = {
   deleteUser: (id) => request(`/users/${id}`, { method: 'DELETE' }),
 
   // Devices
-  getDevices: (unassignedOnly = false) => request(`/devices?unassigned_only=${unassignedOnly}`),
+  getDevices: (unassignedOnly = false, showHidden = true) => request(`/devices?unassigned_only=${unassignedOnly}&show_hidden=${showHidden}`),
   scanNetwork: () => request('/devices/scan', { method: 'POST' }),
   updateDevice: (id, data) => request(`/devices/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  toggleHideDevice: (id, isHidden) => request(`/devices/${id}`, { method: 'PATCH', body: JSON.stringify({ is_hidden: isHidden }) }),
+  getDeviceHistory: (id) => request(`/devices/${id}/history`),
+  getMergeSuggestions: () => request('/devices/suggestions'),
+  mergeDevice: (id, targetDeviceId, note = '') => request(`/devices/${id}/merge`, {
+    method: 'POST',
+    body: JSON.stringify({ target_device_id: targetDeviceId, note })
+  }),
+  setDeviceLimit: (deviceId, speedLimit) => request(`/devices/${deviceId}/limit`, {
+    method: 'POST',
+    body: JSON.stringify({ speed_limit: speedLimit })
+  }),
+  toggleDevicePause: (deviceId, isPaused) => request(`/devices/${deviceId}/pause`, {
+    method: 'POST',
+    body: JSON.stringify({ is_paused: isPaused })
+  }),
 
-  // Traffic
+  // Traffic & Analytics
   setUserLimit: (userId, speedLimit) => request(`/traffic/users/${userId}/limit`, {
     method: 'POST',
     body: JSON.stringify({ speed_limit: speedLimit })
@@ -61,6 +76,38 @@ export const api = {
     method: 'POST',
     body: JSON.stringify({ is_paused: isPaused })
   }),
+  getTrafficAnalytics: ({ preset = '7d', startDate = null, endDate = null, routerId = null } = {}) => {
+    let url = `/analytics/traffic?preset=${preset}`;
+    if (startDate) url += `&start_date=${startDate}`;
+    if (endDate) url += `&end_date=${endDate}`;
+    if (routerId) url += `&router_id=${routerId}`;
+    return request(url);
+  },
+  getBillingCycleConfig: () => request('/analytics/billing-cycle'),
+  saveBillingCycleConfig: (anchorDay) => request('/analytics/billing-cycle', {
+    method: 'POST',
+    body: JSON.stringify({ anchor_day: Number(anchorDay) })
+  }),
+
+  // Metrics & Graphs
+  getSystemMetrics: (range = '1h', routerId = null) => request(`/metrics/system?range=${range}${routerId ? `&router_id=${routerId}` : ''}`),
+  getInterfaceMetrics: (range = '1h', interfaces = null, routerId = null) => {
+    let url = `/metrics/interfaces?range=${range}`;
+    if (interfaces) url += `&interfaces=${encodeURIComponent(Array.isArray(interfaces) ? interfaces.join(',') : interfaces)}`;
+    if (routerId) url += `&router_id=${routerId}`;
+    return request(url);
+  },
+  getAvailableInterfaces: (routerId = null) => request(`/metrics/interfaces/list${routerId ? `?router_id=${routerId}` : ''}`),
+  getMonitoredInterfacesConfig: (routerId = null) => request(`/metrics/config${routerId ? `?router_id=${routerId}` : ''}`),
+  saveMonitoredInterfacesConfig: (routerIdOrPayload, selectedInterfaces) => {
+    const payload = (typeof routerIdOrPayload === 'object' && routerIdOrPayload !== null)
+      ? routerIdOrPayload
+      : { router_id: routerIdOrPayload, selected_interfaces: selectedInterfaces };
+    return request('/metrics/config', {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    });
+  },
 
   // System & Settings
   getSystemStatus: () => request('/system/status'),
@@ -69,5 +116,5 @@ export const api = {
   getSettings: () => request('/system/settings'),
   saveSettings: (settings) => request('/system/settings', { method: 'POST', body: JSON.stringify(settings) }),
   rebootRouter: () => request('/system/reboot', { method: 'POST' }),
-  testTelegram: () => request('/telegram/test', { method: 'POST' }),
+  testTelegram: (data = {}) => request('/telegram/test', { method: 'POST', body: JSON.stringify(data) }),
 };

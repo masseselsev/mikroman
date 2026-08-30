@@ -1,10 +1,53 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useI18n } from '../context/I18nContext';
-import { RefreshCw, UserPlus, Laptop, Smartphone, Wifi, Tag } from 'lucide-react';
+import { api } from '../api/client';
+import { DeviceModal } from './DeviceModal';
+import { RefreshCw, UserPlus, Laptop, Smartphone, Wifi, Tag, History, Link, X, Clock, ShieldAlert, Sliders, Pause, Play, EyeOff, Eye } from 'lucide-react';
 
 export function DeviceInbox({ devices = [], users = [], onAssign, onScan, isScanning }) {
   const { t } = useI18n();
   const [selectedUserMap, setSelectedUserMap] = useState({});
+  const [suggestions, setSuggestions] = useState([]);
+  const [historyDevice, setHistoryDevice] = useState(null);
+  const [editingDevice, setEditingDevice] = useState(null);
+  const [deviceHistory, setDeviceHistory] = useState([]);
+  const [loadingHistory, setLoadingHistory] = useState(false);
+  const [mergingId, setMergingId] = useState(null);
+  const [showHidden, setShowHidden] = useState(false);
+  const [autoScanEnabled, setAutoScanEnabled] = useState(true);
+
+  // Load auto-scan setting
+  useEffect(() => {
+    api.getSettings().then(res => {
+      if (res.data?.auto_scan_enabled !== undefined) {
+        setAutoScanEnabled(res.data.auto_scan_enabled !== 'false');
+      }
+    }).catch(() => {});
+  }, []);
+
+  const handleToggleAutoScan = async () => {
+    const nextState = !autoScanEnabled;
+    setAutoScanEnabled(nextState);
+    try {
+      await api.saveSettings({ auto_scan_enabled: nextState ? 'true' : 'false' });
+    } catch (e) {
+      console.debug('Failed to toggle auto scan setting', e);
+    }
+  };
+
+  // Fetch smart suggestions when devices change
+  useEffect(() => {
+    loadSuggestions();
+  }, [devices]);
+
+  const loadSuggestions = async () => {
+    try {
+      const res = await api.getMergeSuggestions();
+      setSuggestions(res.data || []);
+    } catch (e) {
+      console.debug('Failed to load suggestions', e);
+    }
+  };
 
   const handleUserSelect = (deviceId, userId) => {
     setSelectedUserMap(prev => ({ ...prev, [deviceId]: userId }));
@@ -17,120 +60,405 @@ export function DeviceInbox({ devices = [], users = [], onAssign, onScan, isScan
     }
   };
 
+  const handleMergeClick = async (sourceDeviceId, targetDeviceId, targetName) => {
+    if (!window.confirm(t('merge_confirm', { name: targetName }))) return;
+    setMergingId(sourceDeviceId);
+    try {
+      await api.mergeDevice(sourceDeviceId, targetDeviceId);
+      if (onScan) onScan();
+    } catch (err) {
+      alert(`Merge failed: ${err.message}`);
+    } finally {
+      setMergingId(null);
+    }
+  };
+
+  const handleOpenHistory = async (device) => {
+    setHistoryDevice(device);
+    setLoadingHistory(true);
+    try {
+      const res = await api.getDeviceHistory(device.id);
+      setDeviceHistory(res.data || []);
+    } catch (e) {
+      setDeviceHistory([]);
+    } finally {
+      setLoadingHistory(false);
+    }
+  };
+
+  const visibleDevices = devices.filter(d => showHidden || !d.is_hidden);
+
   return (
     <div>
       {/* Header bar */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 18, flexWrap: 'wrap', gap: 10 }}>
         <div>
           <h2 style={{ fontSize: '1.25rem', fontWeight: 700 }}>{t('tab_devices')}</h2>
-          <p style={{ fontSize: '0.825rem', color: 'var(--text-muted)' }}>
-            {t('unassigned_count', { count: devices.length })}
-          </p>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 4, flexWrap: 'wrap' }}>
+            <p style={{ fontSize: '0.825rem', color: 'var(--text-muted)' }}>
+              {t('unassigned_count', { count: visibleDevices.length })}
+            </p>
+
+            {/* Interactive Auto-Scan Toggle Button */}
+            <button
+              type="button"
+              onClick={handleToggleAutoScan}
+              style={{
+                background: autoScanEnabled ? 'rgba(16, 185, 129, 0.12)' : 'rgba(100, 116, 139, 0.15)',
+                border: `1px solid ${autoScanEnabled ? 'rgba(16, 185, 129, 0.3)' : 'rgba(100, 116, 139, 0.3)'}`,
+                borderRadius: 20,
+                padding: '2px 10px',
+                fontSize: '0.725rem',
+                fontWeight: 600,
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 5,
+                color: autoScanEnabled ? 'var(--color-success)' : 'var(--text-muted)',
+                transition: 'all 0.15s ease'
+              }}
+              title="Click to toggle automatic background discovery"
+            >
+              <span style={{
+                width: 6,
+                height: 6,
+                borderRadius: '50%',
+                background: autoScanEnabled ? 'var(--color-success)' : 'var(--text-muted)',
+                display: 'inline-block'
+              }} />
+              <span>{autoScanEnabled ? t('auto_scan_active') : t('auto_scan_paused')}</span>
+            </button>
+          </div>
         </div>
-        <button
-          className="btn btn-secondary btn-sm"
-          onClick={onScan}
-          disabled={isScanning}
-        >
-          <RefreshCw size={14} className={isScanning ? "live-indicator" : ""} />
-          {t('scan_now')}
-        </button>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          {/* Show Hidden Devices Checkbox */}
+          <label style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
+            fontSize: '0.775rem',
+            color: 'var(--text-muted)',
+            cursor: 'pointer',
+            userSelect: 'none',
+            background: 'var(--bg-card)',
+            padding: '5px 10px',
+            borderRadius: 'var(--radius-md)',
+            border: '1px solid var(--border-color)',
+            height: 32
+          }}>
+            <input
+              type="checkbox"
+              checked={showHidden}
+              onChange={e => setShowHidden(e.target.checked)}
+              style={{ width: 14, height: 14, cursor: 'pointer', accentColor: 'var(--color-primary)' }}
+            />
+            <EyeOff size={13} style={{ color: showHidden ? 'var(--color-primary)' : 'var(--text-muted)' }} />
+            {t('show_hidden_devices')}
+          </label>
+
+          <button
+            className="btn btn-secondary btn-sm"
+            onClick={onScan}
+            disabled={isScanning}
+          >
+            <RefreshCw size={14} className={isScanning ? "live-indicator" : ""} />
+            {t('scan_now')}
+          </button>
+        </div>
       </div>
 
-      {devices.length === 0 ? (
+      {visibleDevices.length === 0 ? (
         <div className="card" style={{ textAlign: 'center', padding: '40px 20px', color: 'var(--text-muted)' }}>
           <div style={{ fontSize: '1rem', fontWeight: 600, marginBottom: 6 }}>{t('no_unassigned')}</div>
           <p style={{ fontSize: '0.85rem' }}>All devices currently active on your network are mapped to user accounts.</p>
         </div>
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(360px, 1fr))', gap: 16 }}>
-          {devices.map(device => (
-            <div key={device.id} className="card" style={{ display: 'flex', flexDirection: 'column', justifyContent: 'space-between', gap: 14 }}>
-              <div>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          {visibleDevices.map(device => {
+            const suggestion = suggestions.find(s => s.unassigned_device_id === device.id);
+
+            return (
+              <div key={device.id} className="card" style={{ display: 'flex', flexDirection: 'column', justifyContent: 'space-between', gap: 12 }}>
+                <div>
+                  {/* Smart Link Suggestion Banner */}
+                  {suggestion && (
                     <div style={{
-                      background: 'var(--bg-secondary)',
-                      color: 'var(--text-primary)',
-                      padding: 8,
-                      borderRadius: 'var(--radius-md)'
+                      background: 'rgba(59, 130, 246, 0.12)',
+                      border: '1px solid rgba(59, 130, 246, 0.35)',
+                      borderRadius: 'var(--radius-sm)',
+                      padding: '8px 10px',
+                      marginBottom: 10,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      gap: 8
                     }}>
-                      <Laptop size={18} />
-                    </div>
-                    <div>
-                      <div style={{ fontWeight: 700, fontSize: '0.95rem' }}>
-                        {device.custom_name || device.hostname || 'Unknown Device'}
+                      <div style={{ fontSize: '0.75rem', color: 'var(--text-primary)' }}>
+                        <div style={{ fontWeight: 700, color: 'var(--color-primary)', display: 'flex', alignItems: 'center', gap: 4 }}>
+                          <Link size={12} />
+                          <span>{t('smart_link_title')}</span>
+                        </div>
+                        <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                          {suggestion.reason}
+                        </div>
                       </div>
-                      <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                        {device.vendor || 'Generic Device'}
-                      </div>
-                    </div>
-                  </div>
-
-                  <span className={`badge ${device.is_active ? 'badge-success' : 'badge-neutral'}`}>
-                    {device.is_active ? t('active_now') : t('idle')}
-                  </span>
-                </div>
-
-                <div style={{
-                  background: 'var(--bg-secondary)',
-                  borderRadius: 'var(--radius-sm)',
-                  padding: '8px 12px',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: 4,
-                  fontSize: '0.8rem'
-                }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <span style={{ color: 'var(--text-muted)' }}>{t('ip_address')}:</span>
-                    <span className="font-mono" style={{ fontWeight: 600 }}>{device.ip_address || 'N/A'}</span>
-                  </div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <span style={{ color: 'var(--text-muted)' }}>{t('mac_address')}:</span>
-                    <span className="font-mono" style={{ color: 'var(--text-secondary)' }}>{device.mac_address}</span>
-                  </div>
-                  {device.last_interface && (
-                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                      <span style={{ color: 'var(--text-muted)' }}>Interface:</span>
-                      <span className="font-mono">{device.last_interface}</span>
+                      <button
+                        className="btn btn-primary btn-sm"
+                        style={{ fontSize: '0.725rem', padding: '4px 8px', whiteSpace: 'nowrap' }}
+                        disabled={mergingId === device.id}
+                        onClick={() => handleMergeClick(device.id, suggestion.suggested_target_device_id, suggestion.target_device_name)}
+                      >
+                        {mergingId === device.id ? 'Linking...' : t('merge_with', { name: suggestion.target_device_name })}
+                      </button>
                     </div>
                   )}
-                  {device.last_wifi_signal && (
+
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <div style={{
+                        background: 'var(--bg-secondary)',
+                        color: 'var(--text-primary)',
+                        padding: 8,
+                        borderRadius: 'var(--radius-md)'
+                      }}>
+                        <Laptop size={18} />
+                      </div>
+                      <div>
+                        <div style={{ fontWeight: 700, fontSize: '0.95rem', display: 'flex', alignItems: 'center', gap: 6 }}>
+                          <span>{device.custom_name || device.hostname || 'Unknown Device'}</span>
+                          {device.is_hidden && (
+                            <span
+                              className="badge"
+                              style={{
+                                fontSize: '0.625rem',
+                                padding: '0px 4px',
+                                background: 'rgba(100, 116, 139, 0.2)',
+                                color: 'var(--text-muted)',
+                                border: '1px solid rgba(100, 116, 139, 0.3)'
+                              }}
+                            >
+                              {t('hidden_badge')}
+                            </span>
+                          )}
+                        </div>
+                        <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                          {device.vendor || 'Generic Device'}
+                        </div>
+                      </div>
+                    </div>
+
+                    <span className={`badge ${device.is_active ? 'badge-success' : 'badge-neutral'}`}>
+                      {device.is_active ? t('active_now') : t('idle')}
+                    </span>
+                  </div>
+
+                  <div style={{
+                    background: 'var(--bg-secondary)',
+                    borderRadius: 'var(--radius-sm)',
+                    padding: '8px 12px',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 4,
+                    fontSize: '0.8rem'
+                  }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                      <span style={{ color: 'var(--text-muted)' }}>{t('signal')}:</span>
-                      <span className="font-mono" style={{ color: device.last_wifi_signal > -65 ? 'var(--color-success)' : 'var(--color-warning)' }}>
-                        {device.last_wifi_signal} dBm
+                      <span style={{ color: 'var(--text-muted)' }}>{t('ip_address')}:</span>
+                      <span className="font-mono" style={{ fontWeight: 600 }}>{device.ip_address || 'N/A'}</span>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span style={{ color: 'var(--text-muted)' }}>{t('mac_address')}:</span>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <span className="font-mono" style={{ color: 'var(--text-secondary)' }}>{device.mac_address}</span>
+                        {device.is_randomized_mac && (
+                          <span
+                            className="badge"
+                            style={{
+                              fontSize: '0.625rem',
+                              padding: '1px 5px',
+                              background: 'rgba(234, 179, 8, 0.15)',
+                              color: 'var(--color-warning)',
+                              border: '1px solid rgba(234, 179, 8, 0.3)',
+                              fontWeight: 600
+                            }}
+                            title="Private / Randomized MAC (iOS Private Wi-Fi / Android MAC randomization)"
+                          >
+                            {t('private_mac')}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    {device.last_interface && (
+                      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                        <span style={{ color: 'var(--text-muted)' }}>{t('interface')}:</span>
+                        <span className="font-mono">{device.last_interface}</span>
+                      </div>
+                    )}
+                    {device.last_wifi_signal && (
+                      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                        <span style={{ color: 'var(--text-muted)' }}>{t('signal')}:</span>
+                        <span className="font-mono" style={{ color: device.last_wifi_signal > -65 ? 'var(--color-success)' : 'var(--color-warning)' }}>
+                          {device.last_wifi_signal} dBm
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Assignment footer */}
+                <div style={{ display: 'flex', gap: 6, alignItems: 'center', borderTop: '1px solid var(--border-color)', paddingTop: 10 }}>
+                  <button
+                    className="btn btn-ghost btn-sm btn-icon"
+                    onClick={() => handleOpenHistory(device)}
+                    title={t('view_history')}
+                    style={{ width: 32, height: 32 }}
+                  >
+                    <History size={14} />
+                  </button>
+
+                  <button
+                    className={`btn-icon ${device.is_paused ? 'btn-danger' : ''}`}
+                    onClick={async () => {
+                      try {
+                        await api.toggleDevicePause(device.id, !device.is_paused);
+                        if (onScan) onScan();
+                      } catch (err) {
+                        console.error('Failed to toggle device pause:', err);
+                      }
+                    }}
+                    style={{ width: 32, height: 32, color: device.is_paused ? 'var(--color-danger)' : 'var(--text-muted)' }}
+                    title={device.is_paused ? t('resume_device') : t('pause_device')}
+                  >
+                    {device.is_paused ? <Play size={13} /> : <Pause size={13} />}
+                  </button>
+
+                  {/* Hide / Unhide Quick Toggle */}
+                  <button
+                    className="btn btn-ghost btn-sm btn-icon"
+                    onClick={async () => {
+                      try {
+                        await api.toggleHideDevice(device.id, !device.is_hidden);
+                        if (onScan) onScan();
+                      } catch (err) {
+                        console.error('Failed to toggle device hide:', err);
+                      }
+                    }}
+                    style={{ width: 32, height: 32, color: device.is_hidden ? 'var(--color-warning, #f59e0b)' : 'var(--text-muted)' }}
+                    title={device.is_hidden ? t('unhide_device') : t('hide_device')}
+                  >
+                    {device.is_hidden ? <EyeOff size={14} /> : <Eye size={14} />}
+                  </button>
+
+                  <button
+                    className="btn btn-ghost btn-sm btn-icon"
+                    onClick={() => setEditingDevice(device)}
+                    title={t('edit_device')}
+                    style={{ width: 32, height: 32 }}
+                  >
+                    <Sliders size={14} />
+                  </button>
+
+                  <div style={{ flex: 1 }}>
+                    <select
+                      className="form-select"
+                      style={{ width: '100%', padding: '6px 8px', fontSize: '0.8rem' }}
+                      value={selectedUserMap[device.id] || ''}
+                      onChange={(e) => handleUserSelect(device.id, e.target.value)}
+                    >
+                      <option value="">{t('choose_user')}</option>
+                      {users.map(u => (
+                        <option key={u.id} value={u.id}>{u.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <button
+                    className="btn btn-primary btn-sm"
+                    onClick={() => handleAssignClick(device.id)}
+                    disabled={!selectedUserMap[device.id]}
+                    style={{ fontSize: '0.8rem', whiteSpace: 'nowrap' }}
+                  >
+                    <UserPlus size={14} />
+                    {t('assign_btn')}
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Device Edit Modal */}
+      {editingDevice && (
+        <DeviceModal
+          device={editingDevice}
+          user={null}
+          onClose={() => setEditingDevice(null)}
+          onUpdated={onScan}
+        />
+      )}
+
+      {/* Device History Modal */}
+      {historyDevice && (
+        <div className="modal-backdrop" onClick={() => setHistoryDevice(null)}>
+          <div className="modal-content card" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 480, width: '90%' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <History size={18} style={{ color: 'var(--color-primary)' }} />
+                <h3 style={{ fontSize: '1.05rem', fontWeight: 700 }}>
+                  {t('device_history')}
+                </h3>
+              </div>
+              <button className="btn-icon" onClick={() => setHistoryDevice(null)}>
+                <X size={16} />
+              </button>
+            </div>
+
+            <div style={{ marginBottom: 12, padding: '8px 10px', background: 'var(--bg-secondary)', borderRadius: 6, fontSize: '0.8rem' }}>
+              <div style={{ fontWeight: 600 }}>{historyDevice.custom_name || historyDevice.hostname || 'Device'}</div>
+              <div className="font-mono" style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>{historyDevice.mac_address}</div>
+            </div>
+
+            {loadingHistory ? (
+              <div style={{ textAlign: 'center', padding: '24px', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+                Loading change history...
+              </div>
+            ) : deviceHistory.length === 0 ? (
+              <div style={{ textAlign: 'center', padding: '20px', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+                {t('no_history')}
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10, maxHeight: 320, overflowY: 'auto' }}>
+                {deviceHistory.map(item => (
+                  <div
+                    key={item.id}
+                    style={{
+                      padding: '8px 10px',
+                      background: 'var(--bg-secondary)',
+                      borderRadius: 6,
+                      borderLeft: '3px solid var(--color-primary)',
+                      fontSize: '0.775rem'
+                    }}
+                  >
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                      <span style={{ fontWeight: 700, color: 'var(--text-primary)' }}>
+                        {t(`event_${item.event_type}`) || item.event_type}
+                      </span>
+                      <span style={{ color: 'var(--text-muted)', fontSize: '0.7rem' }}>
+                        {new Date(item.created_at).toLocaleString()}
                       </span>
                     </div>
-                  )}
-                </div>
+                    {item.details && (
+                      <div style={{ color: 'var(--text-secondary)', marginBottom: 2 }}>{item.details}</div>
+                    )}
+                    <div style={{ display: 'flex', gap: 12, color: 'var(--text-muted)', fontSize: '0.7rem' }} className="font-mono">
+                      <span>MAC: {item.mac_address}</span>
+                      {item.ip_address && <span>IP: {item.ip_address}</span>}
+                    </div>
+                  </div>
+                ))}
               </div>
-
-              {/* Assignment footer */}
-              <div style={{ display: 'flex', gap: 8, alignItems: 'center', borderTop: '1px solid var(--border-color)', paddingTop: 10 }}>
-                <select
-                  className="form-select"
-                  style={{ flex: 1, padding: '6px 8px', fontSize: '0.8rem' }}
-                  value={selectedUserMap[device.id] || ''}
-                  onChange={(e) => handleUserSelect(device.id, e.target.value)}
-                >
-                  <option value="">-- Choose User --</option>
-                  {users.map(u => (
-                    <option key={u.id} value={u.id}>{u.name}</option>
-                  ))}
-                </select>
-
-                <button
-                  className="btn btn-primary btn-sm"
-                  onClick={() => handleAssignClick(device.id)}
-                  disabled={!selectedUserMap[device.id]}
-                >
-                  <UserPlus size={14} />
-                  {t('assign_to_user')}
-                </button>
-              </div>
-            </div>
-          ))}
+            )}
+          </div>
         </div>
       )}
     </div>

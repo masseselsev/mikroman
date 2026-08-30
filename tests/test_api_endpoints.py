@@ -50,8 +50,11 @@ async def test_users_api_crud(api_client: AsyncClient):
     users = list_resp.json()["data"]
     assert any(u["id"] == user_id for u in users)
 
-    # Update User
-    patch_resp = await api_client.patch(f"/api/v1/users/{user_id}", json={"speed_limit": "100M"})
+    # Update User (including device assignment)
+    patch_resp = await api_client.patch(f"/api/v1/users/{user_id}", json={
+        "speed_limit": "100M",
+        "device_macs": []
+    })
     assert patch_resp.status_code == 200
     assert patch_resp.json()["data"]["speed_limit"] == "100M"
 
@@ -76,11 +79,13 @@ async def test_settings_api(api_client: AsyncClient):
     data = resp.json()["data"]
     assert "theme" in data
     assert "lang" in data
+    assert "unassigned_device_speed_limit" in data
 
     # Update settings
     update_resp = await api_client.post("/api/v1/system/settings", json={
         "theme": "dark",
-        "lang": "ru"
+        "lang": "ru",
+        "unassigned_device_speed_limit": "5M/5M"
     })
     assert update_resp.status_code == 200
     assert update_resp.json()["data"] is True
@@ -89,3 +94,4 @@ async def test_settings_api(api_client: AsyncClient):
     verify_resp = await api_client.get("/api/v1/system/settings")
     assert verify_resp.json()["data"]["theme"] == "dark"
     assert verify_resp.json()["data"]["lang"] == "ru"
+    assert verify_resp.json()["data"]["unassigned_device_speed_limit"] == "5M/5M"

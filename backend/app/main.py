@@ -32,23 +32,78 @@ async def background_sync_worker():
     while True:
         try:
             async with AsyncSessionLocal() as session:
+                from backend.app.db.models import AppSetting
+                auto_scan_sett = await session.get(AppSetting, "auto_scan_enabled")
+                is_auto_scan_enabled = (auto_scan_sett.value.lower() != "false") if auto_scan_sett else True
+
                 active_routers = await router_manager.get_all_active_routers(session)
                 for r in active_routers:
                     try:
                         client = await router_manager.get_client(r.id, session=session)
                         if client:
-                            dev_mgr = DeviceManager(client, router_id=r.id)
-                            _, new_devices = await dev_mgr.sync_devices_from_router(session)
-                            if new_devices and telegram_service:
-                                for dev in new_devices:
-                                    msg = (
-                                        f"🔔 *New Device Discovered on {r.name}!*\n"
-                                        f"• Host: `{dev.hostname or 'Unknown'}`\n"
-                                        f"• IP: `{dev.ip_address}`\n"
-                                        f"• MAC: `{dev.mac_address}`\n"
-                                        f"• Vendor: `{dev.vendor or 'Unknown'}`"
+                            new_devices = []
+                            if is_auto_scan_enabled:
+                                dev_mgr = DeviceManager(client, router_id=r.id)
+                                _, new_devices = await dev_mgr.sync_devices_from_router(session)
+
+                            # Maintain RouterOS Simple Queues and FastTrack exemptions for all active users & unassigned devices
+                            try:
+                                from backend.app.db.models import Device, User
+                                from backend.app.services.traffic_controller import TrafficController
+                                tc = TrafficController(client)
+                                from sqlalchemy import select
+                                users_res = await session.execute(select(User))
+                                for u in users_res.scalars().all():
+                                    active_ips = [d.ip_address for d in u.devices if d.is_active and d.ip_address]
+                                    await tc.sync_user_queue(u.id, u.name, active_ips, u.speed_limit)
+
+                                # Sync unassigned quarantine devices and custom device queues
+                                devs_res = await session.execute(
+                                    select(Device).where(
+                                        Device.is_active,
+                                        Device.user_id.is_(None) | (Device.speed_limit != "default")
                                     )
-                                    await telegram_service.send_alert_to_admins(msg)
+                                )
+                                for dev in devs_res.scalars().all():
+                                    await tc.sync_device_queue(dev.id, session)
+                            except Exception as qe:
+                                logger.debug(f"Queue sync tick error for router {r.id}: {qe}")
+
+                            # Collect hardware and interface time-series metrics
+                            try:
+                                from backend.app.services.metrics_collector import metrics_collector
+                                await metrics_collector.collect_and_store(session, r.id, client)
+                            except Exception as me:
+                                logger.debug(f"Metrics collection tick error for router {r.id}: {me}")
+
+                            # Collect and record cumulative traffic rollups for analytics
+                            try:
+                                from backend.app.services.analytics_engine import AnalyticsEngine
+                                await AnalyticsEngine.record_traffic_snapshot(session, r.id, client)
+                            except Exception as te:
+                                logger.debug(f"Traffic rollups tick error for router {r.id}: {te}")
+
+                            if new_devices:
+                                try:
+                                    from backend.app.api.v1.endpoints.ws import manager
+                                    await manager.broadcast({
+                                        "type": "devices_updated",
+                                        "router_id": r.id,
+                                        "new_count": len(new_devices)
+                                    })
+                                except Exception:
+                                    pass
+
+                                if telegram_service:
+                                    for dev in new_devices:
+                                        msg = (
+                                            f"🔔 <b>New Device Discovered on {r.name}!</b>\n"
+                                            f"• Host: <code>{dev.hostname or 'Unknown'}</code>\n"
+                                            f"• IP: <code>{dev.ip_address}</code>\n"
+                                            f"• MAC: <code>{dev.mac_address}</code>\n"
+                                            f"• Vendor: <code>{dev.vendor or 'Unknown'}</code>"
+                                        )
+                                        await telegram_service.send_alert_to_admins(msg, parse_mode="HTML")
                     except Exception as e:
                         logger.debug(f"Sync error for router {r.name} ({r.id}): {e}")
         except Exception as e:

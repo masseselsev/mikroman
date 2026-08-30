@@ -1,7 +1,7 @@
 from datetime import date, datetime
 from typing import List, Optional
 
-from sqlalchemy import JSON, BigInteger, Boolean, Date, DateTime, ForeignKey, Integer, String, func
+from sqlalchemy import JSON, BigInteger, Boolean, Date, DateTime, Float, ForeignKey, Integer, String, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -59,10 +59,31 @@ class Device(Base):
     last_interface: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     last_wifi_signal: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # in dBm e.g. -65
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    is_hidden: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    speed_limit: Mapped[str] = mapped_column(String(50), default="default", nullable=False)  # "default", "unlimited", "10M/30M"
+    is_paused: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    priority: Mapped[int] = mapped_column(Integer, default=1, nullable=False)  # 1 = Normal, 2 = High, 0 = Low
     last_seen: Mapped[datetime] = mapped_column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
 
     user: Mapped[Optional["User"]] = relationship("User", back_populates="devices")
     router: Mapped[Optional["Router"]] = relationship("Router", back_populates="devices")
+    history: Mapped[List["DeviceHistory"]] = relationship("DeviceHistory", back_populates="device", cascade="all, delete-orphan", lazy="selectin", order_by="desc(DeviceHistory.created_at)")
+    traffic_rollups: Mapped[List["DeviceTrafficRollup"]] = relationship("DeviceTrafficRollup", back_populates="device", cascade="all, delete-orphan", lazy="selectin")
+
+
+class DeviceHistory(Base):
+    __tablename__ = "device_history"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    device_id: Mapped[int] = mapped_column(Integer, ForeignKey("devices.id", ondelete="CASCADE"), nullable=False, index=True)
+    mac_address: Mapped[str] = mapped_column(String(17), nullable=False, index=True)
+    hostname: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    ip_address: Mapped[Optional[str]] = mapped_column(String(45), nullable=True)
+    event_type: Mapped[str] = mapped_column(String(50), nullable=False)  # 'discovered', 'mac_rotated', 'hostname_changed', 'ip_changed', 'merged'
+    details: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), nullable=False)
+
+    device: Mapped["Device"] = relationship("Device", back_populates="history")
 
 
 class TrafficRollup(Base):
@@ -75,6 +96,28 @@ class TrafficRollup(Base):
     bytes_out: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)  # Upload
 
     user: Mapped["User"] = relationship("User", back_populates="traffic_rollups")
+
+
+class DeviceTrafficRollup(Base):
+    __tablename__ = "device_traffic_rollups"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    device_id: Mapped[int] = mapped_column(Integer, ForeignKey("devices.id", ondelete="CASCADE"), nullable=False, index=True)
+    record_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    bytes_in: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)   # Download
+    bytes_out: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)  # Upload
+
+    device: Mapped["Device"] = relationship("Device", back_populates="traffic_rollups")
+
+
+class RouterTrafficRollup(Base):
+    __tablename__ = "router_traffic_rollups"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    router_id: Mapped[int] = mapped_column(Integer, ForeignKey("routers.id", ondelete="CASCADE"), nullable=False, index=True)
+    record_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    bytes_in: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)   # Download
+    bytes_out: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)  # Upload
 
 
 class AppSetting(Base):
@@ -95,3 +138,30 @@ class AlertLog(Base):
     message: Mapped[str] = mapped_column(String(1000), nullable=False)
     metadata_payload: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), nullable=False)
+
+
+class SystemMetric(Base):
+    __tablename__ = "system_metrics"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    router_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("routers.id", ondelete="CASCADE"), nullable=True, index=True)
+    cpu_load: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    memory_used_bytes: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    memory_total_bytes: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    memory_usage_pct: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    temperature: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    voltage: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    timestamp: Mapped[datetime] = mapped_column(DateTime, default=func.now(), nullable=False, index=True)
+
+
+class InterfaceMetric(Base):
+    __tablename__ = "interface_metrics"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    router_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("routers.id", ondelete="CASCADE"), nullable=True, index=True)
+    interface_name: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    rx_rate_bps: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)  # bits per second download
+    tx_rate_bps: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)  # bits per second upload
+    rx_bytes_total: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    tx_bytes_total: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    timestamp: Mapped[datetime] = mapped_column(DateTime, default=func.now(), nullable=False, index=True)

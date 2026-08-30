@@ -1,3 +1,4 @@
+import logging
 from typing import Any, Dict, List
 
 from fastapi import APIRouter, Depends
@@ -9,13 +10,17 @@ from backend.app.db.models import AlertLog, AppSetting
 from backend.app.db.session import get_db
 from backend.app.schemas.common import AlertLogDTO, APIResponse
 from backend.app.schemas.routeros import InterfaceDTO, RouterSystemHealth, RouterSystemResource
+from backend.app.services.router_manager import router_manager
 from backend.app.services.routeros import RouterOSClient
+
+logger = logging.getLogger("mikroman.system")
 
 router = APIRouter(prefix="/system", tags=["System & Settings"])
 
 
-def get_router_client() -> RouterOSClient:
-    return RouterOSClient()
+async def get_router_client(db: AsyncSession = Depends(get_db)) -> RouterOSClient:
+    client = await router_manager.get_client(session=db)
+    return client or RouterOSClient()
 
 
 @router.get("/status", response_model=APIResponse[Dict[str, Any]])
@@ -82,6 +87,12 @@ async def get_settings(db: AsyncSession = Depends(get_db)):
         data["router_port"] = str(settings.ROUTEROS_PORT)
     if "router_user" not in data:
         data["router_user"] = settings.ROUTEROS_USER
+    if "unassigned_device_speed_limit" not in data:
+        data["unassigned_device_speed_limit"] = "5M/5M"
+    if "temp_warning_threshold" not in data:
+        data["temp_warning_threshold"] = "80"
+    if "auto_scan_enabled" not in data:
+        data["auto_scan_enabled"] = "true"
 
     return APIResponse(data=data)
 
@@ -97,4 +108,49 @@ async def save_settings(payload: Dict[str, str], db: AsyncSession = Depends(get_
             setting = AppSetting(key=k, value=v)
             db.add(setting)
     await db.commit()
+
+    # If unassigned_device_speed_limit changed, update all unassigned devices
+    if "unassigned_device_speed_limit" in payload:
+        new_unassigned_limit = payload["unassigned_device_speed_limit"]
+        from backend.app.db.models import Device
+        from backend.app.services.traffic_controller import TrafficController
+        unassigned_res = await db.execute(select(Device).where(Device.user_id == None))  # noqa: E711
+        unassigned_devs = unassigned_res.scalars().all()
+        for d in unassigned_devs:
+            d.speed_limit = new_unassigned_limit
+        await db.commit()
+
+        # Resync unassigned device queues on RouterOS
+        try:
+            client = await router_manager.get_client(session=db)
+            if client:
+                tc = TrafficController(client)
+                for d in unassigned_devs:
+                    await tc.sync_device_queue(d.id, db)
+        except Exception as e:
+            logger.debug(f"Failed to sync unassigned device queues: {e}")
+
+    # Dynamically reconfigure live Telegram bot service if updated
+    try:
+        from backend.app.api.v1.endpoints.telegram import telegram_bot_service
+        if telegram_bot_service:
+            token = payload.get("telegram_bot_token")
+            admin_ids_str = payload.get("telegram_admin_ids")
+            mode = payload.get("telegram_mode")
+
+            admin_ids = []
+            if admin_ids_str:
+                for p in admin_ids_str.split(","):
+                    p = p.strip()
+                    if p.isdigit() or (p.startswith("-") and p[1:].isdigit()):
+                        admin_ids.append(int(p))
+
+            await telegram_bot_service.reconfigure(
+                token=token,
+                admin_ids=admin_ids if admin_ids_str is not None else None,
+                mode=mode
+            )
+    except Exception as e:
+        logger.debug(f"Failed to dynamically reconfigure Telegram bot: {e}")
+
     return APIResponse(data=True, message="Settings saved successfully")

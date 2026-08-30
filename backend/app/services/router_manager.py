@@ -1,5 +1,5 @@
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -74,6 +74,21 @@ class RouterManager:
         client = self._clients.pop(router_id, None)
         if client:
             await client.aclose()
+
+    async def get_default_or_first_router(self, session: Optional[AsyncSession] = None) -> Optional[Router]:
+        """Fetch the default or first active router model from database."""
+        should_close = False
+        if session is None:
+            session = AsyncSessionLocal()
+            should_close = True
+
+        try:
+            stmt = select(Router).where(Router.is_active == True).order_by(Router.is_default.desc(), Router.id.asc()) # noqa: E712
+            result = await session.execute(stmt)
+            return result.scalars().first()
+        finally:
+            if should_close:
+                await session.close()
 
     async def get_all_active_routers(self, session: Optional[AsyncSession] = None) -> List[Router]:
         """Fetch all active router records from database."""

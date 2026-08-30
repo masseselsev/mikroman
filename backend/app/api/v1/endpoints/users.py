@@ -8,14 +8,16 @@ from backend.app.db.models import Device, User
 from backend.app.db.session import get_db
 from backend.app.schemas.common import APIResponse
 from backend.app.schemas.user import UserCreate, UserDTO, UserUpdate
+from backend.app.services.router_manager import router_manager
 from backend.app.services.routeros import RouterOSClient
 from backend.app.services.traffic_controller import TrafficController
 
 router = APIRouter(prefix="/users", tags=["Users"])
 
 
-def get_traffic_controller() -> TrafficController:
-    return TrafficController(RouterOSClient())
+async def get_traffic_controller(db: AsyncSession = Depends(get_db)) -> TrafficController:
+    client = await router_manager.get_client(session=db)
+    return TrafficController(client or RouterOSClient())
 
 
 @router.get("", response_model=APIResponse[List[UserDTO]])
@@ -103,7 +105,10 @@ async def update_user(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    if payload.name is not None:
+    if payload.name is not None and payload.name != user.name:
+        existing = await db.execute(select(User).where(User.name == payload.name, User.id != user_id))
+        if existing.scalar_one_or_none():
+            raise HTTPException(status_code=400, detail="User with this name already exists")
         user.name = payload.name
     if payload.avatar_icon is not None:
         user.avatar_icon = payload.avatar_icon
@@ -113,6 +118,21 @@ async def update_user(
         user.speed_limit = payload.speed_limit
     if payload.is_paused is not None:
         user.is_paused = payload.is_paused
+
+    # Handle device assignments / unassignments by MAC address
+    if payload.device_macs is not None:
+        target_macs = set(m.upper().strip() for m in payload.device_macs if m and m.strip())
+        # Unassign devices that were deselected
+        for dev in list(user.devices):
+            if dev.mac_address.upper() not in target_macs:
+                dev.user_id = None
+
+        # Assign newly selected devices
+        for mac in target_macs:
+            dev_res = await db.execute(select(Device).where(Device.mac_address == mac))
+            dev = dev_res.scalar_one_or_none()
+            if dev:
+                dev.user_id = user.id
 
     await db.commit()
     await db.refresh(user)

@@ -46,11 +46,18 @@ When I ask a question, answer it directly. Do not preemptively execute git pushe
 * If a problem isn't solved on the first attempt — search the internet.
 * Fix until the end — if something isn't working, keep making fixes.
 
-**Git**
+**Git & Documentation**
 
 * ⚠️ Never make commits on your own! Except for your internal documentation such as plans and specs
 * Never mention claude or any other AI inside commits or comments.
 * Keep git-comments less AI-like.
+* **Documentation & README:** Immediately update `README.md` with every newly introduced feature, API endpoint, architecture capability, or UI tool.
+* **Code Commenting:** Maintain thorough, detailed, and meaningful comments in all written code (docstrings, operational logic, architecture rationale, edge-case explanations).
+* **UI & Localization / Translations:**
+  * The core UI layout and text must always be developed with English as the primary base.
+  * Translated strings (such as Russian) must match the English base in character footprint and visual length while **strictly preserving full semantic meaning and context**.
+  * Never drop essential nouns or distort meaning when shortening text; use standard concise abbreviations with dots or compact compound terms (e.g., *'Непривяз. устройства'*, *'Скрытые устр.'*, *'Добавить польз.'*, *'Скан сети'*, *'Автоскан'*, *'Пауза'*, *'Включить'*).
+  * Never use overly long translations that cause UI elements (tabs, buttons, badges, table headers, modals) to wrap, stretch, or break the visual grid layout.
 
 ---
 

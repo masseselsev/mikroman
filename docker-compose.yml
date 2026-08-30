@@ -11,6 +11,8 @@ services:
     environment:
       - DATABASE_URL=sqlite+aiosqlite:////data/app.db
     volumes:
+      - ./backend:/app/backend
+      - ./frontend/dist:/app/frontend/dist
       - mikroman_data:/data
 
 volumes:

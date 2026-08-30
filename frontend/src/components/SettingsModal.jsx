@@ -80,7 +80,10 @@ export function SettingsModal({ isOpen, onClose, onReboot, onRoutersChanged }) {
   const handleTestTelegram = async () => {
     setTestResult(null);
     try {
-      const res = await api.testTelegram();
+      const res = await api.testTelegram({
+        bot_token: settings.telegram_bot_token,
+        admin_ids: settings.telegram_admin_ids
+      });
       setTestResult({ ok: res.success, msg: res.message });
     } catch (err) {
       setTestResult({ ok: false, msg: err.message });
@@ -271,6 +274,93 @@ export function SettingsModal({ isOpen, onClose, onReboot, onRoutersChanged }) {
 
               <div style={{ height: 1, background: 'var(--border-color)', margin: '6px 0' }}></div>
 
+              {/* Background Device Auto-Discovery (Auto-Scan) */}
+              <div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                  <h3 style={{ fontSize: '0.9rem', fontWeight: 700, color: 'var(--color-primary)' }}>
+                    {t('auto_scan_title')}
+                  </h3>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
+                    <input
+                      type="checkbox"
+                      checked={settings.auto_scan_enabled !== 'false'}
+                      onChange={e => setSettings({ ...settings, auto_scan_enabled: e.target.checked ? 'true' : 'false' })}
+                      style={{ width: 18, height: 18, cursor: 'pointer', accentColor: 'var(--color-primary)' }}
+                    />
+                    <span style={{ fontSize: '0.8rem', fontWeight: 600 }}>
+                      {settings.auto_scan_enabled !== 'false' ? t('enable_auto_scan') : t('auto_scan_paused')}
+                    </span>
+                  </label>
+                </div>
+                <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                  {t('auto_scan_desc')}
+                </p>
+              </div>
+
+              <div style={{ height: 1, background: 'var(--border-color)', margin: '6px 0' }}></div>
+
+              {/* Temperature Warning Threshold */}
+              <div>
+                <h3 style={{ fontSize: '0.9rem', fontWeight: 700, marginBottom: 4, color: 'var(--color-warning, #f59e0b)' }}>
+                  {t('temp_warning_title')}
+                </h3>
+                <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: 10 }}>
+                  {t('temp_warning_desc')}
+                </p>
+
+                <div className="form-group" style={{ marginBottom: 6 }}>
+                  <label className="form-label">{t('temp_threshold_label')}</label>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                    <select
+                      className="form-select font-mono"
+                      value={settings.temp_warning_threshold || '80'}
+                      onChange={e => setSettings({ ...settings, temp_warning_threshold: e.target.value })}
+                      style={{ flex: 1, height: 36, fontSize: '0.85rem' }}
+                    >
+                      <option value="65">65°C — Sensitive</option>
+                      <option value="70">70°C — Low</option>
+                      <option value="75">75°C — Moderate</option>
+                      <option value="80">80°C — Standard Default</option>
+                      <option value="85">85°C — High</option>
+                      <option value="90">90°C — Critical</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              <div style={{ height: 1, background: 'var(--border-color)', margin: '6px 0' }}></div>
+
+              {/* Unassigned / New Devices Quarantine Speed Limit */}
+              <div>
+                <h3 style={{ fontSize: '0.9rem', fontWeight: 700, marginBottom: 4, color: 'var(--color-primary)' }}>
+                  {t('unassigned_quarantine_title')}
+                </h3>
+                <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: 10 }}>
+                  {t('unassigned_quarantine_desc')}
+                </p>
+
+                <div className="form-group" style={{ marginBottom: 6 }}>
+                  <label className="form-label">{t('quarantine_speed_limit')}</label>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <select
+                      className="form-select font-mono"
+                      value={settings.unassigned_device_speed_limit || '5M/5M'}
+                      onChange={e => setSettings({ ...settings, unassigned_device_speed_limit: e.target.value })}
+                      style={{ flex: 1, height: 36, fontSize: '0.85rem' }}
+                    >
+                      <option value="1M/1M">1 Mbps (1M/1M) — Strict</option>
+                      <option value="2M/2M">2 Mbps (2M/2M) — Low</option>
+                      <option value="5M/5M">5 Mbps (5M/5M) — Recommended</option>
+                      <option value="10M/10M">10 Mbps (10M/10M) — Moderate</option>
+                      <option value="20M/20M">20 Mbps (20M/20M) — Fast</option>
+                      <option value="unlimited">Unlimited (0/0) — No Cap</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              <div style={{ height: 1, background: 'var(--border-color)', margin: '6px 0' }}></div>
+
               {/* System Actions */}
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <div>
@@ -437,7 +527,7 @@ export function SettingsModal({ isOpen, onClose, onReboot, onRoutersChanged }) {
                         </span>
                       </div>
                       <div style={{ fontSize: '0.725rem', color: 'var(--text-muted)' }} className="font-mono">
-                        {r.host}:{r.port} {r.board_name ? `• ${r.board_name}` : ''}
+                        {r.host}:{r.port} {r.board_name ? `• ${r.board_name}` : (r.model ? `• ${r.model}` : '')} {r.ros_version ? `• RouterOS ${r.ros_version}` : ''} {r.architecture ? `(${r.architecture})` : ''}
                       </div>
                     </div>
                   </div>

@@ -70,9 +70,14 @@ async def run_async_migrations() -> None:
 
     """
     configuration = config.get_section(config.config_ini_section, {})
-    url = config.get_main_option("sqlalchemy.url") or settings.DATABASE_URL
-    if url.startswith("sqlite:///"):
-        url = url.replace("sqlite:///", "sqlite+aiosqlite:///")
+    custom_url = config.get_main_option("sqlalchemy.url")
+    if custom_url and custom_url != "sqlite:///./data/app.db":
+        url = custom_url
+    else:
+        url = settings.DATABASE_URL
+
+    if "+aiosqlite" not in url and url.startswith("sqlite:"):
+        url = url.replace("sqlite://", "sqlite+aiosqlite://")
     configuration["sqlalchemy.url"] = url
 
     connectable = async_engine_from_config(

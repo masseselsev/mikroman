@@ -49,6 +49,14 @@ async def init_db() -> None:
             except Exception:
                 pass
 
+            try:
+                res = await conn.execute(text("PRAGMA table_info(devices)"))
+                columns = [row[1] for row in res.fetchall()]
+                if columns and "is_hidden" not in columns:
+                    await conn.execute(text("ALTER TABLE devices ADD COLUMN is_hidden BOOLEAN NOT NULL DEFAULT 0"))
+            except Exception:
+                pass
+
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
     """Dependency for providing database session to FastAPI endpoints."""

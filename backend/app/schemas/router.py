@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -42,6 +42,8 @@ class RouterResponse(RouterBase):
     is_online: Optional[bool] = None
     ros_version: Optional[str] = None
     board_name: Optional[str] = None
+    model: Optional[str] = None
+    architecture: Optional[str] = None
     cpu_load: Optional[int] = None
 
 

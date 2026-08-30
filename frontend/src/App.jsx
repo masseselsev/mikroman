@@ -7,9 +7,11 @@ import { TelemetryBar } from './components/TelemetryBar';
 import { UserCard } from './components/UserCard';
 import { UserModal } from './components/UserModal';
 import { DeviceInbox } from './components/DeviceInbox';
+import { MetricCharts } from './components/MetricCharts';
+import { TrafficAnalytics } from './components/TrafficAnalytics';
 import { SettingsModal } from './components/SettingsModal';
 import { SetupWizard } from './components/SetupWizard';
-import { Users, Laptop, Activity, Plus, AlertCircle } from 'lucide-react';
+import { Users, Laptop, Activity, BarChart2, Plus, AlertCircle, EyeOff } from 'lucide-react';
 
 export function App() {
   const { t } = useI18n();
@@ -23,6 +25,7 @@ export function App() {
   const [alerts, setAlerts] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isScanning, setIsScanning] = useState(false);
+  const [showHiddenDevices, setShowHiddenDevices] = useState(false);
 
   // Modals state
   const [userModalOpen, setUserModalOpen] = useState(false);
@@ -45,8 +48,10 @@ export function App() {
       const routerList = routersRes.data || [];
       setRouters(routerList);
 
-      const currentDefault = routerList.find(r => r.is_default) || routerList[0] || null;
-      setActiveRouter(currentDefault);
+      if (!activeRouter && routerList.length > 0) {
+        const currentDefault = routerList.find(r => r.is_default) || routerList[0] || null;
+        setActiveRouter(currentDefault);
+      }
 
       setUsers(usersRes.data || []);
       setUnassignedDevices(devsRes.data || []);
@@ -61,6 +66,11 @@ export function App() {
 
   useEffect(() => {
     loadData();
+    // Poll data in background every 6 seconds to catch new active devices & IP shifts
+    const pollInterval = setInterval(() => {
+      loadData();
+    }, 6000);
+    return () => clearInterval(pollInterval);
   }, []);
 
   // Merge live WebSocket telemetry into users state for smooth animation
@@ -86,13 +96,8 @@ export function App() {
     }
   }, [telemetry]);
 
-  const handleSelectRouter = async (routerId) => {
-    try {
-      await api.activateRouter(routerId);
-      await loadData();
-    } catch (err) {
-      console.error('Failed to switch router', err);
-    }
+  const handleSelectRouter = (router) => {
+    setActiveRouter(router);
   };
 
   const handleScan = async () => {
@@ -164,7 +169,11 @@ export function App() {
 
       <main className="main-content">
         {/* Router Live Telemetry Bar */}
-        <TelemetryBar router={telemetry?.router} />
+        <TelemetryBar
+          router={telemetry?.router}
+          activeRouter={activeRouter}
+          interfaces={interfaces}
+        />
 
         {/* Tab Navigation */}
         <div className="nav-tabs">
@@ -177,6 +186,14 @@ export function App() {
             <span className="badge badge-neutral" style={{ padding: '1px 6px', fontSize: '0.7rem' }}>
               {users.length}
             </span>
+          </button>
+
+          <button
+            className={`nav-tab ${activeTab === 'analytics' ? 'active' : ''}`}
+            onClick={() => setActiveTab('analytics')}
+          >
+            <BarChart2 size={18} />
+            {t('tab_analytics')}
           </button>
 
           <button
@@ -204,23 +221,50 @@ export function App() {
         {/* Tab Content: Users */}
         {activeTab === 'users' && (
           <div>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20, flexWrap: 'wrap', gap: 10 }}>
               <div>
                 <h2 style={{ fontSize: '1.25rem', fontWeight: 700 }}>{t('tab_users')}</h2>
                 <p style={{ fontSize: '0.825rem', color: 'var(--text-muted)' }}>
                   Organize network clients into users with per-user bandwidth limiting and instant pause controls.
                 </p>
               </div>
-              <button
-                className="btn btn-primary"
-                onClick={() => {
-                  setEditingUser(null);
-                  setUserModalOpen(true);
-                }}
-              >
-                <Plus size={16} />
-                {t('add_user')}
-              </button>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                {/* Show Hidden Devices Checkbox */}
+                <label style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  fontSize: '0.775rem',
+                  color: 'var(--text-muted)',
+                  cursor: 'pointer',
+                  userSelect: 'none',
+                  background: 'var(--bg-card)',
+                  padding: '6px 12px',
+                  borderRadius: 'var(--radius-md)',
+                  border: '1px solid var(--border-color)',
+                  height: 34
+                }}>
+                  <input
+                    type="checkbox"
+                    checked={showHiddenDevices}
+                    onChange={e => setShowHiddenDevices(e.target.checked)}
+                    style={{ width: 14, height: 14, cursor: 'pointer', accentColor: 'var(--color-primary)' }}
+                  />
+                  <EyeOff size={13} style={{ color: showHiddenDevices ? 'var(--color-primary)' : 'var(--text-muted)' }} />
+                  {t('show_hidden_devices')}
+                </label>
+
+                <button
+                  className="btn btn-primary"
+                  onClick={() => {
+                    setEditingUser(null);
+                    setUserModalOpen(true);
+                  }}
+                >
+                  <Plus size={16} />
+                  {t('add_user')}
+                </button>
+              </div>
             </div>
 
             {users.length === 0 ? (
@@ -245,6 +289,7 @@ export function App() {
                   <UserCard
                     key={user.id}
                     user={user}
+                    showHidden={showHiddenDevices}
                     onEdit={(u) => {
                       setEditingUser(u);
                       setUserModalOpen(true);
@@ -252,11 +297,17 @@ export function App() {
                     onDelete={handleDeleteUser}
                     onLimitChange={handleLimitChange}
                     onPauseToggle={handlePauseToggle}
+                    onUpdate={loadData}
                   />
                 ))}
               </div>
             )}
           </div>
+        )}
+
+        {/* Tab Content: Historical Traffic Analytics */}
+        {activeTab === 'analytics' && (
+          <TrafficAnalytics activeRouter={activeRouter} />
         )}
 
         {/* Tab Content: Unassigned Devices */}
@@ -273,19 +324,22 @@ export function App() {
         {/* Tab Content: Router Health & Interfaces */}
         {activeTab === 'health' && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
+            {/* Interactive Hardware & Bandwidth Charts */}
+            <MetricCharts activeRouterId={activeRouter?.id} />
+
             <div>
-              <h2 style={{ fontSize: '1.25rem', fontWeight: 700, marginBottom: 14 }}>Network Interfaces</h2>
+              <h2 style={{ fontSize: '1.25rem', fontWeight: 700, marginBottom: 14 }}>{t('network_interfaces')}</h2>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 14 }}>
                 {interfaces.map(iface => (
                   <div key={iface.id || iface.name} className="card" style={{ padding: 14 }}>
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
                       <span style={{ fontWeight: 700 }}>{iface.name}</span>
                       <span className={`badge ${iface.running ? 'badge-success' : 'badge-neutral'}`}>
-                        {iface.running ? 'Running' : 'Down'}
+                        {iface.running ? t('status_running') : t('status_down')}
                       </span>
                     </div>
                     <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'flex', justifyContent: 'space-between' }}>
-                      <span>Type: {iface.type || 'ethernet'}</span>
+                      <span>{t('type')}: {iface.type || 'ethernet'}</span>
                       <span className="font-mono">RX: {(iface.rx_byte / (1024 * 1024)).toFixed(1)} MB</span>
                     </div>
                   </div>
@@ -295,11 +349,11 @@ export function App() {
 
             {/* Alert Event Stream */}
             <div>
-              <h2 style={{ fontSize: '1.25rem', fontWeight: 700, marginBottom: 14 }}>System Events & Alerts</h2>
+              <h2 style={{ fontSize: '1.25rem', fontWeight: 700, marginBottom: 14 }}>{t('system_events_alerts')}</h2>
               <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
                 {alerts.length === 0 ? (
                   <div style={{ padding: 24, textAlign: 'center', color: 'var(--text-muted)' }}>
-                    No events recorded yet.
+                    {t('no_events_recorded')}
                   </div>
                 ) : (
                   <div style={{ maxHeight: 300, overflowY: 'auto' }}>

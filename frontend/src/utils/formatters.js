@@ -18,15 +18,44 @@ export function formatSpeed(bps) {
   return `${(bps / 1000000000).toFixed(2)} Gbps`;
 }
 
-export function formatUptime(seconds) {
-  if (!seconds || seconds <= 0) return '0m';
-  const days = Math.floor(seconds / 86400);
-  const hours = Math.floor((seconds % 86400) / 3600);
-  const minutes = Math.floor((seconds % 3600) / 60);
+export function formatUptime(uptime, lang = 'en') {
+  const isRu = lang === 'ru';
+  const dUnit = isRu ? 'д' : 'd';
+  const hUnit = isRu ? 'ч' : 'h';
+  const mUnit = isRu ? 'м' : 'm';
+  const sUnit = isRu ? 'с' : 's';
+  const wUnit = isRu ? 'нед' : 'w';
 
-  const parts = [];
-  if (days > 0) parts.push(`${days}d`);
-  if (hours > 0) parts.push(`${hours}h`);
-  if (minutes > 0 || parts.length === 0) parts.push(`${minutes}m`);
-  return parts.join(' ');
+  if (!uptime || uptime === '0') return `0${mUnit}`;
+
+  // If numeric seconds
+  if (typeof uptime === 'number' || /^\d+$/.test(String(uptime).trim())) {
+    const totalSec = Number(uptime);
+    if (totalSec <= 0) return `0${mUnit}`;
+    const days = Math.floor(totalSec / 86400);
+    const hours = Math.floor((totalSec % 86400) / 3600);
+    const minutes = Math.floor((totalSec % 3600) / 60);
+
+    const parts = [];
+    if (days > 0) parts.push(`${days}${dUnit}`);
+    if (hours > 0) parts.push(`${hours}${hUnit}`);
+    if (minutes > 0 || parts.length === 0) parts.push(`${minutes}${mUnit}`);
+    return parts.join(' ');
+  }
+
+  // If RouterOS formatted string: e.g. "1d3h58m3s", "1w2d3h4m5s", "4h30m", "58m12s"
+  const str = String(uptime).trim();
+  const match = str.match(/^(?:(\d+)w)?(?:(\d+)d)?(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$/i);
+  if (match && (match[1] || match[2] || match[3] || match[4] || match[5])) {
+    const parts = [];
+    if (match[1]) parts.push(`${match[1]}${wUnit}`);
+    if (match[2]) parts.push(`${match[2]}${dUnit}`);
+    if (match[3]) parts.push(`${match[3]}${hUnit}`);
+    if (match[4]) parts.push(`${match[4]}${mUnit}`);
+    if (parts.length === 0 && match[5]) parts.push(`${match[5]}${sUnit}`);
+    return parts.join(' ');
+  }
+
+  // Fallback: insert spaces before units
+  return str.replace(/([0-9]+[wdhms])/gi, '$1 ').trim();
 }

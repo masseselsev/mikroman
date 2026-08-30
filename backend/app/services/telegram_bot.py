@@ -325,14 +325,14 @@ class TelegramBotService:
         kb = InlineKeyboardMarkup(inline_keyboard=buttons)
         await send_func("\n".join(text_blocks), parse_mode="Markdown", reply_markup=kb)
 
-    async def send_alert_to_admins(self, message_text: str) -> None:
+    async def send_alert_to_admins(self, message_text: str, parse_mode: str = "HTML") -> None:
         """Broadcast alert to all configured admin chat IDs."""
         if not self.bot or not self.config.TELEGRAM_ADMIN_CHAT_IDS:
             return
 
         for chat_id in self.config.TELEGRAM_ADMIN_CHAT_IDS:
             try:
-                await self.bot.send_message(chat_id=chat_id, text=message_text, parse_mode="Markdown")
+                await self.bot.send_message(chat_id=chat_id, text=message_text, parse_mode=parse_mode)
             except Exception as e:
                 logger.error(f"Failed to send Telegram alert to {chat_id}: {e}")
 
@@ -357,8 +357,22 @@ class TelegramBotService:
                 await self.polling_task
             except asyncio.CancelledError:
                 pass
-        if self.bot:
-            await self.bot.session.close()
+    async def reconfigure(self, token: Optional[str] = None, admin_ids: Optional[list] = None, mode: Optional[str] = None) -> None:
+        """Dynamically reconfigure and restart the Telegram bot service in memory."""
+        await self.stop()
+        if token is not None:
+            self.config.TELEGRAM_BOT_TOKEN = token
+        if admin_ids is not None:
+            self.config.TELEGRAM_ADMIN_CHAT_IDS = admin_ids
+        if mode is not None:
+            self.config.TELEGRAM_MODE = mode
+
+        if self.config.TELEGRAM_BOT_TOKEN:
+            self._init_bot()
+            await self.start()
+        else:
+            self.bot = None
+            self.dp = None
 
     async def process_webhook_update(self, update_dict: dict) -> None:
         """Process incoming webhook update from FastAPI route."""

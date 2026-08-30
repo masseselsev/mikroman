@@ -485,8 +485,15 @@ class RouterOSClient:
                 ))
             return results
 
-    async def create_simple_queue(self, name: str, target: str, max_limit: str = "0/0", comment: Optional[str] = None) -> str:
-        """Create a new Simple Queue."""
+    async def create_simple_queue(
+        self,
+        name: str,
+        target: str,
+        max_limit: str = "0/0",
+        comment: Optional[str] = None,
+        parent: Optional[str] = None
+    ) -> str:
+        """Create a new Simple Queue (supporting hierarchical parent queue trees)."""
         async with self._get_client() as client:
             payload = {
                 "name": name,
@@ -494,21 +501,38 @@ class RouterOSClient:
                 "max-limit": max_limit,
                 "comment": comment or "mikroman:managed"
             }
+            if parent:
+                payload["parent"] = parent
             resp = await client.put("/queue/simple", json=payload)
             resp.raise_for_status()
             res_data = resp.json()
             return res_data.get(".id", "")
 
-    async def update_simple_queue(self, queue_id: str, max_limit: Optional[str] = None, target: Optional[str] = None, disabled: Optional[bool] = None) -> None:
+    async def update_simple_queue(
+        self,
+        queue_id: str,
+        name: Optional[str] = None,
+        max_limit: Optional[str] = None,
+        target: Optional[str] = None,
+        disabled: Optional[bool] = None,
+        comment: Optional[str] = None,
+        parent: Optional[str] = None
+    ) -> None:
         """Update an existing Simple Queue."""
         async with self._get_client() as client:
             payload = {}
+            if name is not None:
+                payload["name"] = name
             if max_limit is not None:
                 payload["max-limit"] = max_limit
             if target is not None:
                 payload["target"] = target
             if disabled is not None:
                 payload["disabled"] = "true" if disabled else "false"
+            if comment is not None:
+                payload["comment"] = comment
+            if parent is not None:
+                payload["parent"] = parent
 
             resp = await client.patch(f"/queue/simple/{queue_id}", json=payload)
             resp.raise_for_status()
@@ -548,6 +572,47 @@ class RouterOSClient:
         async with self._get_client() as client:
             resp = await client.delete(f"/ip/firewall/address-list/{entry_id}")
             resp.raise_for_status()
+
+    async def get_firewall_filter_rules(self) -> List[Dict[str, Any]]:
+        """Fetch firewall filter rules from RouterOS."""
+        async with self._get_client() as client:
+            resp = await client.get("/ip/firewall/filter")
+            if resp.status_code != 200:
+                return []
+            raw = resp.json()
+            return raw if isinstance(raw, list) else [raw]
+
+    async def update_firewall_filter_rule(self, rule_id: str, payload: Dict[str, Any]) -> bool:
+        """Update a firewall filter rule on RouterOS."""
+        async with self._get_client() as client:
+            resp = await client.patch(f"/ip/firewall/filter/{rule_id}", json=payload)
+            return resp.status_code in (200, 201, 204)
+
+    async def monitor_interface_traffic(self, interface_names: List[str]) -> List[Dict[str, Any]]:
+        """Fetch real-time traffic bandwidth rates using /interface/monitor-traffic."""
+        if not interface_names:
+            return []
+        async with self._get_client() as client:
+            try:
+                ifaces_str = ",".join(interface_names)
+                resp = await client.post("/interface/monitor-traffic", json={"interface": ifaces_str, "once": ""})
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if not isinstance(data, list):
+                        data = [data]
+                    return [
+                        {
+                            "name": item.get("name"),
+                            "rx_bits_per_second": float(item.get("rx-bits-per-second", 0) or 0),
+                            "tx_bits_per_second": float(item.get("tx-bits-per-second", 0) or 0),
+                            "rx_packets_per_second": float(item.get("rx-packets-per-second", 0) or 0),
+                            "tx_packets_per_second": float(item.get("tx-packets-per-second", 0) or 0),
+                        }
+                        for item in data if isinstance(item, dict) and "name" in item
+                    ]
+            except Exception as e:
+                logger.debug(f"Failed to monitor interface traffic: {e}")
+            return []
 
     async def reboot_system(self) -> bool:
         """Reboot MikroTik router."""
