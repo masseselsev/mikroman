@@ -32,11 +32,23 @@ class QuotaStatusDTO(BaseModel):
     # cycle. This is the headline number and what `on_track` is judged on.
     projected_bytes_linear: int = 0
     projected_pct_linear: float = 0.0
-    # "At current pace": the mean of the last few days, extrapolated over the
-    # days left. Reacts fast to a binge; shown as a secondary figure.
+    # "At current pace": the recent daily mean, blended with last cycle's daily
+    # average on a weight that ramps from 0 to 1 over the first 7 days, then
+    # extrapolated over the days left. Reacts to a binge without swinging wildly
+    # on day one. Shown as a secondary figure.
     pace_bytes_per_day: int = 0
     projected_bytes_at_pace: int = 0
     projected_pct_at_pace: float = 0.0
+    # The previous full billing cycle, for context and as the early-cycle anchor.
+    prev_cycle_bytes: int = 0
+    prev_cycle_bytes_per_day: int = 0
+    # 0.0 = pace is entirely last cycle's average, 1.0 = entirely this cycle's
+    # recent mean. Ramps over the first 7 days.
+    pace_blend_weight: float = 1.0
+    # 'blended' - recent mean blended with last cycle
+    # 'recent'  - recent mean only (no previous cycle on record)
+    # 'sparse'  - too little data anywhere; equals the conservative projection
+    pace_basis: str = "recent"
     # True while the conservative projection lands at or under the limit.
     on_track: bool = True
     thresholds: List[int] = Field(default_factory=list)

@@ -520,6 +520,34 @@ class TestOutageWithoutReboot:
         assert roll.bytes_out == 4_000_000
 
     @pytest.mark.asyncio
+    async def test_restarting_the_app_process_loses_no_traffic(self, session):
+        """The baseline lives in the database, not in the service object. A
+        container restart (or the app being down for a while) while the router
+        keeps running must credit the whole gap on the next collect, exactly
+        like a network outage."""
+        _, device = await _seed(session)
+        router = FakeRouter()
+
+        # First run of the app: establish the baseline, then it goes away.
+        svc_before = TrafficAccountingService(router, router_id=1)
+        await svc_before.sync_counter_rules(session)
+        router.set_bytes(device.id, "down", 3_000_000)
+        await svc_before.collect(session, router_uptime_seconds=5000)
+        del svc_before
+
+        # Router kept counting the whole time it was down; uptime advanced.
+        router.set_bytes(device.id, "down", 44_000_000)
+
+        # Fresh process: a brand-new service instance, same database.
+        svc_after = TrafficAccountingService(router, router_id=1)
+        await svc_after.collect(session, router_uptime_seconds=7000)
+
+        roll = (await session.execute(
+            select(DeviceTrafficRollup).where(DeviceTrafficRollup.device_id == device.id)
+        )).scalar_one()
+        assert roll.bytes_in == 41_000_000  # the entire gap, once
+
+    @pytest.mark.asyncio
     async def test_a_device_pruned_while_going_inactive_flushes_its_last_bytes(self, session):
         """The prune-before-collect hole: sync_counter_rules deletes the rule of
         a device that has gone inactive, so its final interval must be flushed

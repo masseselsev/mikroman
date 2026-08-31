@@ -157,10 +157,44 @@ async def build_quota_status(db: AsyncSession, router_id: Optional[int] = None) 
     avg_per_day = used / cycle_days_elapsed
     projected_bytes_linear = int(avg_per_day * cycle_days_total)
 
-    # "At current pace": mean of up to the last 7 daily totals actually on
-    # record for this cycle, added to what is already used.
+    # Previous full billing cycle's daily average - the anchor that keeps the
+    # "at current pace" figure from swinging wildly in the first days of a cycle,
+    # when it would otherwise rest on one or two samples.
+    prev_start, prev_end = get_billing_cycle_dates(anchor_day, today, previous=True)
+    prev_data = await AnalyticsEngine.get_historical_traffic(
+        session=db,
+        start_date=prev_start,
+        end_date=prev_end,
+        router_id=router_id,
+        range_preset="billing_previous",
+        anchor_day=anchor_day,
+    )
+    prev_cycle_bytes = prev_data.gateway.total_bytes
+    prev_cycle_days = max(1, (prev_end - prev_start).days + 1)
+    prev_per_day = (prev_cycle_bytes / prev_cycle_days) if prev_cycle_bytes > 0 else None
+
+    # "At current pace": the mean of up to the last 7 recorded days in this
+    # cycle. Early on that mean is noisy, so it is blended with last cycle's
+    # daily average on a weight that ramps from 0 to 1 over the first 7 days -
+    # day 1 leans entirely on last cycle, day 7+ entirely on the recent mean.
     recent = [p.total_bytes for p in sorted(data.timeline, key=lambda p: p.record_date)][-7:]
-    pace_per_day = (sum(recent) / len(recent)) if recent else avg_per_day
+    recent_mean = (sum(recent) / len(recent)) if recent else avg_per_day
+
+    if prev_per_day is not None:
+        pace_blend_weight = min(1.0, cycle_days_elapsed / 7.0)
+        pace_per_day = pace_blend_weight * recent_mean + (1.0 - pace_blend_weight) * prev_per_day
+        pace_basis = "blended"
+    elif len(recent) >= 3:
+        pace_blend_weight = 1.0
+        pace_per_day = recent_mean
+        pace_basis = "recent"
+    else:
+        # No previous cycle and barely any data this one: fall back to the same
+        # flat average the conservative projection uses, and say so.
+        pace_blend_weight = 1.0
+        pace_per_day = avg_per_day
+        pace_basis = "sparse"
+
     projected_bytes_at_pace = int(used + pace_per_day * days_left_after_today)
 
     return QuotaStatusDTO(
@@ -179,6 +213,10 @@ async def build_quota_status(db: AsyncSession, router_id: Optional[int] = None) 
         pace_bytes_per_day=int(pace_per_day),
         projected_bytes_at_pace=projected_bytes_at_pace,
         projected_pct_at_pace=round(projected_bytes_at_pace / limit * 100, 1) if limit else 0.0,
+        prev_cycle_bytes=prev_cycle_bytes,
+        prev_cycle_bytes_per_day=int(prev_per_day) if prev_per_day is not None else 0,
+        pace_blend_weight=round(pace_blend_weight, 2),
+        pace_basis=pace_basis,
         on_track=bool(limit) and projected_bytes_linear <= limit,
         thresholds=config.thresholds,
         thresholds_reached=await unfired_for_cycle(db, cycle_start),

@@ -189,6 +189,60 @@ async def test_quota_status_carries_a_consistent_end_of_cycle_forecast(api_clien
     # left, so it can never come out below what is already spent.
     assert q["projected_bytes_at_pace"] >= used
     assert q["pace_bytes_per_day"] >= 0
+    # No previous cycle on record, so the pace figure cannot be blended - it is
+    # either the recent trailing mean or, in the first day or two, the flat
+    # average. Never "blended" here.
+    assert q["pace_basis"] in ("recent", "sparse")
+    assert q["prev_cycle_bytes"] == 0
+
+
+@pytest.mark.asyncio
+async def test_pace_blends_in_the_previous_cycle_early_on(api_client: AsyncClient):
+    """Early in a cycle the recent mean rests on one or two samples. The pace
+    figure is blended with last cycle's daily average on a weight that ramps
+    over the first week, so it does not swing wildly."""
+    from datetime import date
+
+    from backend.app.db.models import RouterTrafficRollup
+    from backend.app.services.analytics_engine import get_billing_cycle_dates
+    from backend.app.services.router_time import router_local_date
+
+    await api_client.post("/api/v1/analytics/billing-cycle", json={"anchor_day": 1})
+    LIMIT = 100 * 1024 ** 3
+
+    async with api_client.session_factory() as session:
+        today = await router_local_date(session)
+        prev_start, prev_end = get_billing_cycle_dates(1, today, previous=True)
+        prev_days = (prev_end - prev_start).days + 1
+        # Previous cycle: a steady ~4 GiB/day, spread so the engine has a real
+        # daily series to total.
+        for i in range(prev_days):
+            session.add(RouterTrafficRollup(
+                router_id=1, record_date=date.fromordinal(prev_start.toordinal() + i),
+                bytes_in=int(3.5 * 1024 ** 3), bytes_out=int(0.5 * 1024 ** 3),
+            ))
+        # This cycle: one heavy 40 GiB day.
+        session.add(RouterTrafficRollup(
+            router_id=1, record_date=today,
+            bytes_in=38 * 1024 ** 3, bytes_out=2 * 1024 ** 3,
+        ))
+        await session.commit()
+
+    await api_client.post(
+        "/api/v1/analytics/quota",
+        json={"limit_bytes": LIMIT, "thresholds": [80], "notify_telegram": False},
+    )
+    q = (await api_client.get("/api/v1/analytics/quota")).json()["data"]
+
+    assert q["pace_basis"] == "blended"
+    assert 0.0 <= q["pace_blend_weight"] <= 1.0
+    assert q["prev_cycle_bytes"] > 0
+    assert q["prev_cycle_bytes_per_day"] > 0
+    # The blended per-day rate sits between last cycle's average and this
+    # cycle's spike, never outside them.
+    lo = min(q["prev_cycle_bytes_per_day"], 40 * 1024 ** 3)
+    hi = max(q["prev_cycle_bytes_per_day"], 40 * 1024 ** 3)
+    assert lo <= q["pace_bytes_per_day"] <= hi
 
 
 @pytest.mark.asyncio
