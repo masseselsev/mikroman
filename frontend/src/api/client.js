@@ -40,6 +40,13 @@ export const api = {
   deleteRouter: (id) => request(`/routers/${id}`, { method: 'DELETE' }),
   activateRouter: (id) => request(`/routers/${id}/activate`, { method: 'POST' }),
 
+  // Containers (optional RouterOS package)
+  getContainers: (routerId) => request(`/routers/${routerId}/containers`),
+  containerAction: (routerId, containerId, action) =>
+    request(`/routers/${routerId}/containers/${encodeURIComponent(containerId)}/${action}`, { method: 'POST' }),
+  createContainer: (routerId, payload) =>
+    request(`/routers/${routerId}/containers`, { method: 'POST', body: JSON.stringify(payload) }),
+
   // Users
   getUsers: () => request('/users'),
   createUser: (data) => request('/users', { method: 'POST', body: JSON.stringify(data) }),

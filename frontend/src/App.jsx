@@ -15,7 +15,8 @@ import { mergeTelemetryIntoUsers } from './utils/telemetryMerge';
 import { SetupWizard } from './components/SetupWizard';
 import { AppFooter } from './components/AppFooter';
 import { QuotaStrip } from './components/QuotaStrip';
-import { Users, Laptop, Activity, BarChart2, Plus, AlertCircle, EyeOff, ChevronDown, ChevronRight, AlertTriangle } from 'lucide-react';
+import { ContainersPage } from './components/ContainersPage';
+import { Users, Laptop, Activity, BarChart2, Plus, AlertCircle, EyeOff, ChevronDown, ChevronRight, AlertTriangle, Container } from 'lucide-react';
 
 export function App() {
   const { t } = useI18n();
@@ -278,6 +279,14 @@ export function App() {
             <Activity size={18} />
             {t('tab_health')}
           </button>
+
+          <button
+            className={`nav-tab ${activeTab === 'containers' ? 'active' : ''}`}
+            onClick={() => setActiveTab('containers')}
+          >
+            <Container size={18} />
+            {t('tab_containers')}
+          </button>
         </div>
 
         {/* Tab Content: Users */}
@@ -372,6 +381,11 @@ export function App() {
         {/* Tab Content: Historical Traffic Analytics */}
         {activeTab === 'analytics' && (
           <TrafficAnalytics activeRouter={activeRouter} />
+        )}
+
+        {/* Tab Content: RouterOS Containers */}
+        {activeTab === 'containers' && (
+          <ContainersPage activeRouter={activeRouter} />
         )}
 
         {/* Tab Content: Unassigned Devices */}

@@ -1,6 +1,7 @@
 from fastapi import APIRouter
 
 from backend.app.api.v1.endpoints.analytics import router as analytics_router
+from backend.app.api.v1.endpoints.containers import router as containers_router
 from backend.app.api.v1.endpoints.devices import router as devices_router
 from backend.app.api.v1.endpoints.metrics import router as metrics_router
 from backend.app.api.v1.endpoints.routers import router as routers_router
@@ -18,3 +19,4 @@ api_v1_router.include_router(system_router)
 api_v1_router.include_router(telegram_router)
 api_v1_router.include_router(metrics_router)
 api_v1_router.include_router(analytics_router)
+api_v1_router.include_router(containers_router)

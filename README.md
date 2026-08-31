@@ -56,6 +56,11 @@ govern adding new router calls.
   * **Configurable Temperature Warning Threshold**: Custom thermal alert threshold (e.g. 75°C, 80°C, 85°C) with dashed visual threshold markers and telemetry warnings.
   * Multi-interface aggregate bandwidth monitoring (e.g. WAN `ether1` + `sfp-plus1`) with selectable interface checkboxes and live throughput sum.
 
+* **📦 Container Management (RouterOS `container` package):**
+  * A **Containers** tab for the selected router: list every container with its status, architecture, veth interface, root directory and start-on-boot flag; **start / stop / remove** per row; and an **add** form that creates one from a remote image (interface, root dir, hostname, command, entrypoint, a mount name and an env-list name picked from the router's own `/container/mounts` and `/container/envs`, plus start-on-boot and logging).
+  * **Degrades gracefully**: the container package is optional and absent on a stock install. `GET /api/v1/routers/{id}/containers` always returns a `support` block — `ready`, `not_installed`, `disabled` (installed but needs enable + reboot) or `unreachable` — and the page shows an explanatory banner with the controls disabled rather than an error. Action endpoints return `409` when the feature is not ready.
+  * Reference panels show the router's global container config (`registry-url`, `tmpdir`, `layer-dir`, `ram-high`) and the defined mounts and env vars. MikroMan only ever touches containers through the documented REST endpoints.
+
 * **🔍 Device Discovery, Auto-Scan Toggle & Hidden Devices:**
   * **Background Auto-Scan Toggle**: Control automatic network polling with a single switch; can be paused directly from the Unassigned Devices inbox or Settings modal.
   * **Hidden Devices for Technical / IoT Infrastructure**: Mark infrastructure hardware (modems, smart home gateways, IoT sensors) as hidden so they don't clutter default views, with an unselected-by-default "Show Hidden Devices" filter.
