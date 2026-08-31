@@ -47,6 +47,13 @@ export function QuotaStrip({ activeRouterId, onOpenSettings }) {
   const pacePct = q.projected_pct_at_pace || 0;
   const onTrack = q.on_track;
 
+  // What the "at pace" number currently rests on, for its tooltip.
+  const paceTitle = {
+    blended: t('quota_pace_blended'),
+    recent: t('quota_pace_recent'),
+    sparse: t('quota_pace_sparse'),
+  }[q.pace_basis] || t('quota_pace_recent');
+
   // The bar is coloured by where the projection lands, not by today's usage:
   // 40% used but heading for 130% is the situation worth flagging early.
   const accent = !onTrack
@@ -84,8 +91,8 @@ export function QuotaStrip({ activeRouterId, onOpenSettings }) {
         <span className="font-mono quota-strip-proj" style={{ color: accent }}>
           {t('quota_projected')} {projPct}%
         </span>
-        <span className="font-mono quota-strip-pace">
-          {t('quota_at_pace')} {pacePct}%
+        <span className="font-mono quota-strip-pace" title={paceTitle}>
+          {t('quota_at_pace')} {q.pace_basis === 'sparse' ? '~' : ''}{pacePct}%
         </span>
       </span>
 
