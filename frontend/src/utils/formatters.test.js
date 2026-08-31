@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { formatBytes, formatRelativeTime, formatSpeed, formatSpeedShort, formatUptime } from './formatters';
+import { formatBytes, formatGbWhole, formatRelativeTime, formatSpeed, formatSpeedShort, formatUptime } from './formatters';
 
 /**
  * These decide what every figure on the dashboard actually reads as, so their
@@ -74,6 +74,26 @@ describe('formatSpeedShort', () => {
 
   it('reports sub-kbit rates as a bare number', () => {
     expect(formatSpeedShort(512)).toBe('512');
+  });
+});
+
+describe('formatGbWhole', () => {
+  const GiB = 1024 ** 3;
+
+  it('is 0 for nothing or a negative', () => {
+    expect(formatGbWhole(0)).toBe(0);
+    expect(formatGbWhole(null)).toBe(0);
+    expect(formatGbWhole(-5)).toBe(0);
+  });
+
+  it('rounds to whole GiB, half rounding up', () => {
+    expect(formatGbWhole(0.4 * GiB)).toBe(0);
+    expect(formatGbWhole(0.5 * GiB)).toBe(1);
+    expect(formatGbWhole(46.7 * GiB)).toBe(47);
+  });
+
+  it('returns a number, not a string with a unit', () => {
+    expect(formatGbWhole(3 * GiB)).toBe(3);
   });
 });
 

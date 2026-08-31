@@ -1,7 +1,19 @@
 from datetime import date, datetime
 from typing import List, Optional
 
-from sqlalchemy import JSON, BigInteger, Boolean, Date, DateTime, Float, ForeignKey, Integer, String, func
+from sqlalchemy import (
+    JSON,
+    BigInteger,
+    Boolean,
+    Date,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -109,6 +121,41 @@ class DeviceHistory(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), nullable=False)
 
     device: Mapped["Device"] = relationship("Device", back_populates="history")
+
+
+class DeviceCoexistence(Base):
+    """Two private MAC addresses seen active on the router in the same sweep.
+
+    A phone that rotates its address stops answering on the old one the instant
+    it starts using the new one - there is only ever one radio. Two records seen
+    online *together* therefore cannot be one phone wearing two addresses; they
+    are two physical devices. This table remembers that, so the consolidation
+    pass will not merge them however identical their hostnames look - the case of
+    three people each owning a plain "iPhone", or one person with two of the same
+    model.
+
+    Keyed by address rather than device id so a row survives its device being
+    absorbed by a merge. The pair is always stored with ``mac_a <= mac_b`` so a
+    given pair has exactly one row regardless of which address was seen first.
+    """
+
+    __tablename__ = "device_coexistence"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    mac_a: Mapped[str] = mapped_column(String(17), nullable=False, index=True)
+    mac_b: Mapped[str] = mapped_column(String(17), nullable=False, index=True)
+    # The shared normalised hostname at the time the pair was first recorded -
+    # kept only to make the alert and the logs legible.
+    hostname: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    first_seen_together: Mapped[datetime] = mapped_column(DateTime, default=func.now(), nullable=False)
+    last_seen_together: Mapped[datetime] = mapped_column(
+        DateTime, default=func.now(), onupdate=func.now(), nullable=False
+    )
+    observations: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("mac_a", "mac_b", name="uq_device_coexistence_pair"),
+    )
 
 
 class TrafficRollup(Base):

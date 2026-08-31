@@ -34,7 +34,7 @@ suggestions, which is a slower answer but a true one.
 """
 
 import logging
-from typing import Iterable, List, Optional, Sequence, Set
+from typing import Iterable, List, Optional, Sequence, Set, Tuple
 
 from backend.app.db.models import Device
 from backend.app.services.vendor_lookup import vendor_service
@@ -147,6 +147,17 @@ def find_rotation_candidate(
         return None
 
     return candidates[0]
+
+
+def canonical_pair(mac_a: str, mac_b: str) -> Tuple[str, str]:
+    """The ``(low, high)`` ordering a co-presence pair is stored and looked up in.
+
+    ``device_coexistence`` holds one row per unordered pair; forcing a stable
+    order here means both the writer and every reader agree on which address is
+    ``mac_a``, so the unique constraint does its job and lookups never miss a
+    pair just because the arguments arrived the other way round.
+    """
+    return (mac_a, mac_b) if mac_a <= mac_b else (mac_b, mac_a)
 
 
 def collect_present_macs(*sources: Sequence) -> Set[str]:

@@ -375,7 +375,7 @@ class TestConsolidateRotatedDevices:
         await session.commit()
         live_id = live.id
 
-        removed = await (await self._mgr()).consolidate_rotated_devices(session)
+        removed = await (await self._mgr()).consolidate_rotated_devices(session, settle_hours=0)
 
         assert removed == 2
         rows = (await session.execute(select(Device))).scalars().all()
@@ -400,7 +400,7 @@ class TestConsolidateRotatedDevices:
         session.add_all([owned, orphan])
         await session.commit()
 
-        removed = await (await self._mgr()).consolidate_rotated_devices(session)
+        removed = await (await self._mgr()).consolidate_rotated_devices(session, settle_hours=0)
 
         assert removed == 1
         rows = (await session.execute(select(Device))).scalars().all()
@@ -440,7 +440,7 @@ class TestConsolidateRotatedDevices:
         await session.commit()
         live_id = live.id
 
-        await (await self._mgr()).consolidate_rotated_devices(session)
+        await (await self._mgr()).consolidate_rotated_devices(session, settle_hours=0)
 
         hist = (await session.execute(
             select(DeviceHistory).where(DeviceHistory.device_id == live_id)
@@ -474,7 +474,7 @@ class TestConsolidateRotatedDevices:
         ])
         await session.commit()
 
-        removed = await (await self._mgr()).consolidate_rotated_devices(session)
+        removed = await (await self._mgr()).consolidate_rotated_devices(session, settle_hours=0)
 
         assert removed == 0
         assert len((await session.execute(select(Device))).scalars().all()) == 2
@@ -500,7 +500,7 @@ class TestConsolidateRotatedDevices:
         ])
         await session.commit()
 
-        removed = await (await self._mgr()).consolidate_rotated_devices(session)
+        removed = await (await self._mgr()).consolidate_rotated_devices(session, settle_hours=0)
 
         assert removed == 2
 
@@ -521,7 +521,7 @@ class TestConsolidateRotatedDevices:
         ])
         await session.commit()
 
-        removed = await (await self._mgr()).consolidate_rotated_devices(session)
+        removed = await (await self._mgr()).consolidate_rotated_devices(session, settle_hours=0)
 
         assert removed == 0
 
@@ -539,7 +539,7 @@ class TestConsolidateRotatedDevices:
         ])
         await session.commit()
 
-        removed = await (await self._mgr()).consolidate_rotated_devices(session)
+        removed = await (await self._mgr()).consolidate_rotated_devices(session, settle_hours=0)
 
         # Only the two randomized rows would ever group; here one is a burned-in
         # address, so there is no group of 2+ to collapse.
@@ -568,7 +568,239 @@ class TestConsolidateRotatedDevices:
         await session.commit()
         live_id, adapter_id = live.id, adapter.id
 
-        await (await self._mgr()).consolidate_rotated_devices(session)
+        await (await self._mgr()).consolidate_rotated_devices(session, settle_hours=0)
 
         moved = await session.get(Device, adapter_id)
         assert moved.linked_to_device_id == live_id
+
+
+class MultiClientRouter:
+    """A router reporting several DHCP/ARP clients at once, for the co-presence
+    path - where the point is precisely that two same-named devices are on the
+    network in the same sweep."""
+
+    def __init__(self, clients):
+        # clients: list of (mac, hostname)
+        self._clients = clients
+
+    async def get_dhcp_leases(self):
+        return [
+            DHCPLeaseDTO(address=f"192.168.88.{200 + i}", mac_address=mac,
+                         host_name=host, status="bound")
+            for i, (mac, host) in enumerate(self._clients)
+        ]
+
+    async def get_arp_table(self):
+        return [
+            ARPTableEntry(address=f"192.168.88.{200 + i}", mac_address=mac,
+                          interface="bridge", complete=True)
+            for i, (mac, _host) in enumerate(self._clients)
+        ]
+
+    async def get_wifi_registrations(self):
+        return []
+
+
+class TestCoexistenceGuard:
+    """Two devices with one hostname that are genuinely two devices.
+
+    Three people each with a bare "iPhone", or one person with two of the same
+    Pixel. The signature that tells them apart from a rotation is co-presence:
+    one radio cannot answer on two addresses in the same sweep, so if we ever
+    see both at once they are two phones and must never be merged.
+    """
+
+    async def _mgr(self):
+        return DeviceManager(RotatingRouter(new_mac="x", hostname="x"))
+
+    @pytest.mark.asyncio
+    async def test_a_sweep_with_two_same_named_privates_records_the_pair(self, session):
+        from backend.app.db.models import DeviceCoexistence
+
+        router = MultiClientRouter([
+            (PRIVATE_A, "Pixel-9-Pro-XL"),
+            (PRIVATE_B, "Pixel-9-Pro-XL"),
+        ])
+        await DeviceManager(router).sync_devices_from_router(session)
+
+        pairs = (await session.execute(select(DeviceCoexistence))).scalars().all()
+        assert len(pairs) == 1
+        # Stored low-then-high so the pair has exactly one row.
+        assert (pairs[0].mac_a, pairs[0].mac_b) == tuple(sorted([PRIVATE_A, PRIVATE_B]))
+        assert pairs[0].hostname == "pixel-9-pro-xl"
+
+    @pytest.mark.asyncio
+    async def test_different_hostnames_in_one_sweep_are_not_a_pair(self, session):
+        from backend.app.db.models import DeviceCoexistence
+
+        router = MultiClientRouter([
+            (PRIVATE_A, "Pixel-9-Pro-XL"),
+            (PRIVATE_B, "Kristina-iPhone"),
+        ])
+        await DeviceManager(router).sync_devices_from_router(session)
+
+        assert (await session.execute(select(DeviceCoexistence))).scalars().all() == []
+
+    @pytest.mark.asyncio
+    async def test_consolidation_refuses_a_pair_ever_seen_together(self, session):
+        """Even with both rows offline now and one owner, a recorded co-presence
+        is decisive: leave them alone."""
+        from datetime import datetime
+
+        from backend.app.db.models import AlertLog, DeviceCoexistence
+
+        user = User(name="Mark", speed_limit="unlimited")
+        session.add(user)
+        await session.commit()
+
+        lo, hi = sorted([PRIVATE_A, PRIVATE_B])
+        session.add_all([
+            Device(mac_address=PRIVATE_A, hostname="Pixel-9-Pro-XL", custom_name="Pixel-9-Pro-XL",
+                   user_id=user.id, is_active=False, last_seen=datetime(2026, 1, 1, 9, 0)),
+            Device(mac_address=PRIVATE_B, hostname="Pixel-9-Pro-XL", custom_name="Pixel-9-Pro-XL",
+                   user_id=user.id, is_active=False, last_seen=datetime(2026, 1, 2, 9, 0)),
+            DeviceCoexistence(mac_a=lo, mac_b=hi, hostname="pixel-9-pro-xl"),
+        ])
+        await session.commit()
+
+        removed = await (await self._mgr()).consolidate_rotated_devices(session, settle_hours=0)
+
+        assert removed == 0
+        assert len((await session.execute(select(Device))).scalars().all()) == 2
+        alerts = (await session.execute(
+            select(AlertLog).where(AlertLog.alert_type == "mac_rotated_multi")
+        )).scalars().all()
+        assert len(alerts) == 1
+
+    @pytest.mark.asyncio
+    async def test_the_multiple_device_alert_is_not_repeated_every_pass(self, session):
+        from datetime import datetime
+
+        from backend.app.db.models import AlertLog, DeviceCoexistence
+
+        user = User(name="Mark", speed_limit="unlimited")
+        session.add(user)
+        await session.commit()
+        lo, hi = sorted([PRIVATE_A, PRIVATE_B])
+        session.add_all([
+            Device(mac_address=PRIVATE_A, hostname="Pixel-9-Pro-XL", custom_name="Pixel-9-Pro-XL",
+                   user_id=user.id, is_active=False, last_seen=datetime(2026, 1, 1, 9, 0)),
+            Device(mac_address=PRIVATE_B, hostname="Pixel-9-Pro-XL", custom_name="Pixel-9-Pro-XL",
+                   user_id=user.id, is_active=False, last_seen=datetime(2026, 1, 2, 9, 0)),
+            DeviceCoexistence(mac_a=lo, mac_b=hi, hostname="pixel-9-pro-xl"),
+        ])
+        await session.commit()
+
+        mgr = await self._mgr()
+        await mgr.consolidate_rotated_devices(session, settle_hours=0)
+        await mgr.consolidate_rotated_devices(session, settle_hours=0)
+        await mgr.consolidate_rotated_devices(session, settle_hours=0)
+
+        alerts = (await session.execute(
+            select(AlertLog).where(AlertLog.alert_type == "mac_rotated_multi")
+        )).scalars().all()
+        assert len(alerts) == 1
+
+    @pytest.mark.asyncio
+    async def test_adoption_refuses_a_candidate_that_coexists_with_a_sibling(self, session):
+        """A never-seen MAC arrives for "Pixel-9-Pro-XL". Exactly one prior row
+        matches - but that row has a co-presence record, so the name is more
+        than one phone and re-keying would be a guess."""
+        from datetime import datetime
+
+        from backend.app.db.models import DeviceCoexistence
+
+        user = User(name="Mark", speed_limit="unlimited")
+        session.add(user)
+        await session.commit()
+
+        lo, hi = sorted([PRIVATE_A, PRIVATE_C])
+        session.add_all([
+            Device(mac_address=PRIVATE_A, hostname="Pixel-9-Pro-XL", custom_name="Pixel-9-Pro-XL",
+                   user_id=user.id, is_active=False, last_seen=datetime(2026, 1, 1, 9, 0)),
+            DeviceCoexistence(mac_a=lo, mac_b=hi, hostname="pixel-9-pro-xl"),
+        ])
+        await session.commit()
+
+        router = RotatingRouter(new_mac=PRIVATE_B, hostname="Pixel-9-Pro-XL")
+        await DeviceManager(router).sync_devices_from_router(session)
+
+        devices = (await session.execute(select(Device))).scalars().all()
+        assert len(devices) == 2, "the new address must not be adopted onto a multi-device name"
+
+
+class TestRotationSettlingWindow:
+    """A duplicate is absorbed only once it has been silent long enough that a
+    rotation is the better explanation than a phone that is briefly offline."""
+
+    async def _mgr(self):
+        return DeviceManager(RotatingRouter(new_mac="x", hostname="x"))
+
+    @pytest.mark.asyncio
+    async def test_a_freshly_silent_duplicate_is_left_for_later(self, session):
+        from datetime import datetime, timedelta, timezone
+
+        user = User(name="M", speed_limit="unlimited")
+        session.add(user)
+        await session.commit()
+
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        session.add_all([
+            Device(mac_address=PRIVATE_A, hostname="Pixel-9-Pro-XL", custom_name="Pixel-9-Pro-XL",
+                   user_id=user.id, is_active=False, last_seen=now - timedelta(hours=3)),
+            Device(mac_address=PRIVATE_B, hostname="Pixel-9-Pro-XL", custom_name="Pixel-9-Pro-XL",
+                   user_id=user.id, is_active=True, last_seen=now),
+        ])
+        await session.commit()
+
+        removed = await (await self._mgr()).consolidate_rotated_devices(session, settle_hours=48)
+
+        assert removed == 0
+        assert len((await session.execute(select(Device))).scalars().all()) == 2
+
+    @pytest.mark.asyncio
+    async def test_a_long_silent_duplicate_is_absorbed(self, session):
+        from datetime import datetime, timedelta, timezone
+
+        user = User(name="M", speed_limit="unlimited")
+        session.add(user)
+        await session.commit()
+
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        session.add_all([
+            Device(mac_address=PRIVATE_A, hostname="Pixel-9-Pro-XL", custom_name="Pixel-9-Pro-XL",
+                   user_id=user.id, is_active=False, last_seen=now - timedelta(hours=72)),
+            Device(mac_address=PRIVATE_B, hostname="Pixel-9-Pro-XL", custom_name="Pixel-9-Pro-XL",
+                   user_id=user.id, is_active=True, last_seen=now),
+        ])
+        await session.commit()
+
+        removed = await (await self._mgr()).consolidate_rotated_devices(session, settle_hours=48)
+
+        assert removed == 1
+        assert len((await session.execute(select(Device))).scalars().all()) == 1
+
+    @pytest.mark.asyncio
+    async def test_the_window_falls_back_to_the_app_setting(self, session):
+        from datetime import datetime, timedelta, timezone
+
+        from backend.app.db.models import AppSetting
+
+        user = User(name="M", speed_limit="unlimited")
+        session.add(user)
+        session.add(AppSetting(key="mac_rotation_settle_hours", value="1"))
+        await session.commit()
+
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        session.add_all([
+            Device(mac_address=PRIVATE_A, hostname="Pixel-9-Pro-XL", custom_name="Pixel-9-Pro-XL",
+                   user_id=user.id, is_active=False, last_seen=now - timedelta(hours=6)),
+            Device(mac_address=PRIVATE_B, hostname="Pixel-9-Pro-XL", custom_name="Pixel-9-Pro-XL",
+                   user_id=user.id, is_active=True, last_seen=now),
+        ])
+        await session.commit()
+
+        # No settle_hours passed -> reads "1" from settings; the 6h-stale row is ripe.
+        removed = await (await self._mgr()).consolidate_rotated_devices(session)
+
+        assert removed == 1

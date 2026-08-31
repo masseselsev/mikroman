@@ -10,6 +10,18 @@ export function formatBytes(bytes) {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
 }
 
+/**
+ * Whole gigabytes, rounded the ordinary way (half rounds up): 0, 1, 2, 47.
+ * For the dense per-device volume readout where a decimal and a unit would not
+ * fit and are not the point - "roughly how much has this device pulled" is.
+ * GiB (1024^3) to match `formatBytes`, so a device that reads "47" here also
+ * reads "47.x GB" in its tooltip.
+ */
+export function formatGbWhole(bytes) {
+  if (!bytes || bytes < 0) return 0;
+  return Math.round(bytes / (1024 ** 3));
+}
+
 export function formatSpeed(bps) {
   if (!bps || bps === 0) return '0 bps';
   if (bps < 1000) return `${bps} bps`;

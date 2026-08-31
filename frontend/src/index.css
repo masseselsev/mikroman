@@ -1026,6 +1026,23 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
   font-variant-numeric: tabular-nums;
 }
 
+/* Compact "today / all-time / share" volume, in whole GB, beside the name.
+   Fixed and small so it never competes with the name for width; the units and
+   the field legend live in its title tooltip. */
+.drow-vol {
+  flex-shrink: 0;
+  font-size: var(--fs-2xs);
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+  cursor: help;
+}
+
+.drow-vol-sep {
+  margin: 0 2px;
+  opacity: 0.5;
+}
+
 /* Line 2: one truncating run of facts, then the actions pinned right. */
 .drow-sub {
   display: flex;

@@ -1,6 +1,6 @@
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Tuple
 
 from sqlalchemy import select
@@ -11,12 +11,14 @@ from backend.app.db.models import (
     AlertLog,
     AppSetting,
     Device,
+    DeviceCoexistence,
     DeviceHistory,
 )
 from backend.app.schemas.device import DeviceSuggestionDTO
 from backend.app.schemas.routeros import ARPTableEntry, DHCPLeaseDTO, WiFiRegistrationDTO
 from backend.app.services.device_linking import classify_connection
 from backend.app.services.mac_rotation import (
+    canonical_pair,
     collect_present_macs,
     find_rotation_candidate,
     is_generic_hostname,
@@ -26,6 +28,13 @@ from backend.app.services.routeros import RouterOSClient
 from backend.app.services.vendor_lookup import vendor_service
 
 logger = logging.getLogger("mikroman.device_manager")
+
+# How long a duplicate row must have been continuously silent before the
+# consolidation pass will absorb it into the record it looks like a rotation of.
+# A phone that has merely been asleep for an evening is not yet evidence of a
+# rotation; one that has not been seen for two days almost certainly is. The
+# operator can override this with the ``mac_rotation_settle_hours`` app setting.
+DEFAULT_ROTATION_SETTLE_HOURS = 48.0
 
 # Placeholder identities worth re-resolving once a hostname becomes known.
 GENERIC_VENDOR_LABELS = {
@@ -115,6 +124,29 @@ class DeviceManager:
         """
         candidate = find_rotation_candidate(new_mac, hostname, db_devices.values(), present_macs)
         if candidate is None:
+            return False
+
+        # If the candidate has ever been seen online next to another device of
+        # the same name, that name denotes more than one radio in this house.
+        # "Exactly one prior record" is then no longer a safe basis for re-keying
+        # - the address that just appeared could belong to any of them, or be a
+        # genuinely new arrival. Leave it for the operator to resolve.
+        coexists = (
+            await session.execute(
+                select(DeviceCoexistence)
+                .where(
+                    (DeviceCoexistence.mac_a == candidate.mac_address)
+                    | (DeviceCoexistence.mac_b == candidate.mac_address)
+                )
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if coexists is not None:
+            logger.info(
+                f"Not adopting {new_mac} onto {candidate.mac_address}: that record has "
+                f"been seen online beside another same-named device, so "
+                f"'{hostname or candidate.hostname}' is more than one device here"
+            )
             return False
 
         old_mac = candidate.mac_address
@@ -414,8 +446,74 @@ class DeviceManager:
             if device.is_active:
                 device.last_seen = now_utc
 
+        # Remember any pair of same-named private-MAC devices that were both
+        # online in this sweep. That is the evidence consolidation needs to keep
+        # two real phones apart later, when only one of them happens to be on.
+        await self._record_coexistence(session, db_devices, active_macs, now_utc)
+
         await session.commit()
         return list(db_devices.values()), newly_discovered
+
+    async def _record_coexistence(
+        self,
+        session: AsyncSession,
+        db_devices: dict,
+        active_macs: set,
+        now_utc: datetime,
+    ) -> None:
+        """Log every pair of same-named private-MAC devices seen online together.
+
+        One radio cannot answer on two addresses at once, so two private MACs
+        active in the same sweep under one hostname are two physical devices, not
+        one phone mid-rotation. Recording the pair in ``device_coexistence`` is
+        what stops :meth:`consolidate_rotated_devices` from later folding them
+        into each other once only one of the two is online.
+
+        Only randomized addresses are considered - a burned-in MAC never rotates,
+        so it is never a consolidation candidate and a co-presence record for it
+        would carry no weight.
+        """
+        by_name: dict = {}
+        for mac in active_macs:
+            device = db_devices.get(mac)
+            if device is None or not vendor_service.is_randomized_mac(mac):
+                continue
+            name = normalise_hostname(device.custom_name) or normalise_hostname(device.hostname)
+            if not name:
+                continue
+            by_name.setdefault(name, []).append(mac)
+
+        for name, macs in by_name.items():
+            if len(macs) < 2:
+                continue
+            ordered = sorted(macs)
+            for i in range(len(ordered)):
+                for j in range(i + 1, len(ordered)):
+                    mac_a, mac_b = ordered[i], ordered[j]
+                    existing = (
+                        await session.execute(
+                            select(DeviceCoexistence).where(
+                                DeviceCoexistence.mac_a == mac_a,
+                                DeviceCoexistence.mac_b == mac_b,
+                            )
+                        )
+                    ).scalar_one_or_none()
+                    if existing is not None:
+                        existing.last_seen_together = now_utc
+                        existing.observations += 1
+                        continue
+                    session.add(DeviceCoexistence(
+                        mac_a=mac_a,
+                        mac_b=mac_b,
+                        hostname=name,
+                        first_seen_together=now_utc,
+                        last_seen_together=now_utc,
+                        observations=1,
+                    ))
+                    logger.info(
+                        f"Recorded co-presence of {mac_a} and {mac_b} (both '{name}'): "
+                        f"two devices sharing one name, they will not be auto-merged"
+                    )
 
     async def find_merge_suggestions(self, session: AsyncSession) -> List[DeviceSuggestionDTO]:
         """Identifies unassigned devices that likely belong to an existing user device (e.g. MAC rotation)."""
@@ -431,6 +529,11 @@ class DeviceManager:
         )
         assigned_devs = assigned_res.scalars().all()
 
+        # Pairs proven distinct by having been online together. A merge the
+        # automatic pass would refuse must not be offered here either.
+        coex_rows = (await session.execute(select(DeviceCoexistence))).scalars().all()
+        coex_pairs = {canonical_pair(r.mac_a, r.mac_b) for r in coex_rows}
+
         suggestions: List[DeviceSuggestionDTO] = []
 
         for u_dev in unassigned_devs:
@@ -445,6 +548,11 @@ class DeviceManager:
 
             for a_dev in assigned_devs:
                 if not a_dev.user:
+                    continue
+
+                # Ever seen online at the same instant as the candidate -> two
+                # radios, not one rotated address. Never suggest merging them.
+                if canonical_pair(u_dev.mac_address, a_dev.mac_address) in coex_pairs:
                     continue
 
                 a_host = (a_dev.hostname or a_dev.custom_name or "").strip().lower()
@@ -547,7 +655,9 @@ class DeviceManager:
         await session.delete(victim)
         await session.flush()
 
-    async def consolidate_rotated_devices(self, session: AsyncSession) -> int:
+    async def consolidate_rotated_devices(
+        self, session: AsyncSession, *, settle_hours: Optional[float] = None
+    ) -> int:
         """Collapse the rows left behind by repeated private-MAC rotation.
 
         Discovery-time adoption (:func:`mac_rotation.find_rotation_candidate`)
@@ -569,11 +679,26 @@ class DeviceManager:
         in the group are adopted onto the same owner in the process, which is
         the automatic merge that manual suggestions used to require a click for.
 
-        A **generic** hostname ("iPhone", "android" - names a house can hold two
-        of) is held to a stricter bar: the rows must also share one vendor and
-        no more than one may be currently active. Two "iPhone" rows both online
-        under one user really could be two phones; three where two are stale is
-        one phone that rotated.
+        Two safeguards keep this from folding together devices that only *look*
+        alike - three people who each own a bare "iPhone", or one person with
+        two of the same model:
+
+        * **Co-presence is decisive.** If any two rows in the group were ever
+          seen online in the same discovery sweep (recorded in
+          ``device_coexistence``), the group holds more than one physical device
+          and is left completely alone. One radio cannot answer on two addresses
+          at once, so co-presence is proof, not a guess.
+        * **A quiet period must pass.** A duplicate row is only absorbed once it
+          has been continuously silent for ``settle_hours`` (default
+          :data:`DEFAULT_ROTATION_SETTLE_HOURS`, overridable via the
+          ``mac_rotation_settle_hours`` app setting). A phone that is merely
+          asleep for the evening is not yet evidence of a rotation; one unseen
+          for two days is. Rows still inside the window are left for a later
+          pass.
+
+        A **generic** hostname ("iPhone", "android") keeps its extra bar on top
+        of the above: the rows must also share one vendor and no more than one
+        may be currently active.
 
         A group whose rows are split across two different users is left alone -
         that is two people who genuinely own a device of the same model, and
@@ -582,7 +707,24 @@ class DeviceManager:
         Returns:
             Number of duplicate rows removed.
         """
-        from datetime import datetime
+        if settle_hours is None:
+            setting = (
+                await session.execute(
+                    select(AppSetting).where(AppSetting.key == "mac_rotation_settle_hours")
+                )
+            ).scalar_one_or_none()
+            try:
+                settle_hours = float(setting.value) if setting and setting.value else DEFAULT_ROTATION_SETTLE_HOURS
+            except (TypeError, ValueError):
+                settle_hours = DEFAULT_ROTATION_SETTLE_HOURS
+
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        settle_cutoff = now - timedelta(hours=settle_hours)
+
+        # Every pair of addresses ever seen online together, in the same (low,
+        # high) ordering the recorder used, so a membership test cannot miss one.
+        coex_rows = (await session.execute(select(DeviceCoexistence))).scalars().all()
+        coex_pairs = {canonical_pair(r.mac_a, r.mac_b) for r in coex_rows}
 
         devices = (await session.execute(select(Device))).scalars().all()
 
@@ -596,6 +738,7 @@ class DeviceManager:
             groups.setdefault(name, []).append(device)
 
         removed = 0
+        made_changes = False
         for name, members in groups.items():
             if len(members) < 2:
                 continue
@@ -610,6 +753,34 @@ class DeviceManager:
             if not owners:
                 # All unassigned - could be two guests with the same phone
                 # model. Left for the manual merge-suggestions flow.
+                continue
+
+            # Co-presence: were any two of these rows ever online at the same
+            # instant? If so this name is several radios, not one rotating phone.
+            member_macs = sorted(d.mac_address for d in members)
+            seen_together = [
+                (a, b)
+                for i, a in enumerate(member_macs)
+                for b in member_macs[i + 1:]
+                if canonical_pair(a, b) in coex_pairs
+            ]
+            if seen_together:
+                logger.info(
+                    f"Not consolidating {len(members)} '{name}' records: {len(seen_together)} "
+                    f"pair(s) were seen online together, so they are separate physical devices"
+                )
+                if await self._should_warn_multiple(session, name, now):
+                    session.add(AlertLog(
+                        router_id=self.router_id,
+                        alert_type="mac_rotated_multi",
+                        message=(
+                            f"'{name}' is more than one device on the network - two of them "
+                            f"were seen online at the same time. Their records are kept "
+                            f"separate; rename one or assign them to different people so they "
+                            f"can be told apart."
+                        ),
+                    ))
+                    made_changes = True
                 continue
 
             if is_generic_hostname(name):
@@ -629,12 +800,29 @@ class DeviceManager:
                 members,
                 key=lambda d: (d.is_active, d.last_seen or datetime.min),
             )
-            survivor.user_id = target_user
 
-            victims = [d for d in members if d.id != survivor.id]
+            # Only absorb rows that have gone quiet long enough to be a rotation
+            # rather than a device that is briefly offline. The survivor is
+            # exempt - it is the one that is present now.
+            candidates = [d for d in members if d.id != survivor.id]
+            victims = [
+                d for d in candidates
+                if d.last_seen is None or d.last_seen < settle_cutoff
+            ]
+            deferred = len(candidates) - len(victims)
+            if deferred:
+                logger.info(
+                    f"Deferring {deferred} '{name}' record(s): silent for less than "
+                    f"{settle_hours:g}h, still could be a device in use"
+                )
+            if not victims:
+                continue
+
+            survivor.user_id = target_user
             for victim in victims:
                 await self._absorb_device(session, survivor, victim)
                 removed += 1
+            made_changes = True
 
             session.add(AlertLog(
                 router_id=self.router_id,
@@ -650,9 +838,29 @@ class DeviceManager:
                 f"{survivor.id} (user {target_user})"
             )
 
-        if removed:
+        if made_changes:
             await session.commit()
         return removed
+
+    async def _should_warn_multiple(self, session: AsyncSession, name: str, now: datetime) -> bool:
+        """True if no "'<name>' is more than one device" alert was raised today.
+
+        The background loop runs consolidation on every scan, and a co-presence
+        record is permanent, so without this the same advisory would be logged
+        every minute for as long as both phones stay on the network.
+        """
+        recent = (
+            await session.execute(
+                select(AlertLog)
+                .where(
+                    AlertLog.alert_type == "mac_rotated_multi",
+                    AlertLog.message.like(f"%'{name}'%"),
+                    AlertLog.created_at > now - timedelta(days=1),
+                )
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        return recent is None
 
     async def merge_devices(self, session: AsyncSession, source_device_id: int, target_device_id: int, note: Optional[str] = None) -> Device:
         """Merges a newly discovered (unassigned) device into a target user device."""

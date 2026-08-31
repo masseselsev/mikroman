@@ -124,6 +124,17 @@ export function App() {
     0
   );
 
+  // All-time traffic across every assigned device, the denominator for each
+  // device row's "share" figure. Derived from the same device objects the rows
+  // render, so the percentages always add up.
+  const deviceGrandTotal = users.reduce(
+    (sum, u) => sum + (u.devices || []).reduce(
+      (ds, d) => ds + (d.bytes_total_in || 0) + (d.bytes_total_out || 0),
+      0
+    ),
+    0
+  );
+
   // Merge live WebSocket telemetry into users state for smooth animation.
   // The merge itself lives in utils/telemetryMerge so its identity rules - which
   // decide how often the dashboard repaints - can be tested directly.
@@ -337,6 +348,7 @@ export function App() {
                     onPauseToggle={handlePauseToggle}
                     onUpdate={loadData}
                     gatewayTotal={gatewayTodayTotal}
+                    deviceGrandTotal={deviceGrandTotal}
                   />
                   </div>
                 ))}

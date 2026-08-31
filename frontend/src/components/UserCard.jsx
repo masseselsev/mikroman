@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useI18n } from '../context/I18nContext';
 import { api } from '../api/client';
-import { formatSpeed, formatSpeedShort, formatBytes, formatRelativeTime } from '../utils/formatters';
+import { formatSpeed, formatSpeedShort, formatBytes, formatGbWhole, formatRelativeTime } from '../utils/formatters';
 import { displayVendor } from '../utils/deviceLabels';
 import { DeviceModal } from './DeviceModal';
 import {
@@ -103,6 +103,8 @@ export function groupDevices(devices) {
       rateOut: sum('current_rate_out'),
       bytesIn: sum('bytes_today_in'),
       bytesOut: sum('bytes_today_out'),
+      bytesTotalIn: sum('bytes_total_in'),
+      bytesTotalOut: sum('bytes_total_out'),
     };
   });
 }
@@ -164,7 +166,7 @@ export function bandLabel(band) {
  *    row tooltip and the device modal, since the per-user panel above already
  *    carries the number the reader came for.
  */
-function DeviceRow({ group, t, lang, onOpen, onUpdate }) {
+function DeviceRow({ group, t, lang, grandTotal = 0, onOpen, onUpdate }) {
   const [busy, setBusy] = useState(false);
 
   const d = group.primary;
@@ -180,6 +182,18 @@ function DeviceRow({ group, t, lang, onOpen, onUpdate }) {
   // row tooltip and the device modal.
   const vendorLabel = displayVendor(d.vendor);
   const deviceName = d.custom_name || d.hostname || d.vendor || 'Device';
+
+  // Compact volume readout shown beside the name: whole GB, "today / all-time /
+  // share of every device's all-time traffic". The exact bytes and the legend
+  // for the three fields are in the tooltip.
+  const volToday = group.bytesIn + group.bytesOut;
+  const volTotal = group.bytesTotalIn + group.bytesTotalOut;
+  const volShare = grandTotal > 0 ? Math.round((volTotal / grandTotal) * 100) : 0;
+  const showVolume = volTotal > 0 || volToday > 0;
+  const volTitle =
+    `${t('device_volume_legend')}\n` +
+    `${t('today_scope')}: ↓ ${formatBytes(group.bytesIn)} · ↑ ${formatBytes(group.bytesOut)}\n` +
+    `${t('all_time_label')}: ↓ ${formatBytes(group.bytesTotalIn)} · ↑ ${formatBytes(group.bytesTotalOut)}`;
 
   const volumeNote = `${t('today_scope')}: ↓ ${formatBytes(group.bytesIn)} · ↑ ${formatBytes(group.bytesOut)}`;
   const rowTitle = [
@@ -236,6 +250,14 @@ function DeviceRow({ group, t, lang, onOpen, onUpdate }) {
           {getDeviceIcon(d.vendor, d.hostname)}
         </span>
         <span className="drow-name" title={deviceName}>{deviceName}</span>
+
+        {showVolume && (
+          <span className="drow-vol font-mono" title={volTitle}>
+            {formatGbWhole(volToday)}<span className="drow-vol-sep">/</span>
+            {formatGbWhole(volTotal)}<span className="drow-vol-sep">/</span>
+            {volShare}%
+          </span>
+        )}
 
         {multiHomed && (
           <span className="badge badge-chip" title={t('multi_adapter_hint')}>
@@ -323,7 +345,7 @@ function DeviceRow({ group, t, lang, onOpen, onUpdate }) {
   );
 }
 
-export function UserCard({ user, onEdit, onDelete, onLimitChange, onPauseToggle, onUpdate, showHidden = false, gatewayTotal = 0, dragIndex = null }) {
+export function UserCard({ user, onEdit, onDelete, onLimitChange, onPauseToggle, onUpdate, showHidden = false, gatewayTotal = 0, deviceGrandTotal = 0, dragIndex = null }) {
   const { t, lang } = useI18n();
   const [isUpdating, setIsUpdating] = useState(false);
   const [showCustomInput, setShowCustomInput] = useState(false);
@@ -515,6 +537,7 @@ export function UserCard({ user, onEdit, onDelete, onLimitChange, onPauseToggle,
               group={g}
               t={t}
               lang={lang}
+              grandTotal={deviceGrandTotal}
               onOpen={() => setSelectedDevice(g.primary)}
               onUpdate={onUpdate}
             />

@@ -230,3 +230,24 @@ cascade to delete. And `session.refresh(obj, ["history", "traffic_rollups"])`
 before touching the collections - a selectin relationship loaded once for an
 object already in the session is not reloaded by a later `selectinload` option,
 so rows written since would be invisible and then duplicated.
+
+**[2026-08-31] Problem:** `consolidate_rotated_devices` treated "same normalised
+hostname + one owner" as sufficient to merge. That is wrong when the name really
+denotes several devices - three people who each own a bare `iPhone`, or one
+person with two of the same Pixel. The generic-hostname bar (one vendor, ≤1
+online) only helped if both happened to be online during the exact sweep the
+pass ran in.
+**→ Solution:** Persist *co-presence*. Every discovery sweep that sees two
+same-named randomized MACs active at once writes the pair to `device_coexistence`
+(migration 011); one radio cannot answer on two addresses at the same instant,
+so co-presence is proof of two physical devices, not a guess. Consolidation
+refuses any group containing a recorded pair (once-a-day advisory alert,
+`alert_type="mac_rotated_multi"`, deduped by a same-day lookup so the per-tick
+loop does not spam it). Second guard: a victim row is absorbed only after it has
+been silent for `mac_rotation_settle_hours` (default 48h) - a phone asleep for an
+evening is not yet a rotation. Discovery-time `_adopt_rotation` also refuses a
+candidate that carries any co-presence record, and `find_merge_suggestions`
+filters such pairs out. Lesson: "identical + same owner" is not identity;
+non-overlapping presence over time is the signal that separates a rotation from
+two real devices, and it has to be recorded when observed because the cleanup
+pass runs later, when only one of the two is on.

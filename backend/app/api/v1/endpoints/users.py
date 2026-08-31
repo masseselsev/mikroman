@@ -1,10 +1,10 @@
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.db.models import Device, User
+from backend.app.db.models import Device, DeviceTrafficRollup, User
 from backend.app.db.session import get_db
 from backend.app.schemas.common import APIResponse
 from backend.app.schemas.user import UserCreate, UserDTO, UserReorderRequest, UserUpdate
@@ -32,6 +32,17 @@ async def list_users(
     metrics = await traffic_ctrl.get_realtime_traffic_stats(db)
     metrics_map = {m["user_id"]: m for m in metrics}
 
+    # All-time bytes per device, from the daily rollups. Today's running total is
+    # already one of those rows, so summing every date needs no separate add-on.
+    totals_rows = (await db.execute(
+        select(
+            DeviceTrafficRollup.device_id,
+            func.sum(DeviceTrafficRollup.bytes_in),
+            func.sum(DeviceTrafficRollup.bytes_out),
+        ).group_by(DeviceTrafficRollup.device_id)
+    )).all()
+    totals_map = {r[0]: (int(r[1] or 0), int(r[2] or 0)) for r in totals_rows}
+
     user_dtos = []
     for u in users:
         dto = UserDTO.model_validate(u)
@@ -42,16 +53,20 @@ async def list_users(
             dto.bytes_today_in = m["bytes_in"]
             dto.bytes_today_out = m["bytes_out"]
 
-            # Per-device live rate and daily volume, so the dashboard can point
-            # at the specific device consuming bandwidth rather than its owner.
-            per_device = m.get("devices", {})
-            for device_dto in dto.devices:
-                dm = per_device.get(device_dto.id)
-                if dm:
-                    device_dto.current_rate_in = dm["current_rate_in"]
-                    device_dto.current_rate_out = dm["current_rate_out"]
-                    device_dto.bytes_today_in = dm["bytes_today_in"]
-                    device_dto.bytes_today_out = dm["bytes_today_out"]
+        # Per-device live rate and daily volume, so the dashboard can point at
+        # the specific device consuming bandwidth rather than its owner. The
+        # all-time total is attached even when the user has no live metrics.
+        per_device = (m or {}).get("devices", {})
+        for device_dto in dto.devices:
+            dm = per_device.get(device_dto.id)
+            if dm:
+                device_dto.current_rate_in = dm["current_rate_in"]
+                device_dto.current_rate_out = dm["current_rate_out"]
+                device_dto.bytes_today_in = dm["bytes_today_in"]
+                device_dto.bytes_today_out = dm["bytes_today_out"]
+            t_in, t_out = totals_map.get(device_dto.id, (0, 0))
+            device_dto.bytes_total_in = t_in
+            device_dto.bytes_total_out = t_out
         user_dtos.append(dto)
 
     return APIResponse(data=user_dtos)

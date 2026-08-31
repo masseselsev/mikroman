@@ -95,6 +95,11 @@ class DeviceDTO(DeviceBase):
     current_rate_out: int = 0   # bps upload
     bytes_today_in: int = 0     # bytes downloaded today
     bytes_today_out: int = 0    # bytes uploaded today
+    # All-time totals, summed from the daily per-device rollups (which already
+    # include today's running figure). Drives the compact "today / total /
+    # share" readout beside the device name.
+    bytes_total_in: int = 0     # bytes downloaded, all time
+    bytes_total_out: int = 0    # bytes uploaded, all time
 
     @computed_field
     @property
