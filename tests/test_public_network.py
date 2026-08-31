@@ -8,12 +8,39 @@ availability.
 import pytest
 
 from backend.app.services.public_network import (
+    _MAX_NAME_LENGTH,
     FAILURE_TTL_SECONDS,
     SUCCESS_TTL_SECONDS,
     PublicNetwork,
     PublicNetworkResolver,
     split_org_field,
 )
+
+
+class _FakeHttp:
+    """Minimal stand-in for httpx.AsyncClient returning one JSON body."""
+
+    def __init__(self, body: dict, status_code: int = 200):
+        self._body = body
+        self._status = status_code
+
+    async def get(self, _url):
+        class _Resp:
+            status_code = self._status
+            _payload = self._body
+
+            def json(inner):
+                return inner._payload
+
+        resp = _Resp()
+        resp.status_code = self._status
+        resp._payload = self._body
+        return resp
+
+
+class _FailingHttp:
+    async def get(self, _url):
+        raise OSError("network unreachable")
 
 
 class TestSplitOrgField:
@@ -44,8 +71,14 @@ class TestSplitOrgField:
         assert len(name) <= 64
 
 
-def _resolver_with(results):
-    """Resolver whose fetch yields the given results in order."""
+def _resolver_with(results, trading_name=None):
+    """Resolver whose fetch yields the given results in order.
+
+    The trading-name lookup is stubbed out too, and returns None unless a test
+    asks for a name. Without this the resolver would reach ip-api for real,
+    which would make every test here depend on a third-party service and on the
+    machine having internet.
+    """
     resolver = PublicNetworkResolver()
     calls = {"n": 0}
 
@@ -54,7 +87,11 @@ def _resolver_with(results):
         calls["n"] += 1
         return results[index]
 
+    async def fake_trading_name(_http):
+        return trading_name
+
     resolver._fetch = fake_fetch
+    resolver._fetch_trading_name = fake_trading_name
     return resolver, calls
 
 
@@ -120,3 +157,68 @@ class TestResolverFailureHandling:
         result = await resolver.resolve()
         assert result.is_empty()
         assert result.ip is None
+
+
+class TestTradingNamePreference:
+    """The registry's legal entity is correct but not recognisable.
+
+    "COSCOM Liability Limited Company" is the entity that holds AS49273; the
+    operator its customers know is "Ucell", and that is the name the lookup
+    sites show. The trading name comes from a plaintext source, so it is scoped
+    to the display name and nothing else.
+    """
+
+    @pytest.mark.asyncio
+    async def test_trading_name_replaces_the_registry_name(self):
+        resolver, _ = _resolver_with([PublicNetwork(
+            ip="188.113.204.70", isp="COSCOM Liability Limited Company", asn="AS49273",
+        )], trading_name="Ucell")
+
+        result = await resolver.resolve()
+        assert result.isp == "Ucell"
+        # The address and AS number stay with the authoritative HTTPS answer.
+        assert result.ip == "188.113.204.70"
+        assert result.asn == "AS49273"
+
+    @pytest.mark.asyncio
+    async def test_registry_name_is_kept_when_no_trading_name_is_available(self):
+        resolver, _ = _resolver_with([PublicNetwork(
+            ip="188.113.204.70", isp="COSCOM Liability Limited Company", asn="AS49273",
+        )])
+
+        result = await resolver.resolve()
+        assert result.isp == "COSCOM Liability Limited Company"
+
+    @pytest.mark.asyncio
+    async def test_no_trading_name_lookup_without_an_address(self):
+        # Nothing to attach a name to, and no reason to spend the request.
+        resolver, _ = _resolver_with([PublicNetwork()])
+        calls = []
+
+        async def record(_http):
+            calls.append(1)
+            return "Ucell"
+
+        resolver._fetch_trading_name = record
+
+        await resolver.resolve()
+        assert calls == [], "no address means nothing to name, so no request"
+
+    @pytest.mark.asyncio
+    async def test_a_hostile_trading_name_cannot_grow_without_bound(self):
+        # This source is plaintext, so its answer is treated as untrusted: a
+        # tampered response must not push unbounded text into the telemetry
+        # frame. Exercises the real parser against a fake HTTP client.
+        resolver = PublicNetworkResolver()
+        name = await resolver._fetch_trading_name(_FakeHttp({"status": "success", "isp": "x" * 500}))
+        assert len(name) <= _MAX_NAME_LENGTH
+
+    @pytest.mark.asyncio
+    async def test_a_failed_status_yields_no_name(self):
+        resolver = PublicNetworkResolver()
+        assert await resolver._fetch_trading_name(_FakeHttp({"status": "fail"})) is None
+
+    @pytest.mark.asyncio
+    async def test_an_unreachable_source_yields_no_name_rather_than_raising(self):
+        resolver = PublicNetworkResolver()
+        assert await resolver._fetch_trading_name(_FailingHttp()) is None

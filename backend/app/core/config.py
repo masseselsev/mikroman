@@ -30,7 +30,10 @@ class Settings(BaseSettings):
 
     # Polling & Synchronization
     POLL_INTERVAL_SECONDS: int = 10
-    TELEMETRY_STREAM_INTERVAL_SECONDS: float = 1.0
+    # 3s, matching the option the settings dialog marks as recommended. At 1s
+    # the dialog showed "recommended" while the app actually polled three times
+    # as often, and each poll costs several REST calls against the router.
+    TELEMETRY_STREAM_INTERVAL_SECONDS: float = 3.0
 
     # Telegram Bot
     TELEGRAM_BOT_TOKEN: Optional[str] = None

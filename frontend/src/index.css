@@ -569,6 +569,40 @@ body {
   color: var(--color-primary);
 }
 
+/* Numeric field with a fixed unit label sitting inside its right edge, so the
+   unit reads as part of the value rather than as separate prose. */
+.input-with-suffix {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 100%;
+}
+
+.input-with-suffix .form-input {
+  padding-right: 44px;
+}
+
+/* The browser's own number spinners fight the suffix for the same space. */
+.input-with-suffix input[type="number"]::-webkit-outer-spin-button,
+.input-with-suffix input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.input-with-suffix input[type="number"] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+.input-suffix {
+  position: absolute;
+  right: 12px;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  color: var(--text-muted);
+  pointer-events: none;
+}
+
 /* Multi-column Form Row */
 .form-row {
   display: grid;
@@ -940,16 +974,16 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
 /* DEVICE ROWS                                               */
 /* ========================================================= */
 
-/* A device row is three columns: text that gives way, a fixed metrics column,
-   and fixed actions. Putting the live rate on the same line as the name meant
-   two things that refuse to shrink fought over one line, so on a narrow card
-   the name collapsed to "Pixe..." and the numbers still overflowed the card.
-   Only the text column may shrink now, so nothing can be pushed out. */
+/* A device row is a stack of up to three lines. On every line exactly one
+   element is allowed to grow or shrink; everything else is `flex-shrink: 0` and
+   small. The previous layout had a fixed 104px figures column whose content was
+   wider than 104px with no overflow rule, so it printed over the text beside
+   it. */
 .device-row {
   display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 9px;
+  flex-direction: column;
+  gap: 3px;
+  padding: 7px 10px;
   background: var(--bg-secondary);
   border-radius: var(--radius-sm);
   border: 1px solid var(--border-color);
@@ -961,44 +995,79 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
   border-color: var(--border-focus);
 }
 
-.device-row-text {
-  flex: 1 1 auto;
+/* Line 1: identity, then chips, then the live rate. */
+.drow-main {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   min-width: 0;
 }
 
-/* Right-aligned figures. The width is fixed so a device jumping from "0 bps"
-   to "12.4 Mbps" does not reflow the name beside it. */
-.device-row-metrics {
-  flex: 0 0 auto;
-  width: 104px;
+/* The only greedy element in the row. It truncates; the full name is in the
+   element's title. */
+.drow-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+  font-size: var(--fs-sm);
+  color: var(--text-primary);
+}
+
+.drow-rate {
+  flex-shrink: 0;
   display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 1px;
+  gap: 8px;
   font-family: var(--font-mono);
   font-size: var(--fs-2xs);
-  line-height: 1.35;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Line 2: one truncating run of facts, then the actions pinned right. */
+.drow-sub {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding-left: 15px; /* clears the status dot + icon, so it aligns under the name */
+  font-size: var(--fs-2xs);
+  color: var(--text-muted);
+}
+
+.drow-facts {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.device-row-actions {
+.drow-actions {
+  flex-shrink: 0;
   display: flex;
   align-items: center;
   gap: 4px;
-  flex-shrink: 0;
 }
 
-/* Metadata lines beneath the device name. */
-.device-row-meta {
+/* Line 3: radio links. Wraps rather than truncates - "wifi2", "5G·BE" and
+   "[-62 dBm]" each mean nothing cut in half. */
+.drow-conn {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 5px;
-  margin-top: 2px;
-  padding-left: 14px;
+  gap: 3px 10px;
+  padding-left: 15px;
   font-size: var(--fs-2xs);
   color: var(--text-muted);
-  min-width: 0;
-  overflow: hidden;
+}
+
+.drow-conn-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
 }
 
 /* Radio band tag - see --color-radio. */
@@ -1006,6 +1075,72 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
   color: var(--color-radio);
   font-weight: 700;
   letter-spacing: 0.02em;
+}
+
+/* Signal strength, written as a bracketed measurement with its unit. A bare
+   "-68" sitting between an interface name and a band tag reads as part of the
+   interface's name; the brackets and the unit make it unmistakably a reading,
+   and cost less width than a separator would. */
+.signal-reading {
+  flex-shrink: 0;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+/* The user's own throughput and volume - the headline figures of the card.
+   These were styled as an ordinary muted panel, which left the numbers people
+   open the card to read looking like secondary detail beside the per-device
+   rows. Its own surface, a live accent, and figures a step larger than the rows
+   below put the emphasis where the reading starts. */
+.usage-panel {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  transition: border-color 0.25s ease, box-shadow 0.25s ease;
+}
+
+/* Only while traffic is actually moving: a permanent glow is decoration, but a
+   glow that appears when the user starts consuming carries information. */
+.usage-panel.is-live {
+  border-color: var(--color-primary);
+  box-shadow: inset 0 0 0 1px var(--color-primary-light);
+}
+
+.usage-metric {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.usage-divider {
+  width: 1px;
+  height: 30px;
+  background: var(--border-color);
+  flex-shrink: 0;
+}
+
+.usage-figure {
+  font-size: var(--fs-lg);
+  font-weight: 800;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+}
+
+.usage-caption {
+  font-size: var(--fs-3xs);
+  color: var(--text-muted);
+  line-height: 1.3;
+}
+
+.usage-total {
+  text-align: right;
+  flex-shrink: 0;
 }
 
 /* The public address in the WAN tile, as a link to an external lookup service.

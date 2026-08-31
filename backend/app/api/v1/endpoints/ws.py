@@ -164,6 +164,9 @@ async def websocket_telemetry_endpoint(
                     traffic_ctrl = TrafficController(client)
                     res = await client.get_system_resource()
                     health = await client.get_system_health()
+                    # Cached after the first tick; the SoC name and core count
+                    # do not change without a reboot.
+                    board = await client.get_routerboard()
                     users_stats = await traffic_ctrl.get_realtime_traffic_stats(session)
 
                     # Determine effective router ID
@@ -220,6 +223,17 @@ async def websocket_telemetry_endpoint(
                         "board_name": res.board_name,
                         "version": res.version,
                         "cpu_load": res.cpu_load,
+                        # The real processor. On MikroTik hardware `/system/
+                        # resource` only knows the instruction set ("ARM64"), so
+                        # the SoC name comes from `/system/routerboard`
+                        # (firmware-type, e.g. "ipq5300"); x86 and CHR report a
+                        # real part in `cpu` and have no RouterBOARD.
+                        "cpu_model": board.firmware_type or res.cpu or res.architecture_name,
+                        "cpu_arch": res.architecture_name or res.cpu,
+                        "cpu_count": res.cpu_count,
+                        "cpu_frequency_mhz": res.cpu_frequency,
+                        "routerboard_model": board.model,
+                        "routerboard_serial": board.serial_number,
                         "free_memory_mb": round(res.free_memory / (1024 * 1024), 1),
                         "total_memory_mb": round(res.total_memory / (1024 * 1024), 1),
                         "temperature": health.temperature,

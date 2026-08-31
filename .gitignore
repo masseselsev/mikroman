@@ -9,6 +9,9 @@ frontend/node_modules/
 frontend/dist/
 .env
 *.db
+*.db-wal
+*.db-shm
+/backups/
 *.sqlite*
 
 # Local development compose overrides

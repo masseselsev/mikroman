@@ -65,6 +65,9 @@ class RouterManager:
 
     def __init__(self):
         self._clients: Dict[int, RouterOSClient] = {}
+        # Connection parameters each cached client was built from, so a router
+        # edited in Settings is noticed and its stale client retired.
+        self._fingerprints: Dict[int, tuple] = {}
 
     def _create_client_from_model(self, router: Router) -> RouterOSClient:
         return RouterOSClient(
@@ -77,15 +80,43 @@ class RouterManager:
             timeout=5.0
         )
 
+    @staticmethod
+    def _fingerprint(router: Router) -> tuple:
+        """Everything about a router that changes how we connect to it."""
+        return (
+            router.host,
+            router.port,
+            router.use_ssl,
+            router.ssl_verify,
+            router.username,
+            router.password,
+        )
+
     async def get_client(
         self,
         router_id: Optional[int] = None,
         session: Optional[AsyncSession] = None
     ) -> Optional[RouterOSClient]:
-        """Get an active RouterOSClient instance for a router ID or the default active router."""
-        if router_id and router_id in self._clients:
-            return self._clients[router_id]
+        """Get an active RouterOSClient instance for a router ID or the default active router.
 
+        The returned client owns a keep-alive connection pool, so it has to be
+        the *same* object across calls. An earlier version consulted the cache
+        only when an explicit ``router_id`` was passed:
+
+            if router_id and router_id in self._clients:
+
+        Every call site in the application asks for the default router and
+        passes no id, so that condition was never true. The cache was written on
+        every call and read on none: each request built a fresh client, opened a
+        fresh TCP connection (a fresh TLS handshake, over HTTPS), and abandoned
+        the previous pool without closing it. Keep-alive - measured as the
+        difference between 5% and 12-27% router CPU under load - was never
+        actually in effect.
+
+        Resolving the default router still costs one indexed query per call,
+        which is what lets an edit in Settings take effect immediately; only the
+        client itself is reused, and only while its connection parameters match.
+        """
         # Fetch from DB
         should_close_session = False
         if session is None:
@@ -105,12 +136,31 @@ class RouterManager:
             if not router:
                 return None
 
+            fingerprint = self._fingerprint(router)
+            cached = self._clients.get(router.id)
+            if cached is not None and self._fingerprints.get(router.id) == fingerprint:
+                return cached
+
+            # Either nothing cached, or the router was reconfigured. Retire the
+            # old pool rather than leaking its sockets.
+            if cached is not None:
+                await self._close_quietly(cached)
+
             client = self._create_client_from_model(router)
             self._clients[router.id] = client
+            self._fingerprints[router.id] = fingerprint
             return client
         finally:
             if should_close_session:
                 await session.close()
+
+    @staticmethod
+    async def _close_quietly(client: RouterOSClient) -> None:
+        """Close a client, ignoring failures - it is being discarded anyway."""
+        try:
+            await client.aclose()
+        except Exception as e:
+            logger.debug(f"Ignoring error while closing a retired router client: {e}")
 
     def env_fallback_client(self) -> Optional[RouterOSClient]:
         """Client built from environment credentials, or None if none were set.
@@ -158,6 +208,7 @@ class RouterManager:
 
     async def remove_client(self, router_id: int) -> None:
         """Close and remove a client from the active cache."""
+        self._fingerprints.pop(router_id, None)
         client = self._clients.pop(router_id, None)
         if client:
             await client.aclose()
@@ -347,11 +398,9 @@ class RouterManager:
     async def aclose(self) -> None:
         """Close all cached client connections."""
         for client in self._clients.values():
-            try:
-                await client.aclose()
-            except Exception:
-                pass
+            await self._close_quietly(client)
         self._clients.clear()
+        self._fingerprints.clear()
 
 
 router_manager = RouterManager()

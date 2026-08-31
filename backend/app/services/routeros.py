@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator, Dict, List, Optional
 
@@ -11,6 +12,7 @@ from backend.app.schemas.routeros import (
     ARPTableEntry,
     DHCPLeaseDTO,
     InterfaceDTO,
+    RouterBoardInfo,
     RouterSystemHealth,
     RouterSystemResource,
     WiFiLinkDTO,
@@ -67,6 +69,44 @@ def parse_gmt_offset_minutes(raw: Optional[str]) -> Optional[int]:
     return sign * (hours * 60 + minutes)
 
 
+def parse_uptime_seconds(raw: Optional[str]) -> Optional[int]:
+    """Parse a RouterOS uptime string into seconds.
+
+    RouterOS reports uptime as a compact run of unit-suffixed parts, e.g.
+    ``"38m35s"``, ``"1d3h58m3s"``, ``"6w2d5h"``. A bare integer (seconds) is
+    also accepted. Returns None when the value cannot be understood.
+
+    Used to detect a reboot: if uptime has gone *backwards* between two polls
+    the router restarted, and every byte counter on it reset to zero at that
+    moment - which the traffic accounting has to know so it credits the bytes
+    since the reboot rather than a nonsensical delta against a stale baseline.
+    """
+    if raw is None:
+        return None
+    token = str(raw).strip().lower()
+    if not token:
+        return None
+    if token.isdigit():
+        return int(token)
+
+    units = {"w": 604800, "d": 86400, "h": 3600, "m": 60, "s": 1}
+    total = 0
+    number = ""
+    seen = False
+    for ch in token:
+        if ch.isdigit():
+            number += ch
+        elif ch in units and number:
+            total += int(number) * units[ch]
+            number = ""
+            seen = True
+        else:
+            return None
+    if number:  # trailing digits with no unit
+        return None
+    return total if seen else None
+
+
 def build_wifi_links(
     interface: str,
     band: Optional[str],
@@ -107,6 +147,46 @@ def build_wifi_links(
     return links
 
 
+class RouterUnreachableError(ConnectionError):
+    """Raised immediately while a router is known to be unreachable.
+
+    A subclass of ConnectionError so that the many call sites which already
+    tolerate a connection failure keep behaving exactly as they did.
+    """
+
+
+# How long a failed connection suppresses further attempts. Long enough that a
+# dashboard polling every few seconds makes one real attempt rather than dozens,
+# short enough that a router coming back is picked up almost immediately.
+UNREACHABLE_COOLDOWN_SECONDS = 15.0
+
+
+class _CircuitBreakerTransport(httpx.AsyncHTTPTransport):
+    """Transport that reports connection failures back to its client.
+
+    The bookkeeping lives here rather than around each call because the client
+    exposes some forty request methods and many of them catch their own
+    exceptions internally - a breaker wrapped around the caller would simply
+    never see those failures. Every request passes through the transport, so
+    this is the one place that sees them all.
+    """
+
+    def __init__(self, owner: "RouterOSClient", **kwargs):
+        super().__init__(**kwargs)
+        self._owner = owner
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        try:
+            response = await super().handle_async_request(request)
+        except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout) as e:
+            # Only failures to *reach* the host open the circuit. A 401, a 500 or
+            # a slow read all prove the router is there and answering.
+            self._owner._note_unreachable(e)
+            raise
+        self._owner._note_reachable()
+        return response
+
+
 class RouterOSClient:
     """Async HTTP client for the MikroTik RouterOS REST API (7.1+).
 
@@ -140,29 +220,74 @@ class RouterOSClient:
         self.verify_ssl = self.ssl_verify if self.use_ssl else False
         self.timeout = httpx.Timeout(timeout_val)
         self._client: Optional[httpx.AsyncClient] = None
+        # Monotonic deadline before which the router is treated as unreachable
+        # without trying. Zero means the circuit is closed.
+        self._unreachable_until: float = 0.0
+        # `/system/routerboard` is static between reboots (model, serial, SoC),
+        # so it is fetched once per client and reused. The client itself is
+        # cached per router and retired when its settings change, so this never
+        # goes stale in a way that matters.
+        self._routerboard: Optional[RouterBoardInfo] = None
+
+    def _note_unreachable(self, error: Exception) -> None:
+        """Open the circuit after a failure to reach the router."""
+        was_open = self.is_unreachable
+        self._unreachable_until = time.monotonic() + UNREACHABLE_COOLDOWN_SECONDS
+        if not was_open:
+            logger.warning(
+                f"RouterOS at {self.host}:{self.port} is unreachable ({type(error).__name__}); "
+                f"suppressing further attempts for {UNREACHABLE_COOLDOWN_SECONDS:.0f}s"
+            )
+
+    def _note_reachable(self) -> None:
+        """Close the circuit: the router answered."""
+        if self._unreachable_until:
+            logger.info(f"RouterOS at {self.host}:{self.port} is reachable again")
+        self._unreachable_until = 0.0
+
+    @property
+    def is_unreachable(self) -> bool:
+        return self._unreachable_until > time.monotonic()
 
     def _build_client(self) -> httpx.AsyncClient:
+        limits = httpx.Limits(max_keepalive_connections=4, max_connections=8, keepalive_expiry=60.0)
         return httpx.AsyncClient(
             base_url=self.base_url,
             auth=self.auth,
-            verify=self.verify_ssl,
             timeout=self.timeout,
             headers={"Content-Type": "application/json", "Accept": "application/json"},
             # Keep-alive connections are the whole point: without them every
             # request repeats the TLS handshake, which is what made the polling
             # loop dominate router CPU.
-            limits=httpx.Limits(max_keepalive_connections=4, max_connections=8, keepalive_expiry=60.0),
+            limits=limits,
+            transport=_CircuitBreakerTransport(
+                self, verify=self.verify_ssl, limits=limits, retries=0
+            ),
         )
 
     @asynccontextmanager
     async def _get_client(self) -> AsyncIterator[httpx.AsyncClient]:
         """Yield the pooled HTTP client, creating it on first use.
 
+        Fails fast while the router is known to be unreachable. Without this,
+        every endpoint that touches the router waited out the full connect
+        timeout on every request: with the router off the network, ``/routers``,
+        ``/users``, ``/system/status`` and ``/system/interfaces`` each took
+        ~4.9s, so the dashboard sat blank for five seconds on every load and
+        every poll tick. One attempt per cooldown is enough to notice the router
+        returning; the rest are pointless waiting.
+
         Deliberately does not close the client on exit: callers use
         ``async with self._get_client() as client`` for every request, and
         closing it there would discard the connection pool - and with it the
         keep-alive that avoids a TLS handshake per request.
         """
+        if self.is_unreachable:
+            raise RouterUnreachableError(
+                f"RouterOS at {self.host}:{self.port} was unreachable moments ago; "
+                f"not retrying for another "
+                f"{self._unreachable_until - time.monotonic():.0f}s"
+            )
         if self._client is None or self._client.is_closed:
             self._client = self._build_client()
         yield self._client
@@ -172,6 +297,7 @@ class RouterOSClient:
         if self._client is not None and not self._client.is_closed:
             await self._client.aclose()
         self._client = None
+        self._routerboard = None
 
     async def check_ssl_status(self) -> Dict[str, Any]:
         """Check /ip/service for www-ssl and /certificate status."""
@@ -429,6 +555,7 @@ class RouterOSClient:
             if isinstance(data, list) and len(data) > 0:
                 data = data[0]
 
+            freq_raw = data.get("cpu-frequency") or data.get("cpu_frequency")
             return RouterSystemResource(
                 board_name=data.get("board-name") or data.get("board_name"),
                 model=data.get("platform"),
@@ -437,10 +564,60 @@ class RouterOSClient:
                 free_memory=int(data.get("free-memory") or data.get("free_memory") or 0),
                 total_memory=int(data.get("total-memory") or data.get("total_memory") or 0),
                 uptime=data.get("uptime"),
+                cpu=data.get("cpu") or None,
                 cpu_count=int(data.get("cpu-count") or data.get("cpu_count") or 1),
-                cpu_frequency=int(data.get("cpu-frequency") or data.get("cpu_frequency") or 0) if data.get("cpu-frequency") or data.get("cpu_frequency") else None,
+                cpu_frequency=int(freq_raw) if freq_raw else None,
                 architecture_name=data.get("architecture-name") or data.get("architecture_name")
             )
+
+    async def get_routerboard(self, *, refresh: bool = False) -> RouterBoardInfo:
+        """Static hardware identity from `/system/routerboard`, cached per client.
+
+        The SoC/platform name (`firmware_type`, e.g. "ipq5300") is the closest
+        RouterOS gets to a CPU part number on MikroTik hardware; `/system/
+        resource` only reports the instruction set there. Fetched once and
+        reused - none of these fields change without a reboot, and a reboot
+        drops the connection and rebuilds the client anyway.
+
+        A CHR, x86 install or container has no RouterBOARD; this returns
+        ``is_routerboard=False`` with empty fields and the caller falls back to
+        ``RouterSystemResource.cpu``. Any failure is swallowed the same way, and
+        the empty result is cached so a missing menu is not re-requested every
+        telemetry tick.
+        """
+        if self._routerboard is not None and not refresh:
+            return self._routerboard
+
+        info = RouterBoardInfo()
+        try:
+            async with self._get_client() as client:
+                resp = await client.get("/system/routerboard")
+                resp.raise_for_status()
+                data = resp.json()
+                if isinstance(data, list):
+                    data = data[0] if data else {}
+
+                def field(*names):
+                    for n in names:
+                        if data.get(n) not in (None, ""):
+                            return data.get(n)
+                    return None
+
+                rb = str(field("routerboard") or "").lower()
+                info = RouterBoardInfo(
+                    is_routerboard=rb in ("true", "yes", "1"),
+                    model=field("model"),
+                    serial_number=field("serial-number", "serial_number"),
+                    firmware_type=field("firmware-type", "firmware_type"),
+                    current_firmware=field("current-firmware", "current_firmware"),
+                    upgrade_firmware=field("upgrade-firmware", "upgrade_firmware"),
+                    factory_firmware=field("factory-firmware", "factory_firmware"),
+                )
+        except Exception as e:
+            logger.debug(f"Could not read /system/routerboard: {e}")
+
+        self._routerboard = info
+        return info
 
     async def get_system_health(self) -> RouterSystemHealth:
         """Fetch /system/health (temperature, voltage)."""

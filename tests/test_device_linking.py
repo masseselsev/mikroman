@@ -59,10 +59,25 @@ def test_classify_connection_uses_signal_then_interface():
     assert classify_connection(interface="mld1", signal=None) == "wireless"
     assert classify_connection(interface="wlan1", signal=None) == "wireless"
     assert classify_connection(interface="ether3", signal=None) == "wired"
-    assert classify_connection(interface="bridge", signal=None) == "wired"
     assert classify_connection(interface=None, signal=None) is None
     # A signal reading wins: some drivers report wireless clients on a bridge.
     assert classify_connection(interface="bridge", signal=-70) == "wireless"
+
+
+def test_aggregating_interfaces_are_inconclusive_rather_than_wired():
+    """A bridge carries both media, so its name is not evidence of a cable.
+
+    This previously answered "wired". Every wireless client's ARP entry is
+    recorded against the bridge, so a phone seen only through ARP was labelled
+    wired - and a phone that had rotated its MAC then appeared as one "wired"
+    and one "wireless" record of the same hostname, which is the exact shape
+    find_link_suggestions scores highest. It proposed joining a phone to itself
+    as a dual-homed machine.
+    """
+    assert classify_connection(interface="bridge", signal=None) is None
+    assert classify_connection(interface="bridge-lan", signal=None) is None
+    assert classify_connection(interface="vlan10", signal=None) is None
+    assert classify_connection(interface="bond1", signal=None) is None
 
 
 @pytest.mark.asyncio

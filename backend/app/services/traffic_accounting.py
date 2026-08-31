@@ -53,6 +53,14 @@ BASELINE_SETTING_KEY = "acct_counter_baselines"
 # predate it, so coverage must not be judged over earlier periods.
 STARTED_SETTING_KEY = "accounting_started_at"
 
+# Reserved key inside the baselines blob holding the router uptime (seconds) at
+# the last successful collection. If uptime has gone backwards since, the router
+# rebooted and every byte counter reset to zero at that moment.
+UPTIME_BASELINE_KEY = "__router_uptime_s__"
+# Uptime may appear to dip by a few seconds between polls from rounding and tick
+# jitter; only a drop larger than this is treated as a reboot.
+REBOOT_SLACK_SECONDS = 90
+
 # direction -> RouterOS match field. A device is the *source* of its uploads and
 # the *destination* of its downloads.
 DIRECTION_FIELDS = {"up": "src-address", "down": "dst-address"}
@@ -318,27 +326,44 @@ class TrafficAccountingService:
             ))
 
     @staticmethod
-    def compute_delta(current: int, previous: Optional[int]) -> int:
+    def compute_delta(current: int, previous: Optional[int], *, reset: bool = False) -> int:
         """Delta between successive readings of a monotonic counter.
 
-        A first reading establishes a baseline and contributes nothing. A counter
-        that went *backwards* means the rule was recreated or the router
-        rebooted; only the bytes seen since that reset are credited, which avoids
-        re-counting the whole lifetime total.
+        A first reading establishes a baseline and contributes nothing. When the
+        counter reset - the rule was recreated, or the router rebooted - only
+        the bytes seen since that reset are credited, never a whole lifetime
+        total.
+
+        ``reset=True`` forces that path even when ``current >= previous``. A
+        counter climbing fast enough can pass its stale pre-reboot value within
+        a single poll interval; without an out-of-band reset signal that reads
+        as a small ordinary delta and the bytes since the reboot are lost.
         """
         if previous is None:
             return 0
-        if current >= previous:
-            return current - previous
-        return current
+        if reset or current < previous:
+            return current
+        return current - previous
 
     # --- collection -------------------------------------------------------
 
-    async def collect(self, session: AsyncSession) -> Dict[str, int]:
+    async def collect(
+        self,
+        session: AsyncSession,
+        router_uptime_seconds: Optional[int] = None,
+    ) -> Dict[str, int]:
         """Read counters, accumulate daily rollups, and persist new baselines.
 
         Device volume is authoritative; user volume is the sum of that user's
         devices, so the two levels can never disagree.
+
+        ``router_uptime_seconds`` lets a reboot be recognised for certain: if it
+        is lower than the value stored at the previous collection, the router
+        restarted and every counter reset, so this tick credits the bytes since
+        the reboot rather than differencing against a baseline that no longer
+        exists. A network outage on its own is *not* a reboot - the router keeps
+        counting throughout, and the first successful poll after it reconnects
+        picks up the whole gap by ordinary differencing.
         """
         # Rollups are keyed by the router's date, not the container's: a UTC
         # container files the router's evening under the previous day.
@@ -366,6 +391,21 @@ class TrafficAccountingService:
             return {"devices": 0, "bytes_in": 0, "bytes_out": 0}
 
         baselines = await self._load_baselines(session)
+
+        # Did the router reboot since the last collection? Uptime running
+        # backwards is proof; a first run (no stored uptime) is not.
+        prev_uptime = baselines.get(UPTIME_BASELINE_KEY)
+        rebooted = (
+            router_uptime_seconds is not None
+            and isinstance(prev_uptime, int)
+            and router_uptime_seconds + REBOOT_SLACK_SECONDS < prev_uptime
+        )
+        if rebooted:
+            logger.info(
+                f"Router uptime dropped {prev_uptime}s -> {router_uptime_seconds}s: "
+                f"treating all accounting counters as reset for this tick"
+            )
+
         # device_id -> (downloaded, uploaded) accumulated this tick
         per_device: Dict[int, Tuple[int, int]] = {}
 
@@ -373,12 +413,17 @@ class TrafficAccountingService:
             deltas = {}
             for direction, current in values.items():
                 key = f"{device_id}:{direction}"
-                deltas[direction] = self.compute_delta(current, baselines.get(key))
+                deltas[direction] = self.compute_delta(
+                    current, baselines.get(key), reset=rebooted
+                )
                 baselines[key] = current
             down = deltas.get("down", 0)
             up = deltas.get("up", 0)
             if down or up:
                 per_device[device_id] = (down, up)
+
+        if router_uptime_seconds is not None:
+            baselines[UPTIME_BASELINE_KEY] = router_uptime_seconds
 
         total_in = total_out = 0
         user_totals: Dict[int, Tuple[int, int]] = {}

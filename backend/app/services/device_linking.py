@@ -22,12 +22,25 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.db.models import Device
+from backend.app.services.vendor_lookup import vendor_service
 
 logger = logging.getLogger("mikroman.device_linking")
 
 # Interface name fragments that identify wireless media. 'mld' covers the
 # WiFi 7 multi-link interfaces RouterOS creates on newer hardware.
 _WIRELESS_HINTS = ("wifi", "wlan", "wl", "mld", "wireless")
+
+# Aggregating interfaces that carry both media and therefore say nothing about
+# how a client behind them is attached. A wireless client's ARP entry is
+# normally recorded against the bridge, not against the radio, so treating
+# "bridge" as evidence of a cable is not merely imprecise - it is usually wrong.
+#
+# It also had a visible consequence. Two records of one phone (an iPhone that
+# had rotated its private MAC) were classified as one "wired" and one
+# "wireless", which is the pattern find_link_suggestions scores highest: it
+# proposed joining them as two adapters of a dual-homed machine. A phone has one
+# radio and no socket, so the correct reading was always MAC rotation.
+_INCONCLUSIVE_HINTS = ("bridge", "bond", "lag", "vlan")
 
 
 class LinkSuggestion(BaseModel):
@@ -44,11 +57,13 @@ class LinkSuggestion(BaseModel):
 
 
 def classify_connection(interface: Optional[str], signal: Optional[int]) -> Optional[str]:
-    """Classify an adapter as wired or wireless.
+    """Classify an adapter as wired or wireless, or None when it cannot be told.
 
-    A signal reading is conclusive - only a wireless association produces one,
-    and some drivers report wireless clients against the bridge rather than the
-    radio. Otherwise the interface name is used.
+    A signal reading is conclusive - only a wireless association produces one.
+    Otherwise the interface name is used, and a bridge or other aggregating
+    interface yields None rather than a guess: it carries both media, so the
+    name is simply not evidence either way. Returning None makes callers keep
+    whatever they already knew instead of overwriting it with a wrong answer.
     """
     if signal is not None:
         return "wireless"
@@ -57,6 +72,8 @@ def classify_connection(interface: Optional[str], signal: Optional[int]) -> Opti
     name = interface.lower()
     if any(hint in name for hint in _WIRELESS_HINTS):
         return "wireless"
+    if any(hint in name for hint in _INCONCLUSIVE_HINTS):
+        return None
     return "wired"
 
 
@@ -89,8 +106,17 @@ async def link_device(session: AsyncSession, device_id: int, primary_device_id: 
         child.linked_to_device_id = primary_id
 
     device.linked_to_device_id = primary_id
-    device.connection_kind = classify_connection(device.last_interface, device.last_wifi_signal)
-    primary.connection_kind = classify_connection(primary.last_interface, primary.last_wifi_signal)
+    # Re-classify, but never downgrade a known medium to "unknown": a bridge
+    # interface is inconclusive, and forgetting that a device is wireless is
+    # worse than not refreshing the answer.
+    device.connection_kind = (
+        classify_connection(device.last_interface, device.last_wifi_signal)
+        or device.connection_kind
+    )
+    primary.connection_kind = (
+        classify_connection(primary.last_interface, primary.last_wifi_signal)
+        or primary.connection_kind
+    )
     # A secondary adapter inherits ownership: it is the same machine.
     if primary.user_id and device.user_id != primary.user_id:
         device.user_id = primary.user_id
@@ -185,11 +211,32 @@ async def find_link_suggestions(session: AsyncSession) -> List[LinkSuggestion]:
         if primary.id in linked_ids:
             continue
 
-        primary_kind = classify_connection(primary.last_interface, primary.last_wifi_signal)
+        primary_kind = primary.connection_kind or classify_connection(
+            primary.last_interface, primary.last_wifi_signal
+        )
         for other in candidates[1:]:
-            other_kind = classify_connection(other.last_interface, other.last_wifi_signal)
+            other_kind = other.connection_kind or classify_connection(
+                other.last_interface, other.last_wifi_signal
+            )
+
+            # Two randomized MACs sharing a hostname are one device that rotated
+            # its address, not two adapters. Phones and tablets - the things that
+            # randomize - have a single radio and no socket, so there is no
+            # second adapter for them to have. Merging is the correct treatment
+            # and is offered separately; proposing a link here produced a
+            # permanent phantom, an "iPhone (2x)" made of one real phone and the
+            # ghost of the MAC it used before the Wi-Fi was reconfigured.
+            # Computed from the address, not stored: is_randomized_mac lives on
+            # the DTO, and the ORM row has only the MAC itself.
+            if (vendor_service.is_randomized_mac(primary.mac_address)
+                    and vendor_service.is_randomized_mac(other.mac_address)):
+                continue
+
             # Different media is the strongest case; the same medium twice is
-            # more likely a rotated MAC, which merging already handles.
+            # more likely a rotated MAC, which merging already handles. An
+            # unknown medium on either side scores the same as "same medium" and
+            # is therefore filtered out below - a link is asserted only when
+            # there is positive evidence of two different media.
             confidence = 0.92 if (primary_kind and other_kind and primary_kind != other_kind) else 0.75
             if confidence < 0.8:
                 continue

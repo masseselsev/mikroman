@@ -3,6 +3,7 @@ import { useI18n } from '../context/I18nContext';
 import { api } from '../api/client';
 import { formatSpeed, formatUptime } from '../utils/formatters';
 import { buildLookupUrl } from '../utils/ipLookup';
+import { smoothAreaPath, smoothLinePath } from '../utils/sparkline';
 import {
   Cpu,
   HardDrive,
@@ -15,8 +16,7 @@ import {
   Check,
   Network,
   Users,
-  Globe,
-  ExternalLink
+  Globe
 } from 'lucide-react';
 
 /** How many telemetry ticks each sparkline remembers (~1 tick/second). */
@@ -29,9 +29,15 @@ function pushHistory(previous, value) {
 }
 
 /**
- * Minimal inline sparkline. Drawn as an SVG polyline from values already
- * arriving over the telemetry socket, so it costs no extra request and needs
- * no charting dependency.
+ * Minimal inline sparkline. Drawn from values already arriving over the
+ * telemetry socket, so it costs no extra request and needs no charting
+ * dependency.
+ *
+ * The curve is a monotone cubic spline rather than a straight polyline: at one
+ * sample every few seconds the raw line is visibly angular, and the smoothing
+ * is arithmetic done once per tick, not a filter applied every frame. See
+ * utils/sparkline for why monotone specifically - it cannot draw a peak that
+ * the data does not contain.
  */
 function Sparkline({ values, color, max }) {
   if (!values || values.length < 2) {
@@ -43,17 +49,20 @@ function Sparkline({ values, color, max }) {
   const scale = peak > 0 ? peak : 1;
   const step = width / (values.length - 1);
 
-  const points = values
-    .map((v, i) => `${(i * step).toFixed(1)},${(height - Math.min(v / scale, 1) * height).toFixed(1)}`)
-    .join(' ');
-  const area = `0,${height} ${points} ${width},${height}`;
+  const points = values.map((v, i) => ({
+    x: i * step,
+    y: height - Math.min(v / scale, 1) * height,
+  }));
+
+  const linePath = smoothLinePath(points);
+  const areaPath = smoothAreaPath(points, height);
 
   return (
     <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none"
          style={{ width: '100%', height: 18, display: 'block' }} aria-hidden="true">
-      <polygon points={area} fill={color} opacity="0.14" />
-      <polyline points={points} fill="none" stroke={color} strokeWidth="1.5"
-                vectorEffect="non-scaling-stroke" strokeLinejoin="round" />
+      {areaPath && <path d={areaPath} fill={color} opacity="0.14" />}
+      <path d={linePath} fill="none" stroke={color} strokeWidth="1.5"
+            vectorEffect="non-scaling-stroke" strokeLinejoin="round" strokeLinecap="round" />
     </svg>
   );
 }
@@ -61,80 +70,30 @@ function Sparkline({ values, color, max }) {
 /**
  * The public address, as a link to an external lookup service.
  *
- * The address alone answers little; the useful questions - where is this, who
- * owns it, is it flagged anywhere - are answered by third-party lookup sites.
- * One enabled service means a plain link. Several means a small menu, rather
- * than silently picking one.
+ * Exactly one service, chosen in Settings. An earlier version offered a menu
+ * when several were enabled, which failed twice over: it hung off a ten-pixel
+ * line inside a tile whose lines are clipped with `overflow: hidden`, so the
+ * menu was invisible - and it asked the reader to make a choice they had no
+ * reason to care about at the moment of clicking.
  *
- * Every href is built through buildLookupUrl, which refuses anything that is
- * not http(s); a template that fails renders as plain text, never as a link.
+ * The href is built through buildLookupUrl, which refuses anything that is not
+ * http(s); a template that fails renders as plain text rather than as a link.
  */
-function PublicIpLink({ ip, services, t }) {
-  const [menuOpen, setMenuOpen] = useState(false);
-  const wrapRef = React.useRef(null);
-
-  useEffect(() => {
-    if (!menuOpen) return undefined;
-    const onOutside = (e) => {
-      if (wrapRef.current && !wrapRef.current.contains(e.target)) setMenuOpen(false);
-    };
-    document.addEventListener('mousedown', onOutside);
-    return () => document.removeEventListener('mousedown', onOutside);
-  }, [menuOpen]);
-
-  const usable = (services || [])
-    .map(s => ({ ...s, url: buildLookupUrl(s.url_template, ip) }))
-    .filter(s => s.url);
-
-  if (usable.length === 0) {
-    return <span>↗ {ip}</span>;
-  }
-
-  if (usable.length === 1) {
-    return (
-      <a
-        className="ip-lookup-link"
-        href={usable[0].url}
-        target="_blank"
-        rel="noopener noreferrer"
-        onClick={e => e.stopPropagation()}
-        title={t('ip_lookup_open', { service: usable[0].name })}
-      >
-        ↗ {ip}
-      </a>
-    );
-  }
+function PublicIpLink({ ip, service, t }) {
+  const url = service ? buildLookupUrl(service.url_template, ip) : null;
+  if (!url) return <span>↗ {ip}</span>;
 
   return (
-    <span ref={wrapRef} style={{ position: 'relative' }}>
-      <button
-        type="button"
-        className="ip-lookup-link"
-        onClick={e => { e.stopPropagation(); setMenuOpen(o => !o); }}
-        title={t('ip_lookup_choose')}
-      >
-        ↗ {ip}
-      </button>
-      {menuOpen && (
-        <div className="popover" style={{ top: 'calc(100% + 4px)', left: 0, minWidth: 170 }}>
-          <div className="popover-head">{t('ip_lookup_choose')}</div>
-          {usable.map(s => (
-            <a
-              key={s.id}
-              className="popover-item"
-              href={s.url}
-              target="_blank"
-              rel="noopener noreferrer"
-              onClick={() => setMenuOpen(false)}
-              style={{ textDecoration: 'none' }}
-            >
-              {s.name}
-              <ExternalLink size={12} style={{ opacity: 0.6, flexShrink: 0 }} />
-            </a>
-          ))}
-        </div>
-      )}
-    </span>
+    <a
+      className="ip-lookup-link"
+      href={url}
+      target="_blank"
+      rel="noopener noreferrer"
+      onClick={e => e.stopPropagation()}
+      title={t('ip_lookup_open', { service: service.name })}
+    >
+      ↗ {ip}
+    </a>
   );
 }
 
@@ -176,7 +135,14 @@ function Tile({ icon, tone, label, value, sub, history, historyMax, onClick, tit
   );
 }
 
-export function TelemetryBar({ router, activeRouter, interfaces = [] }) {
+/**
+ * @param onNavigate  Optional. Called with a tab id when a tile is clicked.
+ *                    A tile states a fact; the tab is where that fact can be
+ *                    investigated, so the tile is the natural way in - CPU, RAM
+ *                    and temperature lead to Router Health, and the client count
+ *                    leads to the users and their traffic.
+ */
+export function TelemetryBar({ router, activeRouter, interfaces = [], onNavigate }) {
   const { t, lang } = useI18n();
   const [modalOpen, setModalOpen] = useState(false);
   const [availableIfaces, setAvailableIfaces] = useState([]);
@@ -206,21 +172,16 @@ export function TelemetryBar({ router, activeRouter, interfaces = [] }) {
     }
   }, [router]);
 
-  // Which external lookup services the public IP links to. Configured in
-  // Settings; a failure here simply leaves the address as plain text.
-  const [lookupServices, setLookupServices] = useState([]);
+  // Which external service the public IP links to. Configured in Settings;
+  // a failure here simply leaves the address as plain text.
+  const [lookupService, setLookupService] = useState(null);
 
   useEffect(() => {
     api.getIpLookup()
       .then(res => {
         const data = res?.data;
         if (!data?.services) return;
-        const enabled = new Set(data.enabled_ids || []);
-        // Default first, so a single click lands where the user expects.
-        const ordered = data.services
-          .filter(s => enabled.has(s.id))
-          .sort((a, b) => (a.id === data.default_id ? -1 : b.id === data.default_id ? 1 : 0));
-        setLookupServices(ordered);
+        setLookupService(data.services.find(s => s.id === data.default_id) || null);
       })
       .catch(() => {});
   }, []);
@@ -318,6 +279,26 @@ export function TelemetryBar({ router, activeRouter, interfaces = [] }) {
     ? 'var(--text-muted)'
     : (temp >= warnAt ? 'var(--color-danger)'
       : (temp >= warnAt - 8 ? 'var(--color-warning)' : 'var(--color-success)'));
+  // A tile only becomes clickable when someone is listening, so it never
+  // advertises an affordance that does nothing.
+  const goHealth = onNavigate ? () => onNavigate('health') : undefined;
+  const goUsers = onNavigate ? () => onNavigate('users') : undefined;
+
+  // CPU tile subtitle: the processor model, then its characteristics. The model
+  // line is dropped when it is only the architecture repeated (a CHR or x86
+  // box with no SoC name), leaving just the spec line.
+  const cpuModel = router.cpu_model || '';
+  const cpuArch = router.cpu_arch || '';
+  const cpuSpecBits = [
+    cpuArch && cpuArch.toLowerCase() !== cpuModel.toLowerCase() ? cpuArch : null,
+    router.cpu_count ? `${router.cpu_count} ${router.cpu_count === 1 ? 'core' : 'cores'}` : null,
+    router.cpu_frequency_mhz ? `${router.cpu_frequency_mhz} MHz` : null,
+  ].filter(Boolean);
+  const cpuLines = [
+    cpuModel || null,
+    cpuSpecBits.length ? cpuSpecBits.join(' · ') : null,
+  ].filter(Boolean);
+
   const monitored = router.monitored_interfaces || selectedIfaces || [];
   const monitoredShort = monitored.length === 0
     ? 'none'
@@ -361,9 +342,15 @@ export function TelemetryBar({ router, activeRouter, interfaces = [] }) {
           tone={cpuColor}
           label={t('cpu')}
           value={`${cpuLoad}%`}
-          sub={router.board_name || ''}
+          // The actual processor, not the board. On MikroTik hardware the SoC
+          // name ("ipq5300") comes from /system/routerboard; the arch, core
+          // count and clock come from /system/resource. The board name still
+          // sits on the Uptime tile.
+          sub={cpuLines}
           history={cpuHistory}
           historyMax={100}
+          onClick={goHealth}
+          title={onNavigate ? t('open_health_hint') : undefined}
         />
 
         <Tile
@@ -374,6 +361,8 @@ export function TelemetryBar({ router, activeRouter, interfaces = [] }) {
           sub={memPct !== null ? `${memPct}% ${t('used_label')}` : ''}
           history={memHistory}
           historyMax={100}
+          onClick={goHealth}
+          title={onNavigate ? t('open_health_hint') : undefined}
         />
 
         <Tile
@@ -383,6 +372,8 @@ export function TelemetryBar({ router, activeRouter, interfaces = [] }) {
           value={router.temperature != null ? `${router.temperature}°C` : '—'}
           sub={tempThreshold ? `${t('threshold_label')} ${tempThreshold}°C` : ''}
           history={tempHistory}
+          onClick={goHealth}
+          title={onNavigate ? t('open_health_hint') : undefined}
         />
 
         <Tile
@@ -391,6 +382,8 @@ export function TelemetryBar({ router, activeRouter, interfaces = [] }) {
           label={t('clients_label')}
           value={String(router.active_clients ?? 0)}
           sub={t('online')}
+          onClick={goUsers}
+          title={onNavigate ? t('open_users_hint') : undefined}
         />
 
         <Tile
@@ -407,7 +400,7 @@ export function TelemetryBar({ router, activeRouter, interfaces = [] }) {
           // under carrier-grade NAT), and who the link belongs to.
           sub={[
             router.public_ip && router.public_ip !== router.wan_ip
-              ? <PublicIpLink key="pub" ip={router.public_ip} services={lookupServices} t={t} />
+              ? <PublicIpLink key="pub" ip={router.public_ip} service={lookupService} t={t} />
               : null,
             router.isp || null,
             !router.public_ip && !router.isp ? (router.version || '') : null

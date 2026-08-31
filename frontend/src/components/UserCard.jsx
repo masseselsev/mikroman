@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
 import { useI18n } from '../context/I18nContext';
 import { api } from '../api/client';
-import { formatSpeed, formatBytes, formatRelativeTime } from '../utils/formatters';
+import { formatSpeed, formatSpeedShort, formatBytes, formatRelativeTime } from '../utils/formatters';
+import { displayVendor } from '../utils/deviceLabels';
 import { DeviceModal } from './DeviceModal';
 import {
   User as UserIcon,
@@ -59,13 +60,11 @@ export function formatLimitSummary(limitStr) {
 }
 
 /** Signal strength colour: usable above -65 dBm, weak below -80 dBm. */
-function signalColor(dbm) {
+export function signalColor(dbm) {
   if (dbm > -65) return 'var(--color-success)';
   if (dbm > -80) return 'var(--color-warning)';
   return 'var(--color-danger)';
 }
-
-const META_SEP = <span style={{ opacity: 0.4 }}>·</span>;
 
 /**
  * Collapse a device list into logical machines.
@@ -115,7 +114,7 @@ export function groupDevices(devices) {
  * RouterOS names the bundle 'mld1', which identifies no actual radio. The
  * member links carry the interface and signal that are actually useful.
  */
-function connectionLinks(device) {
+export function connectionLinks(device) {
   if (device.wifi_links && device.wifi_links.length > 0) {
     return device.wifi_links.map(link => ({
       wireless: true,
@@ -138,7 +137,7 @@ function connectionLinks(device) {
 }
 
 /** Compact label for a radio band, e.g. '5ghz-be' -> '5G·BE'. */
-function bandLabel(band) {
+export function bandLabel(band) {
   if (!band) return null;
   const [freq, mode] = band.split('-');
   const shortFreq = freq.replace('ghz', 'G').replace('2', '2.4');
@@ -146,13 +145,24 @@ function bandLabel(band) {
 }
 
 /**
- * A single device, rendered as three columns of three lines.
+ * A single device.
  *
- * The text column (identity, address, radio link) is the only part allowed to
- * shrink; the figures and the buttons have fixed widths. An earlier version put
- * the live rate on the same line as the name, which meant two elements that both
- * refuse to shrink competed for one line: on a narrow card the name collapsed to
- * "Pixe..." and the rate still overflowed the card edge.
+ * Rebuilt after the three-column layout kept overflowing. The old version
+ * carried thirteen pieces of information across three lines and a fixed 104px
+ * figures column; the column's content was wider than 104px, it had no overflow
+ * rule, and it printed straight over the "seen 10h ago" text beside it.
+ *
+ * The redesign follows two principles:
+ *
+ *  - Only one element per line may be greedy; everything else is `flex-shrink:0`
+ *    and genuinely small. The name line has the name (which truncates) plus at
+ *    most two tiny chips. The detail line has one truncating run of text plus
+ *    the two action buttons.
+ *  - The row shows what changes and what is actionable. The live rate (only
+ *    when non-zero - an idle row would otherwise repeat "0 bps" twice) and the
+ *    per-device speed limit stay on the row; today's byte totals moved to the
+ *    row tooltip and the device modal, since the per-user panel above already
+ *    carries the number the reader came for.
  */
 function DeviceRow({ group, t, lang, onOpen, onUpdate }) {
   const [busy, setBusy] = useState(false);
@@ -163,6 +173,28 @@ function DeviceRow({ group, t, lang, onOpen, onUpdate }) {
   const isMoving = rateIn > 0 || rateOut > 0;
   const offline = !group.isActive;
   const multiHomed = group.adapters.length > 1;
+  const hasCustomLimit = d.speed_limit && d.speed_limit !== 'default';
+
+  // The randomization marker is not shown as a chip: nearly every phone uses a
+  // private MAC, so it annotates the norm and only costs width. It stays in the
+  // row tooltip and the device modal.
+  const vendorLabel = displayVendor(d.vendor);
+  const deviceName = d.custom_name || d.hostname || d.vendor || 'Device';
+
+  const volumeNote = `${t('today_scope')}: ↓ ${formatBytes(group.bytesIn)} · ↑ ${formatBytes(group.bytesOut)}`;
+  const rowTitle = [
+    t('device_row_hint'),
+    d.is_randomized_mac ? t('private_mac_hint') : null,
+    volumeNote,
+  ].filter(Boolean).join(' · ');
+
+  // One entry per live radio link, across every active adapter. A WiFi 7
+  // multi-link client contributes one per bonded radio.
+  const links = group.adapters
+    .filter(a => a.is_active)
+    .flatMap(adapter =>
+      connectionLinks(adapter).map((link, i) => ({ ...link, key: `${adapter.id}-${link.interface}-${i}` }))
+    );
 
   const togglePause = async (e) => {
     e.stopPropagation();
@@ -184,136 +216,109 @@ function DeviceRow({ group, t, lang, onOpen, onUpdate }) {
     <div
       className="device-row"
       onClick={onOpen}
-      title={t('device_row_hint')}
-      style={{ opacity: group.isPaused ? 0.6 : (offline ? 0.78 : 1) }}
+      title={rowTitle}
+      style={{ opacity: group.isPaused ? 0.55 : (offline ? 0.72 : 1) }}
     >
-      {/* Text column. minWidth:0 lets it shrink below its content width, which
-          is what stops the figures and buttons being pushed outside the card. */}
-      <div className="device-row-text">
-        {/* Line 1 - identity */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
-          <span
-            className="status-dot"
-            style={{
-              width: 7,
-              height: 7,
-              background: group.isPaused ? 'var(--color-danger)' : (group.isActive ? 'var(--color-success)' : 'var(--text-muted)'),
-              boxShadow: group.isActive && !group.isPaused ? '0 0 6px rgba(16, 185, 129, 0.5)' : 'none'
-            }}
-            title={group.isPaused ? t('paused') : (group.isActive ? t('online') : t('offline'))}
-          />
-          <span style={{ flexShrink: 0, display: 'flex', color: 'var(--text-secondary)' }}>
-            {getDeviceIcon(d.vendor, d.hostname)}
-          </span>
-          <span className="truncate" style={{
-            fontWeight: 600,
-            fontSize: 'var(--fs-sm)',
-            color: 'var(--text-primary)'
-          }}>
-            {d.custom_name || d.hostname || d.vendor || 'Device'}
-          </span>
-
-          {multiHomed && (
-            <span className="badge badge-chip" title={t('multi_adapter_hint')}>
-              {group.adapters.length}×
-            </span>
-          )}
-          {d.is_hidden && (
-            <span className="badge badge-chip" title={t('hidden_badge')}>{t('hidden_badge')}</span>
-          )}
-          {d.speed_limit && d.speed_limit !== 'default' && (
-            <span className="badge badge-chip badge-chip-warn" title={`${t('table_speed_limit')}: ${d.speed_limit}`}>
-              ⚡ {d.speed_limit}
-            </span>
-          )}
-          {d.is_randomized_mac && (
-            <span className="badge badge-chip badge-chip-warn" title={t('private_mac_hint')}>
-              {t('private_badge')}
-            </span>
-          )}
-        </div>
-
-        {/* Line 2 - identity. Kept apart from connectivity so neither has to
-            compete for width; the vendor is the only element allowed to give way. */}
-        <div className="device-row-meta">
-          <span className="font-mono" style={{ flexShrink: 0 }}>{d.ip_address || d.mac_address}</span>
-          {d.vendor && <>{META_SEP}<span className="truncate">{d.vendor}</span></>}
-          {offline && d.last_seen && (
-            <>{META_SEP}<span style={{ flexShrink: 0 }}>
-              {t('last_seen_ago', { time: formatRelativeTime(d.last_seen, lang) })}
-            </span></>
-          )}
-        </div>
-
-        {/* Line 3 - how it is connected. One entry per live connection: a
-            dual-homed machine shows both adapters, and a WiFi 7 multi-link
-            client shows each radio it is bonded over, since 'mld1' names no
-            actual radio. */}
-        <div className="device-row-meta" style={{ gap: 6 }}>
-          {group.adapters.filter(a => a.is_active).flatMap(adapter =>
-            connectionLinks(adapter).map((link, i) => (
-              <span
-                key={`${adapter.id}-${link.interface}-${i}`}
-                style={{ display: 'flex', alignItems: 'center', gap: 3, flexShrink: 0 }}
-                title={link.band ? `${link.interface} - ${link.band}` : link.interface}
-              >
-                {link.wireless ? <Wifi size={10} /> : <Cable size={10} />}
-                {link.interface}
-                {link.band && <span className="band-tag">{bandLabel(link.band)}</span>}
-                {link.signal != null && (
-                  <span className="font-mono" style={{ color: signalColor(link.signal) }}>
-                    {link.signal}
-                  </span>
-                )}
-              </span>
-            ))
-          )}
-        </div>
-      </div>
-
-      {/* Figures column: live rate on top, today's volume beneath. Fixed width,
-          so a device going from "0 bps" to "12.4 Mbps" cannot reflow the name. */}
-      <div className="device-row-metrics">
-        <span style={{ color: isMoving && rateIn ? 'var(--color-success)' : 'var(--text-muted)', fontWeight: 700 }}>
-          ↓ {formatSpeed(rateIn)}
-        </span>
-        <span style={{ color: isMoving && rateOut ? 'var(--color-primary)' : 'var(--text-muted)', fontWeight: 700 }}>
-          ↑ {formatSpeed(rateOut)}
-        </span>
-        <span style={{ color: 'var(--text-muted)', opacity: 0.8 }}
-              title={`${t('today_download')} / ${t('today_upload')}`}>
-          {formatBytes(group.bytesIn)} · {formatBytes(group.bytesOut)}
-        </span>
-      </div>
-
-      {/* Action column, outside the text flow so it can never be clipped. */}
-      <div className="device-row-actions">
-        <button
-          type="button"
-          onClick={togglePause}
-          disabled={busy}
-          className="btn-icon"
+      {/* Line 1 — identity and, when it is moving, the live rate. */}
+      <div className="drow-main">
+        <span
+          className="status-dot"
           style={{
-            width: 26,
-            height: 26,
-            background: group.isPaused ? 'var(--color-danger)' : 'var(--bg-card)',
-            color: group.isPaused ? '#fff' : 'var(--text-secondary)'
+            width: 7,
+            height: 7,
+            flexShrink: 0,
+            background: group.isPaused ? 'var(--color-danger)' : (group.isActive ? 'var(--color-success)' : 'var(--text-muted)'),
+            boxShadow: group.isActive && !group.isPaused ? '0 0 6px rgba(16, 185, 129, 0.5)' : 'none'
           }}
-          title={group.isPaused ? t('resume_device') : t('pause_device')}
-        >
-          {group.isPaused ? <Play size={12} /> : <Pause size={12} />}
-        </button>
+          title={group.isPaused ? t('paused') : (group.isActive ? t('online') : t('offline'))}
+        />
+        <span style={{ flexShrink: 0, display: 'flex', color: 'var(--text-secondary)' }}>
+          {getDeviceIcon(d.vendor, d.hostname)}
+        </span>
+        <span className="drow-name" title={deviceName}>{deviceName}</span>
 
-        <button
-          type="button"
-          onClick={(e) => { e.stopPropagation(); onOpen(); }}
-          className="btn-icon"
-          style={{ width: 26, height: 26, background: 'var(--bg-card)' }}
-          title={t('edit_device')}
-        >
-          <Sliders size={12} />
-        </button>
+        {multiHomed && (
+          <span className="badge badge-chip" title={t('multi_adapter_hint')}>
+            {group.adapters.length}×
+          </span>
+        )}
+        {hasCustomLimit && (
+          <span className="badge badge-chip badge-chip-warn" title={`${t('table_speed_limit')}: ${d.speed_limit}`}>
+            ⚡ {d.speed_limit}
+          </span>
+        )}
+
+        {isMoving && (
+          <span className="drow-rate">
+            <span style={{ color: rateIn ? 'var(--color-success)' : 'var(--text-muted)' }}>↓ {formatSpeedShort(rateIn)}</span>
+            <span style={{ color: rateOut ? 'var(--color-primary)' : 'var(--text-muted)' }}>↑ {formatSpeedShort(rateOut)}</span>
+          </span>
+        )}
       </div>
+
+      {/* Line 2 — address, vendor and staleness in one truncating run, then the
+          two actions pinned to the right where they cannot be clipped. */}
+      <div className="drow-sub">
+        <span className="drow-facts">
+          <span className="font-mono">{d.ip_address || d.mac_address}</span>
+          {vendorLabel && <> · {vendorLabel}</>}
+          {d.is_hidden && <> · {t('hidden_badge')}</>}
+          {offline && d.last_seen && (
+            <> · {t('last_seen_ago', { time: formatRelativeTime(d.last_seen, lang) })}</>
+          )}
+        </span>
+
+        <span className="drow-actions">
+          <button
+            type="button"
+            onClick={togglePause}
+            disabled={busy}
+            className="btn-icon"
+            style={{
+              width: 24,
+              height: 24,
+              background: group.isPaused ? 'var(--color-danger)' : 'var(--bg-card)',
+              color: group.isPaused ? '#fff' : 'var(--text-secondary)'
+            }}
+            title={group.isPaused ? t('resume_device') : t('pause_device')}
+          >
+            {group.isPaused ? <Play size={12} /> : <Pause size={12} />}
+          </button>
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); onOpen(); }}
+            className="btn-icon"
+            style={{ width: 24, height: 24, background: 'var(--bg-card)' }}
+            title={t('edit_device')}
+          >
+            <Sliders size={12} />
+          </button>
+        </span>
+      </div>
+
+      {/* Line 3 — how it is connected. Present only for an active device with a
+          radio link; it wraps rather than truncates, since each token
+          (interface, band, signal) is meaningless cut in half. */}
+      {links.length > 0 && (
+        <div className="drow-conn">
+          {links.map(link => (
+            <span
+              key={link.key}
+              className="drow-conn-link"
+              title={link.band ? `${link.interface} — ${link.band}` : link.interface}
+            >
+              {link.wireless ? <Wifi size={10} /> : <Cable size={10} />}
+              {link.interface}
+              {link.band && <span className="band-tag">{bandLabel(link.band)}</span>}
+              {link.signal != null && (
+                <span className="font-mono signal-reading" style={{ color: signalColor(link.signal) }}>
+                  [{link.signal} {t('dbm_unit')}]
+                </span>
+              )}
+            </span>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -455,38 +460,35 @@ export function UserCard({ user, onEdit, onDelete, onLimitChange, onPauseToggle,
           </div>
         </div>
 
-        {/* Live throughput + today's volume. bytes_today_* was previously
-            fetched by the app and never displayed anywhere. */}
-        <div style={{
-          background: 'var(--bg-secondary)',
-          borderRadius: 'var(--radius-md)',
-          padding: '8px 12px',
-          marginTop: 10,
-          display: 'flex',
-          alignItems: 'center',
-          gap: 10
-        }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
-            <ArrowDown size={15} style={{ color: isOnline ? 'var(--color-success)' : 'var(--text-muted)', flexShrink: 0 }} />
+        {/* Live throughput + today's volume — the headline figures of the card.
+            Previously styled like any other muted panel, which left the numbers
+            people actually open this card to read looking like secondary detail.
+            It now carries its own surface, a live accent while traffic is
+            moving, and figures a full step larger than the device rows beneath
+            it, so the eye lands on the user's totals before the per-device
+            breakdown. */}
+        <div className={`usage-panel${isOnline ? ' is-live' : ''}`}>
+          <div className="usage-metric">
+            <ArrowDown size={16} style={{ color: isOnline ? 'var(--color-success)' : 'var(--text-muted)', flexShrink: 0 }} />
             <div style={{ minWidth: 0 }}>
-              <div className="font-mono" style={{ fontSize: 'var(--fs-md)', fontWeight: 800, color: isOnline ? 'var(--color-success)' : 'var(--text-muted)', lineHeight: 1.15 }}>
+              <div className="usage-figure font-mono" style={{ color: isOnline ? 'var(--color-success)' : 'var(--text-muted)' }}>
                 {formatSpeed(user.current_rate_in || 0)}
               </div>
-              <div className="font-mono" style={{ fontSize: 'var(--fs-3xs)', color: 'var(--text-muted)' }}>
+              <div className="usage-caption font-mono">
                 {formatBytes(user.bytes_today_in || 0)}
               </div>
             </div>
           </div>
 
-          <div style={{ width: 1, height: 26, background: 'var(--border-color)', flexShrink: 0 }} />
+          <div className="usage-divider" />
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
-            <ArrowUp size={15} style={{ color: isOnline ? 'var(--color-primary)' : 'var(--text-muted)', flexShrink: 0 }} />
+          <div className="usage-metric">
+            <ArrowUp size={16} style={{ color: isOnline ? 'var(--color-primary)' : 'var(--text-muted)', flexShrink: 0 }} />
             <div style={{ minWidth: 0 }}>
-              <div className="font-mono" style={{ fontSize: 'var(--fs-md)', fontWeight: 800, color: isOnline ? 'var(--color-primary)' : 'var(--text-muted)', lineHeight: 1.15 }}>
+              <div className="usage-figure font-mono" style={{ color: isOnline ? 'var(--color-primary)' : 'var(--text-muted)' }}>
                 {formatSpeed(user.current_rate_out || 0)}
               </div>
-              <div className="font-mono" style={{ fontSize: 'var(--fs-3xs)', color: 'var(--text-muted)' }}>
+              <div className="usage-caption font-mono">
                 {formatBytes(user.bytes_today_out || 0)}
               </div>
             </div>
@@ -495,11 +497,11 @@ export function UserCard({ user, onEdit, onDelete, onLimitChange, onPauseToggle,
           <div style={{ flex: 1 }} />
 
           {/* Share of today's gateway traffic */}
-          <div style={{ textAlign: 'right', flexShrink: 0 }}>
-            <div className="font-mono" style={{ fontSize: 'var(--fs-md)', fontWeight: 800, color: 'var(--text-primary)', lineHeight: 1.15 }}>
+          <div className="usage-total">
+            <div className="usage-figure font-mono" style={{ color: 'var(--text-primary)' }}>
               {formatBytes(todayTotal)}
             </div>
-            <div className="font-mono" style={{ fontSize: 'var(--fs-3xs)', color: 'var(--text-muted)' }}>
+            <div className="usage-caption font-mono">
               {gatewayTotal > 0 ? `${t('today_scope')} · ${sharePct.toFixed(1)}%` : t('today_scope')}
             </div>
           </div>

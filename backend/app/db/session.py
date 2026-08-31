@@ -2,7 +2,7 @@ import logging
 import os
 from typing import AsyncGenerator
 
-from sqlalchemy import text
+from sqlalchemy import event, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from backend.app.core.config import settings
@@ -28,6 +28,47 @@ engine = create_async_engine(
     connect_args={"check_same_thread": False} if "sqlite" in settings.DATABASE_URL else {}
 )
 
+
+if "sqlite" in settings.DATABASE_URL:
+
+    @event.listens_for(engine.sync_engine, "connect")
+    def _configure_sqlite_connection(dbapi_connection, _connection_record):
+        """Apply the durability and concurrency PRAGMAs on every new connection.
+
+        SQLite applies these per connection, not per database, so they have to
+        be set on connect rather than once at startup.
+
+        ``journal_mode=WAL``
+            Readers no longer block the writer and vice versa, so the 10-second
+            background poll loop and a dashboard request can no longer collide
+            on "database is locked". It also makes a *hot* backup safe: the
+            SQLite online-backup API can copy a consistent snapshot while the
+            app keeps writing, which is what ``scripts/backup.sh`` relies on.
+            The setting is written into the database header and persists.
+
+        ``synchronous=NORMAL``
+            The pairing WAL is designed for. The database cannot be corrupted by
+            an application crash; only an OS crash or power loss in the moment
+            between a commit and the next checkpoint can drop the most recent
+            transaction. That transaction is at most one telemetry sample - the
+            counters it was derived from are still on the router and the next
+            poll re-reads them against the persisted baseline - so the exposure
+            is a few seconds of history, never a broken file. ``FULL`` (the
+            default) fsyncs on every commit and buys durability this workload
+            does not need.
+
+        ``busy_timeout=5000``
+            Wait up to five seconds for a lock instead of failing immediately.
+            Set explicitly rather than trusting the driver default.
+        """
+        cursor = dbapi_connection.cursor()
+        try:
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA synchronous=NORMAL")
+            cursor.execute("PRAGMA busy_timeout=5000")
+        finally:
+            cursor.close()
+
 AsyncSessionLocal = async_sessionmaker(
     bind=engine,
     class_=AsyncSession,
@@ -41,6 +82,22 @@ async def init_db() -> None:
     """Initialize database tables and sync dynamic schema columns."""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
+        if "sqlite" in settings.DATABASE_URL:
+            # Report the effective journal mode once at startup. A value other
+            # than "wal" here means the PRAGMA above did not take - most likely
+            # the database is on a filesystem that cannot support WAL's shared
+            # memory (an NFS mount), in which case hot backups are unsafe and
+            # scripts/backup.sh should stop the container first.
+            mode = (await conn.execute(text("PRAGMA journal_mode"))).scalar()
+            if str(mode).lower() == "wal":
+                logger.info("SQLite journal mode: WAL (hot backups are safe)")
+            else:
+                logger.warning(
+                    f"SQLite journal mode is '{mode}', not WAL. Concurrent access is "
+                    f"serialised and an online backup may capture a torn file; take "
+                    f"backups with the container stopped."
+                )
 
         # SQLite automatic schema evolution for runtime changes
         if "sqlite" in settings.DATABASE_URL:

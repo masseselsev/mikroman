@@ -131,6 +131,21 @@ async def test_smart_merge_suggestions_and_execution(mock_settings):
         await session.refresh(old_target)
         await session.refresh(new_unassigned)
 
+        # Each record has moved some traffic; the merge must carry it across
+        # rather than orphan the source's rows.
+        from datetime import date
+
+        from backend.app.db.models import DeviceTrafficRollup
+        session.add_all([
+            DeviceTrafficRollup(device_id=old_target.id, record_date=date(2026, 8, 30),
+                                bytes_in=1000, bytes_out=100),
+            DeviceTrafficRollup(device_id=new_unassigned.id, record_date=date(2026, 8, 30),
+                                bytes_in=500, bytes_out=50),
+            DeviceTrafficRollup(device_id=new_unassigned.id, record_date=date(2026, 8, 31),
+                                bytes_in=9, bytes_out=3),
+        ])
+        await session.commit()
+
         # 1. Test Merge Suggestions Finder
         suggestions = await dev_mgr.find_merge_suggestions(session)
         assert len(suggestions) >= 1
@@ -155,5 +170,21 @@ async def test_smart_merge_suggestions_and_execution(mock_settings):
         # History should reflect the rotation
         hist = (await session.execute(select(DeviceHistory).where(DeviceHistory.device_id == old_target.id))).scalars().all()
         assert any(h.event_type == "mac_rotated" for h in hist)
+
+        # The source's traffic followed it: the shared day is summed, the
+        # source-only day is moved, and nothing is left orphaned.
+        from backend.app.db.models import DeviceTrafficRollup as _Roll
+        rolls = {
+            r.record_date: r for r in (await session.execute(
+                select(_Roll).where(_Roll.device_id == old_target.id)
+            )).scalars().all()
+        }
+        assert rolls[date(2026, 8, 30)].bytes_in == 1500
+        assert rolls[date(2026, 8, 30)].bytes_out == 150
+        assert rolls[date(2026, 8, 31)].bytes_in == 9
+        orphans = (await session.execute(
+            select(_Roll).where(_Roll.device_id == new_unassigned.id)
+        )).scalars().all()
+        assert orphans == []
 
     await engine.dispose()

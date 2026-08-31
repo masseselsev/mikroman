@@ -4,6 +4,7 @@ Replaces Simple Queue byte counters, which were measured to stay frozen at zero
 on RouterOS 7.25 while traffic flowed.
 """
 import pytest
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from backend.app.db.models import (
@@ -357,4 +358,103 @@ def test_compute_delta_edge_cases():
     assert d(1500, 1000) == 500
     assert d(1000, 1000) == 0
     assert d(5000, None) == 0        # baseline reading contributes nothing
-    assert d(200, 5000) == 200       # counter reset
+    assert d(200, 5000) == 200       # counter went backwards -> reset
+
+    # reset=True forces the post-reset path even when the counter reads higher
+    # than its stale baseline: right after a reboot a fast counter can climb
+    # past the pre-reboot value within one poll, and treating that as an
+    # ordinary delta would lose every byte moved since the reboot.
+    assert d(1500, 1000, reset=True) == 1500
+    assert d(200, 5000, reset=True) == 200
+    assert d(5000, None, reset=True) == 0   # still nothing to difference from
+
+
+class TestRebootAwareCollection:
+    """A router reboot resets every byte counter; the accounting must notice.
+
+    A plain network outage is deliberately NOT a reboot - the router keeps
+    counting the whole time, so ordinary differencing on reconnect already
+    captures the gap. These tests pin the distinction.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_normal_tick_differences_against_the_baseline(self, session):
+        _, device = await _seed(session)
+        router = FakeRouter()
+        svc = TrafficAccountingService(router, router_id=1)
+        await svc.sync_counter_rules(session)
+
+        router.set_bytes(device.id, "down", 1_000_000)
+        await svc.collect(session, router_uptime_seconds=3600)  # establishes baseline
+
+        router.set_bytes(device.id, "down", 1_500_000)
+        await svc.collect(session, router_uptime_seconds=3660)  # uptime advanced
+
+        roll = (await session.execute(
+            select(DeviceTrafficRollup).where(DeviceTrafficRollup.device_id == device.id)
+        )).scalar_one()
+        assert roll.bytes_in == 500_000
+
+    @pytest.mark.asyncio
+    async def test_an_outage_is_not_a_reboot_and_the_whole_gap_is_captured(self, session):
+        _, device = await _seed(session)
+        router = FakeRouter()
+        svc = TrafficAccountingService(router, router_id=1)
+        await svc.sync_counter_rules(session)
+
+        router.set_bytes(device.id, "down", 1_000_000)
+        await svc.collect(session, router_uptime_seconds=3600)
+
+        # Five minutes of no polls (network down). The router kept counting;
+        # uptime advanced by ~300s, so this is NOT a reboot.
+        router.set_bytes(device.id, "down", 50_000_000)
+        await svc.collect(session, router_uptime_seconds=3900)
+
+        roll = (await session.execute(
+            select(DeviceTrafficRollup).where(DeviceTrafficRollup.device_id == device.id)
+        )).scalar_one()
+        assert roll.bytes_in == 49_000_000  # the entire gap
+
+    @pytest.mark.asyncio
+    async def test_uptime_going_backwards_credits_bytes_since_the_reboot(self, session):
+        _, device = await _seed(session)
+        router = FakeRouter()
+        svc = TrafficAccountingService(router, router_id=1)
+        await svc.sync_counter_rules(session)
+
+        router.set_bytes(device.id, "down", 8_000_000)
+        await svc.collect(session, router_uptime_seconds=7200)
+
+        # Router rebooted: uptime is now tiny, and the counter - which reset to
+        # zero - has already climbed to 9_000_000, *past* the 8_000_000
+        # baseline, within the first poll after boot.
+        router.set_bytes(device.id, "down", 9_000_000)
+        await svc.collect(session, router_uptime_seconds=45)
+
+        roll = (await session.execute(
+            select(DeviceTrafficRollup).where(DeviceTrafficRollup.device_id == device.id)
+        )).scalar_one()
+        # The first collect only set the baseline (contributes nothing); the
+        # post-reboot collect credits 9_000_000 - all bytes since the reboot -
+        # rather than 1_000_000 (9M - 8M) or a negative number.
+        assert roll.bytes_in == 9_000_000
+
+    @pytest.mark.asyncio
+    async def test_missing_uptime_falls_back_to_the_counter_heuristic(self, session):
+        # Older callers, or a failed /system/resource read, pass nothing.
+        _, device = await _seed(session)
+        router = FakeRouter()
+        svc = TrafficAccountingService(router, router_id=1)
+        await svc.sync_counter_rules(session)
+
+        router.set_bytes(device.id, "down", 8_000_000)
+        await svc.collect(session)  # baseline only
+
+        router.set_bytes(device.id, "down", 2_000_000)  # obvious counter reset
+        await svc.collect(session)
+
+        roll = (await session.execute(
+            select(DeviceTrafficRollup).where(DeviceTrafficRollup.device_id == device.id)
+        )).scalar_one()
+        # 2M < 8M is caught by the backwards-counter heuristic with no uptime.
+        assert roll.bytes_in == 2_000_000

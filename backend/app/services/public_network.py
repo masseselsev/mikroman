@@ -50,6 +50,19 @@ _MAX_NAME_LENGTH = 64
 _IPINFO_URL = "https://ipinfo.io/json"
 _IPIFY_URL = "https://api.ipify.org"
 
+# Registry data names the legal entity - "COSCOM Liability Limited Company" -
+# while the operator everyone actually knows is "Ucell". ip-api publishes that
+# trading name in its `isp` field, and it is the name the lookup sites show, so
+# it is what the tile should show too.
+#
+# Its free tier is plaintext HTTP, which is why it is used for the NAME ONLY.
+# The address, the AS number and everything acted upon come from the HTTPS
+# sources above. That split bounds what an interfering network can do to
+# displaying a wrong operator name - it can never change the address the WAN
+# tile links to, and the name is rendered as a text node, escaped and length
+# capped, so it cannot become markup.
+_IP_API_URL = "http://ip-api.com/json/?fields=status,isp"
+
 # Registry org fields are conventionally "AS<number> <organisation name>".
 _ASN_PREFIX = re.compile(r"^\s*(AS\d+)\s+(.*)$", re.IGNORECASE)
 
@@ -147,6 +160,27 @@ class PublicNetworkResolver:
 
         return PublicNetwork()
 
+    async def _fetch_trading_name(self, http: httpx.AsyncClient) -> Optional[str]:
+        """The operator's trading name, or None.
+
+        Deliberately narrow: this source is plaintext, so it is allowed to
+        influence one display string and nothing else. Any failure is silent -
+        the registry name from the HTTPS lookup is already a correct answer,
+        just a less recognisable one.
+        """
+        try:
+            resp = await http.get(_IP_API_URL)
+            if resp.status_code != 200:
+                return None
+            body = resp.json()
+            if body.get("status") != "success":
+                return None
+            name = str(body.get("isp") or "").strip()
+            return name[:_MAX_NAME_LENGTH] or None
+        except Exception as e:
+            logger.debug(f"Trading-name lookup via ip-api failed: {e}")
+            return None
+
     async def resolve(self) -> PublicNetwork:
         """Current public identity, served from cache when still fresh.
 
@@ -159,6 +193,15 @@ class PublicNetworkResolver:
             return self._value
 
         fetched = await self._fetch()
+
+        # Prefer the operator's trading name over the registry's legal entity,
+        # but only once there is an authoritative answer to attach it to.
+        if fetched.ip:
+            async with httpx.AsyncClient(timeout=LOOKUP_TIMEOUT_SECONDS) as http:
+                trading_name = await self._fetch_trading_name(http)
+            if trading_name:
+                fetched = fetched.model_copy(update={"isp": trading_name})
+
         self._checked_at = now
         if not fetched.is_empty():
             self._value = fetched

@@ -56,6 +56,23 @@ def parse_bytes_string(bytes_str: Optional[str]) -> Tuple[int, int]:
         return 0, 0
 
 
+DEFAULT_UNASSIGNED_LIMIT = "5M/5M"
+
+
+async def resolve_unassigned_limit(session: AsyncSession) -> str:
+    """The quarantine bandwidth applied to devices that belong to nobody.
+
+    Read from settings on every use rather than copied onto the device row.
+    ``Device.speed_limit`` means "an explicit override the operator chose for
+    this one device"; quarantine is a consequence of having no owner, so it is
+    resolved here and disappears the moment the device is assigned.
+    """
+    row = (await session.execute(
+        select(AppSetting).where(AppSetting.key == "unassigned_device_speed_limit")
+    )).scalar_one_or_none()
+    return row.value if row and row.value else DEFAULT_UNASSIGNED_LIMIT
+
+
 class TrafficController:
     """Controls per-user traffic shaping (Simple Queues) and firewall pausing."""
 
@@ -313,9 +330,7 @@ class TrafficController:
         # For unassigned devices, resolve 'default' to the configured unassigned quarantine limit
         effective_limit = device.speed_limit
         if device.user_id is None and effective_limit in ("default", None):
-            setting_res = await session.execute(select(AppSetting).where(AppSetting.key == "unassigned_device_speed_limit"))
-            setting_row = setting_res.scalar_one_or_none()
-            effective_limit = setting_row.value if setting_row else "5M/5M"
+            effective_limit = await resolve_unassigned_limit(session)
 
         # Determine limits: "default" for user device means "0/0" child limit (bounded by parent user queue)
         if user is not None and effective_limit in ("default", None):
@@ -517,6 +532,57 @@ class TrafficController:
                     logger.warning(f"Could not remove stale queue {queue.id}: {e}")
 
         return removed
+
+    async def reconcile_device_limits(self, session: AsyncSession) -> List[int]:
+        """Clear quarantine limits left on devices that now belong to a user.
+
+        Discovery used to copy the quarantine bandwidth onto ``speed_limit``.
+        Assignment only ever set ``user_id``, so the copy survived and the device
+        kept a child queue of its own - typically 5M/5M - hanging underneath an
+        unlimited parent. The owner's limit was therefore never what actually
+        applied, and the queue tree read as if someone had throttled the family
+        at random.
+
+        Discovery no longer writes that value, and migration 008 cleared the
+        rows that already carried it. This pass is the standing guard: it runs
+        on the queue-sync tick and catches anything that reintroduces the state -
+        a restored backup, an older instance writing to the same database, or a
+        future code path that copies the setting by mistake.
+
+        Only an exact match against the *current* quarantine setting is cleared,
+        so a limit the operator chose is left alone unless they happened to pick
+        precisely the quarantine value. That trade is deliberate: the cost of
+        clearing one deliberate limit is that the operator sets it again, while
+        the cost of leaving one behind is a user silently capped at 5 Mbps.
+
+        Returns:
+            Ids of the devices whose limit was reset.
+        """
+        quarantine = await resolve_unassigned_limit(session)
+
+        stmt = select(Device).where(
+            Device.user_id.is_not(None),
+            Device.speed_limit == quarantine,
+        )
+        stranded = (await session.execute(stmt)).scalars().all()
+        if not stranded:
+            return []
+
+        for device in stranded:
+            logger.info(
+                f"Device {device.id} ({device.custom_name or device.mac_address}) belongs to "
+                f"user {device.user_id} but still carried the quarantine limit "
+                f"{quarantine}; reverting to the owner's limit"
+            )
+            device.speed_limit = "default"
+        await session.commit()
+
+        # Rebuild each affected queue so the router agrees with the database
+        # immediately, rather than on whichever later tick happens to touch it.
+        for device in stranded:
+            await self.sync_device_queue(device.id, session)
+
+        return [d.id for d in stranded]
 
     @staticmethod
     def _parse_id(raw: str) -> Optional[int]:

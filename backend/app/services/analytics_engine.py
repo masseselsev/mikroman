@@ -486,22 +486,32 @@ class AnalyticsEngine:
                 description="Live counter baselines for delta traffic accumulation"
             ))
 
+    # A drop of more than this in router uptime between two polls is a reboot,
+    # not clock jitter.
+    _REBOOT_SLACK_SECONDS = 90
+
     @staticmethod
-    def _compute_delta(curr: int, prev: Optional[int]) -> int:
-        """Compute delta between current monotonic counter and previous reading, handling restarts."""
+    def _compute_delta(curr: int, prev: Optional[int], *, reset: bool = False) -> int:
+        """Compute delta between current monotonic counter and previous reading.
+
+        ``reset=True`` forces the post-reset path (credit ``curr`` alone) even
+        when ``curr >= prev``: after a reboot a fast interface counter can climb
+        past its stale baseline within one poll, and without an explicit signal
+        that reads as a tiny delta and loses the traffic since the reboot.
+        """
         if prev is None:
             return 0  # Initial baseline snapshot
-        if curr >= prev:
-            return curr - prev
-        # Counter wrapped or router/queue rebooted
-        return curr
+        if reset or curr < prev:
+            return curr
+        return curr - prev
 
     @classmethod
     async def record_traffic_snapshot(
         cls,
         session: AsyncSession,
         router_id: int,
-        client: Any
+        client: Any,
+        router_uptime_seconds: Optional[int] = None,
     ) -> None:
         """Accumulate daily gateway rollups from the monitored WAN interface counters.
 
@@ -510,6 +520,12 @@ class AnalyticsEngine:
         traffic flowed, so that accounting lives in
         ``backend.app.services.traffic_accounting`` which reads firewall mangle
         counters instead. This method owns the gateway level only.
+
+        ``router_uptime_seconds`` running backwards between polls means the
+        router rebooted and the interface counters reset; this tick then credits
+        the bytes since the reboot instead of differencing against a baseline
+        that no longer exists. A plain network outage is not a reboot and needs
+        no special handling - ordinary differencing on reconnect covers the gap.
         """
         # Keyed to the router's date: a UTC container files the router's
         # evening traffic under the previous day.
@@ -543,8 +559,26 @@ class AnalyticsEngine:
 
             r_key = str(router_id)
             prev_r = r_baselines.get(r_key)
+            # Uptime is stored per router inside its own baseline entry, so a
+            # reboot of one router in a multi-router setup does not disturb the
+            # others' accounting.
+            prev_uptime = prev_r.get("uptime_s") if isinstance(prev_r, dict) else None
+            rebooted = (
+                router_uptime_seconds is not None
+                and isinstance(prev_uptime, int)
+                and router_uptime_seconds + cls._REBOOT_SLACK_SECONDS < prev_uptime
+            )
+            if rebooted:
+                logger.info(
+                    f"Router {router_id} uptime dropped {prev_uptime}s -> "
+                    f"{router_uptime_seconds}s: crediting gateway bytes since the reboot"
+                )
+            new_entry = {"rx": r_rx, "tx": r_tx, "last_date": today_str}
+            if router_uptime_seconds is not None:
+                new_entry["uptime_s"] = router_uptime_seconds
+
             if prev_r is None:
-                r_baselines[r_key] = {"rx": r_rx, "tx": r_tx, "last_date": today_str}
+                r_baselines[r_key] = new_entry
                 r_stmt = select(RouterTrafficRollup).where(
                     RouterTrafficRollup.router_id == router_id,
                     RouterTrafficRollup.record_date == today
@@ -558,9 +592,9 @@ class AnalyticsEngine:
                         bytes_out=0
                     ))
             else:
-                d_rx = cls._compute_delta(r_rx, prev_r.get("rx"))
-                d_tx = cls._compute_delta(r_tx, prev_r.get("tx"))
-                r_baselines[r_key] = {"rx": r_rx, "tx": r_tx, "last_date": today_str}
+                d_rx = cls._compute_delta(r_rx, prev_r.get("rx"), reset=rebooted)
+                d_tx = cls._compute_delta(r_tx, prev_r.get("tx"), reset=rebooted)
+                r_baselines[r_key] = new_entry
 
                 r_stmt = select(RouterTrafficRollup).where(
                     RouterTrafficRollup.router_id == router_id,

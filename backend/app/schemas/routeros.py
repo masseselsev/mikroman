@@ -13,10 +13,36 @@ class RouterSystemResource(BaseModel):
     free_memory: int = 0
     total_memory: int = 0
     uptime: Optional[str] = None
+    # `/system/resource` reports `cpu` as the instruction set on RouterBOARD
+    # hardware ("ARM64", "MMIPS") but as the real part on x86 and CHR
+    # ("Intel(R) Atom(TM) CPU C3558 @ 2.20GHz"), so it is only a good CPU label
+    # on those platforms - see RouterBoardInfo.firmware_type for the SoC name.
+    cpu: Optional[str] = None
     cpu_count: int = 1
     cpu_frequency: Optional[int] = None
     architecture_name: Optional[str] = None
     wan_ip: Optional[str] = None
+
+
+class RouterBoardInfo(BaseModel):
+    """Static hardware identity from `/system/routerboard`.
+
+    `firmware_type` is the bootloader/SoC platform - "ipq5300", "al21400",
+    "ar9344" - and is the closest thing RouterOS exposes to a CPU part number
+    on MikroTik hardware. It is only populated when `is_routerboard` is true;
+    a CHR, an x86 install or a container returns nothing useful here and the
+    caller should fall back to RouterSystemResource.cpu.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    is_routerboard: bool = False
+    model: Optional[str] = None
+    serial_number: Optional[str] = None
+    firmware_type: Optional[str] = None
+    current_firmware: Optional[str] = None
+    upgrade_firmware: Optional[str] = None
+    factory_firmware: Optional[str] = None
 
 
 class RouterSystemHealth(BaseModel):

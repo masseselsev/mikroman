@@ -56,6 +56,10 @@ async def get_system_status(router_client: RouterOSClient = Depends(get_router_c
         )
 
     health: RouterSystemHealth = await router_client.get_system_health()
+    # Static hardware identity - model, serial, and the SoC name that stands in
+    # for a CPU part number on MikroTik hardware. Cached in the client, so this
+    # is a real request only on the first status call after a (re)connect.
+    board = await router_client.get_routerboard()
 
     # Advisory only: the router answered, so it is usable. This tells the
     # operator which features their RouterOS version cannot provide, instead of
@@ -66,6 +70,10 @@ async def get_system_status(router_client: RouterOSClient = Depends(get_router_c
         data={
             "connected": True,
             "resource": resource.model_dump(),
+            "routerboard": board.model_dump(),
+            # The processor to show: the SoC on RouterBOARD, the real part on
+            # x86/CHR (where `resource.cpu` carries it), else the architecture.
+            "cpu_model": board.firmware_type or resource.cpu or resource.architecture_name,
             "health": health.model_dump(),
             "app_version": settings.APP_VERSION,
             "routeros_compat": {
@@ -82,8 +90,21 @@ async def get_system_status(router_client: RouterOSClient = Depends(get_router_c
 
 @router.get("/interfaces", response_model=APIResponse[List[InterfaceDTO]])
 async def get_interfaces(router_client: RouterOSClient = Depends(get_router_client)):
-    """Fetch list of network interfaces and counters."""
-    interfaces = await router_client.get_interfaces()
+    """Fetch list of network interfaces and counters.
+
+    An unreachable router is a normal state, not a server error. This returned
+    500 whenever the router was off the network, which is precisely when the
+    operator is most likely to be in Settings trying to fix the connection - and
+    a failed request there looks like the app itself is broken.
+    """
+    try:
+        interfaces = await router_client.get_interfaces()
+    except Exception as e:
+        logger.warning(f"Could not read interfaces from the router: {e}")
+        return APIResponse(
+            data=[],
+            message="Router unreachable - interface list unavailable",
+        )
     return APIResponse(data=interfaces)
 
 

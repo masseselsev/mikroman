@@ -59,11 +59,18 @@ class IpLookupService(BaseModel):
     builtin: bool = False
 
 
-# Curated defaults, ordered by how generally useful they are. 2ip.io is first
-# because it answers the common question - where is this address and who owns
-# it - in one page, in both English and Russian.
+# Curated defaults, most generally useful first.
 BUILTIN_SERVICES: List[IpLookupService] = [
-    IpLookupService(id="2ip", name="2ip.io", url_template="https://2ip.io/{ip}/", builtin=True),
+    # Every entry here has been checked to answer for an arbitrary address.
+    # A built-in that 404s is worse than no built-in: it is the one destination
+    # a user has not chosen and therefore has no reason to doubt. Anything that
+    # cannot be verified belongs in a custom entry, not in this list.
+    #
+    # 2ip.io serves 503 to requests from outside a browser, so its path was
+    # confirmed by loading it in one: https://2ip.io/ip/188.113.204.70/ resolves,
+    # while the /{ip}/ form that shipped first returned 404. Re-check by hand,
+    # not with curl, if it ever stops working.
+    IpLookupService(id="2ip", name="2ip.io", url_template="https://2ip.io/ip/{ip}/", builtin=True),
     IpLookupService(id="ipinfo", name="IPinfo", url_template="https://ipinfo.io/{ip}", builtin=True),
     IpLookupService(
         id="whatismyip",
@@ -95,7 +102,13 @@ DEFAULT_SERVICE_ID = BUILTIN_SERVICES[0].id
 
 
 class IpLookupConfig(BaseModel):
-    """Which services are offered, which one a plain click uses."""
+    """Which services are offered, and which one a click on the address uses.
+
+    The API accepts a set, but the settings dialog selects exactly one: a menu
+    hanging off a ten-pixel line inside a clipped tile was fiddly to use and
+    answered a question nobody had. ``enabled_ids`` therefore normally holds a
+    single id equal to ``default_id``.
+    """
 
     enabled_ids: List[str] = Field(default_factory=lambda: [DEFAULT_SERVICE_ID])
     default_id: str = DEFAULT_SERVICE_ID

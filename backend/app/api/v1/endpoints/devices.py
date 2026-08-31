@@ -26,7 +26,7 @@ from backend.app.services.device_linking import (
 )
 from backend.app.services.device_manager import DeviceManager
 from backend.app.services.router_manager import router_manager
-from backend.app.services.traffic_controller import TrafficController
+from backend.app.services.traffic_controller import TrafficController, resolve_unassigned_limit
 from backend.app.services.vendor_lookup import vendor_service
 
 router = APIRouter(prefix="/devices", tags=["Devices"])
@@ -209,6 +209,17 @@ async def update_device(
         device.priority = payload.priority
     if payload.user_id is not None or "user_id" in payload.model_fields_set:
         device.user_id = payload.user_id
+
+    # Taking a device out of quarantine has to release the quarantine limit with
+    # it. Without this the device kept its 5M/5M child queue under its new
+    # owner's parent and stayed throttled, whatever the owner's own limit said.
+    # Only an untouched quarantine value is cleared: an explicit limit set for
+    # this device is the operator's decision and survives the move.
+    became_assigned = old_user_id is None and device.user_id is not None
+    if became_assigned and payload.speed_limit is None:
+        quarantine = await resolve_unassigned_limit(db)
+        if device.speed_limit in (quarantine, None):
+            device.speed_limit = "default"
 
     await db.commit()
     await db.refresh(device)

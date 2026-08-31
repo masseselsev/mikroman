@@ -2,7 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { useI18n } from '../context/I18nContext';
 import { api } from '../api/client';
 import { templateErrorKey } from '../utils/ipLookup';
-import { X, Settings as SettingsIcon, Send, CheckCircle2, AlertTriangle, Power, Server, Plus, Trash2, Check, Loader2 } from 'lucide-react';
+import { RouterConnectionForm } from './RouterConnectionForm';
+import { X, Settings as SettingsIcon, Send, CheckCircle2, AlertTriangle, Power, Server, Plus, Pencil, Trash2, Check, Loader2 } from 'lucide-react';
 
 export function SettingsModal({ isOpen, onClose, onReboot, onRoutersChanged }) {
   const { t } = useI18n();
@@ -23,21 +24,10 @@ export function SettingsModal({ isOpen, onClose, onReboot, onRoutersChanged }) {
   const [routers, setRouters] = useState([]);
   const [loadingRouters, setLoadingRouters] = useState(false);
   const [showAddRouter, setShowAddRouter] = useState(false);
-  const [newRouter, setNewRouter] = useState({
-    name: '',
-    host: '192.168.88.1',
-    port: 443,
-    use_ssl: true,
-    ssl_verify: false,
-    // Deliberately blank. Pre-filling "admin" meant a click on Test Connection
-    // probed the router with a username the user never chose - and the probe
-    // chain (HTTPS, then port 80) turned one click into several failed logins
-    // in the router's log.
-    username: '',
-    password: ''
-  });
-  const [testRouterResult, setTestRouterResult] = useState(null);
-  const [testingRouter, setTestingRouter] = useState(false);
+  // Which router's connection details are open for editing, if any. The form
+  // itself owns the field state; this only decides whose details it is showing.
+  const [editingRouterId, setEditingRouterId] = useState(null);
+  const [savingRouter, setSavingRouter] = useState(false);
 
   const loadSettingsAndRouters = async () => {
     try {
@@ -92,15 +82,10 @@ export function SettingsModal({ isOpen, onClose, onReboot, onRoutersChanged }) {
     }
   };
 
-  const toggleLookupService = (id) => {
-    setIpLookup(cfg => {
-      const enabled = cfg.enabled_ids.includes(id)
-        ? cfg.enabled_ids.filter(x => x !== id)
-        : [...cfg.enabled_ids, id];
-      // Disabling the default would leave a click with nowhere to go.
-      const default_id = enabled.includes(cfg.default_id) ? cfg.default_id : (enabled[0] || null);
-      return { ...cfg, enabled_ids: enabled, default_id };
-    });
+  // The API models a set, but exactly one destination is selected here, so the
+  // two stay in step: the selected id is the only enabled id.
+  const selectLookupService = (id) => {
+    setIpLookup(cfg => ({ ...cfg, default_id: id, enabled_ids: [id] }));
   };
 
   const addCustomService = () => {
@@ -116,10 +101,13 @@ export function SettingsModal({ isOpen, onClose, onReboot, onRoutersChanged }) {
     let n = 2;
     while (taken.has(id)) id = `${base}_${n++}`;
 
+    // A newly added service becomes the selected one: adding it is the act of
+    // choosing it.
     setIpLookup(cfg => ({
       ...cfg,
       services: [...cfg.services, { id, name, url_template: template, builtin: false }],
-      enabled_ids: [...cfg.enabled_ids, id],
+      enabled_ids: [id],
+      default_id: id,
     }));
     setCustomLookup({ name: '', url_template: '' });
     setIpLookupError('');
@@ -128,13 +116,9 @@ export function SettingsModal({ isOpen, onClose, onReboot, onRoutersChanged }) {
   const removeCustomService = (id) => {
     setIpLookup(cfg => {
       const services = cfg.services.filter(s => s.id !== id);
-      const enabled = cfg.enabled_ids.filter(x => x !== id);
-      return {
-        ...cfg,
-        services,
-        enabled_ids: enabled,
-        default_id: enabled.includes(cfg.default_id) ? cfg.default_id : (enabled[0] || null),
-      };
+      // Deleting the selected service must leave something to click.
+      const default_id = cfg.default_id === id ? (services[0]?.id ?? null) : cfg.default_id;
+      return { ...cfg, services, default_id, enabled_ids: default_id ? [default_id] : [] };
     });
   };
 
@@ -145,9 +129,9 @@ export function SettingsModal({ isOpen, onClose, onReboot, onRoutersChanged }) {
       loadIpLookup();
       setIpLookupError('');
       setTestResult(null);
-      setTestRouterResult(null);
       setStatusMsg('');
       setShowAddRouter(false);
+      setEditingRouterId(null);
     }
   }, [isOpen]);
 
@@ -196,45 +180,44 @@ export function SettingsModal({ isOpen, onClose, onReboot, onRoutersChanged }) {
     }
   };
 
-  const handleTestNewRouter = async () => {
-    setTestingRouter(true);
-    setTestRouterResult(null);
+  const handleCreateRouter = async (payload) => {
+    setSavingRouter(true);
     try {
-      const res = await api.testRouterConnection(newRouter);
-      if (res.data?.success) {
-        setTestRouterResult({
-          ok: true,
-          msg: `Connected! ${res.data.board_name || 'MikroTik'} (ROS ${res.data.ros_version || ''})`
-        });
-      } else {
-        setTestRouterResult({ ok: false, msg: res.data?.message || 'Connection failed' });
-      }
-    } catch (err) {
-      setTestRouterResult({ ok: false, msg: err.message });
-    } finally {
-      setTestingRouter(false);
-    }
-  };
-
-  const handleCreateRouter = async (e) => {
-    e.preventDefault();
-    try {
-      await api.createRouter(newRouter);
-      setNewRouter({
-        name: '',
-        host: '192.168.88.1',
-        port: 443,
-        use_ssl: true,
-        ssl_verify: false,
-        username: 'admin',
-        password: ''
-      });
+      await api.createRouter(payload);
       setShowAddRouter(false);
-      setTestRouterResult(null);
       await loadSettingsAndRouters();
       if (onRoutersChanged) onRoutersChanged();
     } catch (err) {
       alert('Error adding router: ' + err.message);
+    } finally {
+      setSavingRouter(false);
+    }
+  };
+
+  /**
+   * Repair the connection details of an existing router.
+   *
+   * This is the path that was missing entirely. A router whose stored settings
+   * stop working - most sharply after a factory reset, which drops its
+   * certificate, its REST user and its password in one go - previously left
+   * only "delete and re-add", and that discards the gateway traffic rollups and
+   * every hardware metric, all of which cascade on the router row.
+   *
+   * The payload arrives from RouterConnectionForm with the password key already
+   * omitted when the operator left it blank, so an untouched password is never
+   * overwritten with an empty string.
+   */
+  const handleUpdateRouter = async (routerId, payload) => {
+    setSavingRouter(true);
+    try {
+      await api.updateRouter(routerId, payload);
+      setEditingRouterId(null);
+      await loadSettingsAndRouters();
+      if (onRoutersChanged) onRoutersChanged();
+    } catch (err) {
+      alert('Error updating router: ' + err.message);
+    } finally {
+      setSavingRouter(false);
     }
   };
 
@@ -409,17 +392,31 @@ export function SettingsModal({ isOpen, onClose, onReboot, onRoutersChanged }) {
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 10 }}>
                   <div className="form-group">
                     <label className="form-label">{t('quota_limit')}</label>
-                    <select
-                      className="form-select font-mono"
-                      value={String(quota.limit_gb)}
-                      onChange={e => setQuota({ ...quota, limit_gb: Number(e.target.value) })}
-                      style={{ width: '100%', height: 36, fontSize: 'var(--fs-sm)' }}
-                    >
-                      <option value="0">{t('quota_unlimited')}</option>
-                      {[50, 100, 200, 300, 500, 750, 1000, 1500, 2000, 3000].map(gb => (
-                        <option key={gb} value={gb}>{gb >= 1000 ? `${gb / 1000} TB` : `${gb} GB`}</option>
-                      ))}
-                    </select>
+                    {/* A plain number, not a picklist: an ISP allowance is
+                        whatever the contract says, and a fixed set of round
+                        figures cannot cover that. 0 means no limit. */}
+                    <div className="input-with-suffix">
+                      <input
+                        type="number"
+                        min="0"
+                        step="1"
+                        inputMode="numeric"
+                        className="form-input font-mono"
+                        value={quota.limit_gb || ''}
+                        placeholder="0"
+                        onChange={e => {
+                          const parsed = Number(e.target.value);
+                          setQuota({
+                            ...quota,
+                            limit_gb: Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 0,
+                          });
+                        }}
+                      />
+                      <span className="input-suffix">GB</span>
+                    </div>
+                    <div className="form-hint">
+                      {quota.limit_gb > 0 ? t('quota_limit_hint') : t('quota_unlimited')}
+                    </div>
                   </div>
                   <div className="form-group">
                     <label className="form-label">{t('quota_thresholds')}</label>
@@ -477,19 +474,26 @@ export function SettingsModal({ isOpen, onClose, onReboot, onRoutersChanged }) {
 
                 <div className="list-box" style={{ maxHeight: 210, marginBottom: 10 }}>
                   {ipLookup.services.map(svc => {
-                    const on = ipLookup.enabled_ids.includes(svc.id);
-                    const isDefault = ipLookup.default_id === svc.id;
+                    const selected = ipLookup.default_id === svc.id;
                     return (
-                      <div key={svc.id} className={`list-row${on ? ' is-selected' : ''}`}>
-                        <label style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0, flex: 1, cursor: 'pointer' }}>
+                      <label
+                        key={svc.id}
+                        className={`list-row${selected ? ' is-selected' : ''}`}
+                        style={{ cursor: 'pointer' }}
+                      >
+                        <span style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0, flex: 1 }}>
+                          {/* One destination, not a set: the address links
+                              somewhere, and a menu asked a question the reader
+                              had no reason to care about mid-click. */}
                           <input
-                            type="checkbox"
-                            checked={on}
-                            onChange={() => toggleLookupService(svc.id)}
+                            type="radio"
+                            name="ip_lookup_service"
+                            checked={selected}
+                            onChange={() => selectLookupService(svc.id)}
                             style={{ cursor: 'pointer', accentColor: 'var(--color-primary)' }}
                           />
                           <span style={{ minWidth: 0 }}>
-                            <span style={{ fontWeight: on ? 700 : 500 }}>{svc.name}</span>
+                            <span style={{ fontWeight: selected ? 700 : 500 }}>{svc.name}</span>
                             <span className="font-mono truncate" style={{
                               display: 'block',
                               fontSize: 'var(--fs-3xs)',
@@ -498,33 +502,20 @@ export function SettingsModal({ isOpen, onClose, onReboot, onRoutersChanged }) {
                               {svc.url_template}
                             </span>
                           </span>
-                        </label>
+                        </span>
 
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
-                          {/* The service a plain click on the IP follows. */}
+                        {!svc.builtin && (
                           <button
                             type="button"
-                            className={`badge ${isDefault ? 'badge-primary' : 'badge-neutral'}`}
-                            disabled={!on}
-                            onClick={() => setIpLookup(c => ({ ...c, default_id: svc.id }))}
-                            style={{ border: 'none', cursor: on ? 'pointer' : 'not-allowed', opacity: on ? 1 : 0.4 }}
-                            title={t('ip_lookup_set_default')}
+                            className="btn-icon"
+                            style={{ width: 24, height: 24, color: 'var(--color-danger)' }}
+                            onClick={e => { e.preventDefault(); removeCustomService(svc.id); }}
+                            title={t('delete')}
                           >
-                            {isDefault ? t('ip_lookup_default') : t('ip_lookup_set_default')}
+                            <Trash2 size={12} />
                           </button>
-                          {!svc.builtin && (
-                            <button
-                              type="button"
-                              className="btn-icon"
-                              style={{ width: 24, height: 24, color: 'var(--color-danger)' }}
-                              onClick={() => removeCustomService(svc.id)}
-                              title={t('delete')}
-                            >
-                              <Trash2 size={12} />
-                            </button>
-                          )}
-                        </div>
-                      </div>
+                        )}
+                      </label>
                     );
                   })}
                 </div>
@@ -585,7 +576,7 @@ export function SettingsModal({ isOpen, onClose, onReboot, onRoutersChanged }) {
                 <div className="form-group" style={{ marginBottom: 6 }}>
                   <select
                     className="form-select font-mono"
-                    value={settings.telemetry_interval_seconds || '1'}
+                    value={settings.telemetry_interval_seconds || '3'}
                     onChange={e => setSettings({ ...settings, telemetry_interval_seconds: e.target.value })}
                     style={{ width: '100%', height: 36, fontSize: 'var(--fs-sm)' }}
                   >
@@ -735,90 +726,22 @@ export function SettingsModal({ isOpen, onClose, onReboot, onRoutersChanged }) {
               </button>
             </div>
 
-            {/* Add Router Form */}
+            {/* Add Router. The same form is reused for editing below, so
+                the two can never drift apart in what they accept. */}
             {showAddRouter && (
-              <form onSubmit={handleCreateRouter} style={{ background: 'var(--bg-secondary)', padding: 14, borderRadius: 'var(--radius-sm)', marginBottom: 14, border: '1px solid var(--border-color)' }}>
-                <div style={{ fontWeight: 700, fontSize: 'var(--fs-sm)', marginBottom: 8, color: 'var(--color-primary)' }}>New Router Details</div>
-                <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 8, marginBottom: 8 }}>
-                  <input
-                    type="text"
-                    className="form-input"
-                    placeholder={t('wizard_router_name')}
-                    value={newRouter.name}
-                    onChange={e => setNewRouter({ ...newRouter, name: e.target.value })}
-                    required
-                  />
-                  <input
-                    type="text"
-                    className="form-input font-mono"
-                    placeholder="192.168.88.1"
-                    value={newRouter.host}
-                    onChange={e => setNewRouter({ ...newRouter, host: e.target.value })}
-                    required
-                  />
-                </div>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8, marginBottom: 8 }}>
-                  <input
-                    type="number"
-                    className="form-input font-mono"
-                    placeholder="443"
-                    value={newRouter.port}
-                    onChange={e => setNewRouter({ ...newRouter, port: parseInt(e.target.value) || 443 })}
-                    required
-                  />
-                  <input
-                    type="text"
-                    className="form-input"
-                    placeholder="admin"
-                    value={newRouter.username}
-                    onChange={e => setNewRouter({ ...newRouter, username: e.target.value })}
-                    required
-                  />
-                  <input
-                    type="password"
-                    className="form-input"
-                    placeholder="Password"
-                    value={newRouter.password}
-                    onChange={e => setNewRouter({ ...newRouter, password: e.target.value })}
-                  />
-                </div>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 10 }}>
-                  <button
-                    type="button"
-                    className="btn btn-secondary btn-sm"
-                    onClick={handleTestNewRouter}
-                    disabled={testingRouter}
-                    style={{ display: 'flex', alignItems: 'center', gap: 6 }}
-                  >
-                    {testingRouter ? <Loader2 size={13} className="spin" /> : <CheckCircle2 size={13} />}
-                    {t('wizard_test_conn')}
-                  </button>
-                  <div style={{ display: 'flex', gap: 6 }}>
-                    <button type="button" className="btn btn-ghost btn-sm" onClick={() => setShowAddRouter(false)}>
-                      {t('cancel')}
-                    </button>
-                    <button type="submit" className="btn btn-primary btn-sm">
-                      {t('save')}
-                    </button>
-                  </div>
-                </div>
-                {testRouterResult && (
-                  <div style={{
-                    marginTop: 8,
-                    fontSize: 'var(--fs-xs)',
-                    color: testRouterResult.ok ? 'var(--color-success)' : 'var(--color-danger)'
-                  }}>
-                    {testRouterResult.msg}
-                  </div>
-                )}
-              </form>
+              <RouterConnectionForm
+                mode="create"
+                busy={savingRouter}
+                onSubmit={handleCreateRouter}
+                onCancel={() => setShowAddRouter(false)}
+              />
             )}
 
             {/* Routers Table */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
               {routers.map(r => (
+                <div key={r.id}>
                 <div
-                  key={r.id}
                   style={{
                     display: 'flex',
                     alignItems: 'center',
@@ -878,6 +801,18 @@ export function SettingsModal({ isOpen, onClose, onReboot, onRoutersChanged }) {
                         Set Active
                       </button>
                     )}
+                    {/* The recovery path. Without it, a router whose stored
+                        details stop working could only be deleted - taking its
+                        traffic rollups and hardware metrics with it. */}
+                    <button
+                      type="button"
+                      className="btn-icon"
+                      style={{ width: 28, height: 28 }}
+                      onClick={() => setEditingRouterId(editingRouterId === r.id ? null : r.id)}
+                      title={t('edit_router_title')}
+                    >
+                      <Pencil size={14} />
+                    </button>
                     <button
                       type="button"
                       className="btn-icon"
@@ -888,6 +823,25 @@ export function SettingsModal({ isOpen, onClose, onReboot, onRoutersChanged }) {
                       <Trash2 size={14} />
                     </button>
                   </div>
+                </div>
+
+                {/* Edit panel, opened beneath the router it belongs to so the
+                    values being changed stay next to the router they describe.
+                    Keyed on the router id so switching rows remounts the form
+                    with the new router's details rather than keeping the old
+                    ones in its local state. */}
+                {editingRouterId === r.id && (
+                  <div style={{ marginTop: 8 }}>
+                    <RouterConnectionForm
+                      key={r.id}
+                      mode="edit"
+                      initial={r}
+                      busy={savingRouter}
+                      onSubmit={(payload) => handleUpdateRouter(r.id, payload)}
+                      onCancel={() => setEditingRouterId(null)}
+                    />
+                  </div>
+                )}
                 </div>
               ))}
             </div>

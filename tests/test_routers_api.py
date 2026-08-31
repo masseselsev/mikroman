@@ -1,3 +1,18 @@
+"""Router registration, activation and SSL provisioning through the API.
+
+Every address here is from RFC 5737's TEST-NET-1 (192.0.2.0/24), which is
+reserved for documentation and is guaranteed not to route. That is deliberate.
+These fixtures previously used 192.168.88.1 - the author's own MikroTik - with
+placeholder credentials, and the steps outside the respx blocks dialled it for
+real. The router logged three "login failure for user admin via rest-api" per
+run, which is indistinguishable from a brute-force attempt against the default
+account and is enough to get the development machine blacklisted by an
+anti-bruteforce rule.
+
+The conftest ``no_real_network`` guard now blocks such a call outright; using an
+unroutable address as well means the test is correct on its own terms rather
+than merely contained.
+"""
 import httpx
 import pytest
 import respx
@@ -42,7 +57,7 @@ async def test_routers_crud_and_activation(async_client: AsyncClient):
     assert len(res.json()["data"]) == 0
 
     # 2. Test connection endpoint
-    with respx.mock(base_url="https://192.168.88.1:443/rest") as respx_mock:
+    with respx.mock(base_url="https://192.0.2.1:443/rest") as respx_mock:
         respx_mock.get("/system/resource").mock(
             return_value=httpx.Response(200, json={"version": "7.24.1", "board-name": "RB5009", "cpu-load": 4})
         )
@@ -50,7 +65,7 @@ async def test_routers_crud_and_activation(async_client: AsyncClient):
         test_res = await async_client.post(
             "/api/v1/routers/test",
             json={
-                "host": "192.168.88.1",
+                "host": "192.0.2.1",
                 "port": 443,
                 "use_ssl": True,
                 "username": "admin",
@@ -65,7 +80,7 @@ async def test_routers_crud_and_activation(async_client: AsyncClient):
         "/api/v1/routers",
         json={
             "name": "Main Router",
-            "host": "192.168.88.1",
+            "host": "192.0.2.1",
             "port": 443,
             "use_ssl": True,
             "username": "admin",
@@ -82,7 +97,7 @@ async def test_routers_crud_and_activation(async_client: AsyncClient):
         "/api/v1/routers",
         json={
             "name": "Branch Office",
-            "host": "192.168.89.1",
+            "host": "192.0.2.2",
             "port": 443,
             "use_ssl": True,
             "username": "admin",
@@ -124,7 +139,7 @@ async def test_provision_ssl_flow(async_client: AsyncClient):
         "/api/v1/routers",
         json={
             "name": "HTTP Router",
-            "host": "192.168.88.1",
+            "host": "192.0.2.1",
             "port": 80,
             "use_ssl": False,
             "username": "admin",
@@ -135,7 +150,7 @@ async def test_provision_ssl_flow(async_client: AsyncClient):
     router_id = create_res.json()["data"]["id"]
 
     # Mock REST API for certificate creation and www-ssl service enabling
-    with respx.mock(base_url="http://192.168.88.1:80/rest") as respx_mock:
+    with respx.mock(base_url="http://192.0.2.1:80/rest") as respx_mock:
         respx_mock.get("/certificate").mock(return_value=httpx.Response(200, json=[]))
         respx_mock.post("/certificate/add").mock(return_value=httpx.Response(201, json={"ret": "*1"}))
         respx_mock.post("/certificate/sign").mock(return_value=httpx.Response(200, json={}))
@@ -157,7 +172,7 @@ async def test_provision_ssl_flow(async_client: AsyncClient):
 
 @pytest.mark.asyncio
 async def test_certificate_management_flow(async_client: AsyncClient):
-    with respx.mock(base_url="http://192.168.88.1:80/rest") as respx_mock:
+    with respx.mock(base_url="http://192.0.2.1:80/rest") as respx_mock:
         respx_mock.get("/ip/service").mock(return_value=httpx.Response(200, json=[{".id": "*www-ssl", "name": "www-ssl", "disabled": True, "certificate": "my-cert"}]))
         respx_mock.get("/certificate").mock(return_value=httpx.Response(200, json=[
             {"name": "my-cert", "common-name": "mikrotik.lan", "days-valid": 365, "invalid-after": "2027-01-01"}
@@ -166,7 +181,7 @@ async def test_certificate_management_flow(async_client: AsyncClient):
         # Test list certificates
         list_res = await async_client.post(
             "/api/v1/routers/test-certificates",
-            json={"host": "192.168.88.1", "port": 80, "use_ssl": False, "username": "admin", "password": ""}
+            json={"host": "192.0.2.1", "port": 80, "use_ssl": False, "username": "admin", "password": ""}
         )
         assert list_res.status_code == 200
         certs = list_res.json()["data"]
@@ -179,7 +194,7 @@ async def test_certificate_management_flow(async_client: AsyncClient):
         bind_res = await async_client.post(
             "/api/v1/routers/test-bind-certificate",
             json={
-                "conn": {"host": "192.168.88.1", "port": 80, "use_ssl": False, "username": "admin", "password": ""},
+                "conn": {"host": "192.0.2.1", "port": 80, "use_ssl": False, "username": "admin", "password": ""},
                 "cert_req": {"certificate_name": "my-cert", "port": 443}
             }
         )

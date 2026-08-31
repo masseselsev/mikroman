@@ -95,12 +95,29 @@ async def background_sync_worker():
                                 dev_mgr = DeviceManager(client, router_id=r.id)
                                 _, new_devices = await dev_mgr.sync_devices_from_router(session)
 
+                                # Collapse the rows left behind when a device
+                                # rotated its private MAC more than once - an
+                                # access-point change can produce several in a
+                                # row, and discovery-time adoption only handles
+                                # the single-prior-record case.
+                                try:
+                                    await dev_mgr.consolidate_rotated_devices(session)
+                                except Exception as ce:
+                                    logger.debug(f"Rotation consolidation tick error for router {r.id}: {ce}")
+
                             # Maintain RouterOS Simple Queues and FastTrack exemptions for all active users & unassigned devices
                             try:
                                 from backend.app.db.models import Device, User
                                 from backend.app.services.traffic_controller import TrafficController
                                 tc = TrafficController(client)
                                 from sqlalchemy import select
+
+                                # Before shaping anything, make sure the stored
+                                # intent is sane: a device that has an owner must
+                                # not still be carrying the quarantine limit, or
+                                # the sync below would faithfully re-apply it.
+                                await tc.reconcile_device_limits(session)
+
                                 users_res = await session.execute(select(User))
                                 for u in users_res.scalars().all():
                                     active_ips = [d.ip_address for d in u.devices if d.is_active and d.ip_address]
@@ -124,6 +141,21 @@ async def background_sync_worker():
                             except Exception as qe:
                                 logger.debug(f"Queue sync tick error for router {r.id}: {qe}")
 
+                            # Router uptime, read once for this tick. If it has
+                            # gone backwards since the last tick the router
+                            # rebooted and every byte counter on it reset to
+                            # zero; the accounting passes below need to know
+                            # that so they credit the bytes since the reboot
+                            # rather than a bogus delta. A network outage on its
+                            # own is not a reboot - the counters keep running.
+                            router_uptime_s = None
+                            try:
+                                from backend.app.services.routeros import parse_uptime_seconds
+                                _res = await client.get_system_resource()
+                                router_uptime_s = parse_uptime_seconds(_res.uptime)
+                            except Exception as ue:
+                                logger.debug(f"Could not read uptime for router {r.id}: {ue}")
+
                             # Collect hardware and interface time-series metrics
                             try:
                                 from backend.app.services.metrics_collector import metrics_collector
@@ -134,7 +166,9 @@ async def background_sync_worker():
                             # Record gateway-level rollups from WAN interface counters
                             try:
                                 from backend.app.services.analytics_engine import AnalyticsEngine
-                                await AnalyticsEngine.record_traffic_snapshot(session, r.id, client)
+                                await AnalyticsEngine.record_traffic_snapshot(
+                                    session, r.id, client, router_uptime_seconds=router_uptime_s
+                                )
                             except Exception as te:
                                 logger.warning(f"Gateway rollup tick error for router {r.id}: {te}")
 
@@ -154,7 +188,7 @@ async def background_sync_worker():
                                 from backend.app.services.traffic_accounting import TrafficAccountingService
                                 acct = TrafficAccountingService(client, router_id=r.id)
                                 await acct.sync_counter_rules(session)
-                                await acct.collect(session)
+                                await acct.collect(session, router_uptime_seconds=router_uptime_s)
                             except Exception as ae:
                                 logger.warning(f"Traffic accounting tick error for router {r.id}: {ae}")
 

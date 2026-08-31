@@ -48,6 +48,64 @@ async def test_routeros_system_resource(mock_settings):
 
 
 @pytest.mark.asyncio
+async def test_routerboard_reports_the_soc_and_is_cached(mock_settings):
+    """`/system/resource` only knows the instruction set on MikroTik hardware;
+    the SoC/platform name comes from `/system/routerboard`."""
+    client = RouterOSClient(mock_settings)
+
+    with respx.mock(base_url="https://192.168.88.1:443/rest") as respx_mock:
+        route = respx_mock.get("/system/routerboard").respond(
+            200,
+            json={
+                "routerboard": "true",
+                "model": "MA53UG+HbeH",
+                "serial-number": "HMS0BD7KNDP",
+                "firmware-type": "ipq5300",
+                "current-firmware": "7.25_ab508",
+                "upgrade-firmware": "7.25_ab508",
+            },
+        )
+
+        info = await client.get_routerboard()
+        assert info.is_routerboard is True
+        assert info.firmware_type == "ipq5300"      # the SoC - the real CPU label
+        assert info.model == "MA53UG+HbeH"
+        assert info.serial_number == "HMS0BD7KNDP"
+
+        # Static data: a second call must not hit the router again.
+        again = await client.get_routerboard()
+        assert again.firmware_type == "ipq5300"
+        assert route.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_routerboard_absent_on_a_non_routerboard_install(mock_settings):
+    """A CHR / x86 box has no RouterBOARD; the caller falls back to res.cpu."""
+    client = RouterOSClient(mock_settings)
+
+    with respx.mock(base_url="https://192.168.88.1:443/rest") as respx_mock:
+        respx_mock.get("/system/routerboard").respond(200, json={"routerboard": "false"})
+
+        info = await client.get_routerboard()
+        assert info.is_routerboard is False
+        assert info.firmware_type is None
+
+
+@pytest.mark.asyncio
+async def test_routerboard_failure_is_swallowed_and_not_retried_every_tick(mock_settings):
+    client = RouterOSClient(mock_settings)
+
+    with respx.mock(base_url="https://192.168.88.1:443/rest") as respx_mock:
+        route = respx_mock.get("/system/routerboard").respond(500, text="boom")
+
+        info = await client.get_routerboard()
+        assert info.is_routerboard is False
+
+        await client.get_routerboard()
+        assert route.call_count == 1  # the empty result is cached too
+
+
+@pytest.mark.asyncio
 async def test_routeros_health_and_reboot(mock_settings):
     client = RouterOSClient(mock_settings)
 

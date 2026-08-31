@@ -104,7 +104,15 @@ class TestTemplateValidationAcceptsRealTemplates:
 
 class TestBuildLookupUrl:
     def test_substitutes_the_address(self):
-        assert build_lookup_url("https://2ip.io/{ip}/", "188.113.204.70") == "https://2ip.io/188.113.204.70/"
+        assert build_lookup_url("https://2ip.io/ip/{ip}/", "188.113.204.70") == "https://2ip.io/ip/188.113.204.70/"
+
+    def test_the_2ip_builtin_points_at_the_path_that_actually_resolves(self):
+        # The first release shipped https://2ip.io/{ip}/, which 404s. The site
+        # blocks non-browser clients, so this was confirmed by hand and is
+        # pinned here rather than left to be rediscovered.
+        service = next(s for s in BUILTIN_SERVICES if s.id == "2ip")
+        assert service.url_template == "https://2ip.io/ip/{ip}/"
+        assert build_lookup_url(service.url_template, "8.8.8.8") == "https://2ip.io/ip/8.8.8.8/"
 
     def test_ipv6_is_percent_encoded(self):
         url = build_lookup_url("https://ipinfo.io/{ip}", "2001:db8::1")
@@ -133,8 +141,8 @@ class TestResolveConfig:
         assert resolved.default_id == DEFAULT_SERVICE_ID
 
     def test_unknown_ids_are_dropped(self):
-        resolved = resolve_config(IpLookupConfig(enabled_ids=["2ip", "not-a-service"], default_id="2ip"))
-        assert resolved.enabled_ids == ["2ip"]
+        resolved = resolve_config(IpLookupConfig(enabled_ids=["ipinfo", "not-a-service"], default_id="ipinfo"))
+        assert resolved.enabled_ids == ["ipinfo"]
 
 
 class TestPersistence:
@@ -147,7 +155,7 @@ class TestPersistence:
     @pytest.mark.asyncio
     async def test_round_trip_with_a_custom_service(self, session):
         await save_config(session, IpLookupConfig(
-            enabled_ids=["2ip", "my_tool"],
+            enabled_ids=["ipinfo", "my_tool"],
             default_id="my_tool",
             custom=[IpLookupService(id="my_tool", name="My Tool", url_template="https://tool.lan/{ip}")],
         ))
@@ -169,9 +177,9 @@ class TestPersistence:
     async def test_custom_id_cannot_shadow_a_builtin(self, session):
         with pytest.raises(TemplateError, match="Duplicate"):
             await save_config(session, IpLookupConfig(
-                enabled_ids=["2ip"],
-                default_id="2ip",
-                custom=[IpLookupService(id="2ip", name="Impostor", url_template="https://evil.example/{ip}")],
+                enabled_ids=["ipinfo"],
+                default_id="ipinfo",
+                custom=[IpLookupService(id="ipinfo", name="Impostor", url_template="https://evil.example/{ip}")],
             ))
 
     @pytest.mark.asyncio
@@ -192,8 +200,8 @@ class TestPersistence:
         from backend.app.db.models import AppSetting
         from backend.app.services.ip_lookup import SETTING_KEY
         session.add(AppSetting(key=SETTING_KEY, value=json.dumps({
-            "enabled_ids": ["2ip", "bad"],
-            "default_id": "2ip",
+            "enabled_ids": ["ipinfo", "bad"],
+            "default_id": "ipinfo",
             "custom": [
                 {"id": "bad", "name": "Bad", "url_template": "javascript:alert(1)//{ip}"},
                 {"id": "good", "name": "Good", "url_template": "https://good.example/{ip}"},

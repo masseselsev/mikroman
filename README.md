@@ -27,7 +27,8 @@ govern adding new router calls.
 * **👥 Hierarchical User & Device Traffic Control:**
   * **Parent-Child Simple Queues**: Set user-level shared bandwidth pools (`mikroman-{user}`) with nested per-device caps (`mikroman-{user}-{device}`).
   * **Device-Level Precision**: Configure individual device limits (e.g. 5M, 15M, 50M) or inherit the user group limit.
-  * **Configurable Quarantine Limit for Unassigned / Rotated MAC Devices**: Automatically caps all new, unassigned, or randomized-MAC devices to a configurable speed limit (e.g. 5 Mbps default, 1M, 2M, 10M, or Unlimited) on RouterOS Simple Queues until explicitly assigned to a user profile.
+  * **Configurable Quarantine Limit for Unassigned / Rotated MAC Devices**: Automatically caps all new, unassigned, or randomized-MAC devices to a configurable speed limit (e.g. 5 Mbps default, 1M, 2M, 10M, or Unlimited) on RouterOS Simple Queues until explicitly assigned to a user profile. The quarantine rate is a consequence of *having no owner* and is resolved from settings each time a queue is built — it is never written onto the device record. Assigning a device to a user therefore releases it immediately and the owner's limit takes effect at once.
+  * **Device Limit Reconciliation**: A standing check on the queue-sync tick clears a quarantine limit found on a device that has an owner. Earlier releases copied the quarantine rate onto the device row at discovery and assignment never cleared it, so every device kept a 5M/5M child queue underneath an unlimited parent — the owner's limit never applied, and the queue tree read as if the household had been throttled at random. Only an exact match against the configured quarantine value is cleared, so a limit an operator chose is left alone.
   * **Instant Pause / Resume**: Freeze internet access for an entire user profile or a single rogue device using dynamic RouterOS Firewall Address Lists (`mikroman_blocked`).
   * **Idempotent Queue Synchronisation**: RouterOS normalises the values it stores (`192.168.88.10` → `192.168.88.10/32`, `5M/5M` → `5000000/5000000`). All comparisons are made in that normalised form, so a queue that is already correct is never rewritten. Managed objects are identified by stable id-based tags (`mikroman:managed:user_{id}`, `mikroman:managed:dev_{id}`) matched exactly, so renames never orphan a queue and no profile name can be mistaken for another whose name it prefixes.
   * **FastTrack Firewall Exemption**: Automatically patches default FastTrack rule with `!mikroman_queued`, guaranteeing strict queue enforcement while unshaped clients maintain maximum hardware throughput.
@@ -38,6 +39,7 @@ govern adding new router calls.
   * **Firewall-Counter Accounting Engine**: Per-device volume is measured with dedicated RouterOS `/ip/firewall/mangle action=passthrough` counter rules (one for upload, one for download per device), tagged `mikroman:acct:dev_{id}:{up|down}`. `passthrough` only increments a counter and forwards the packet — it never drops, alters or reroutes traffic, and MikroMan never touches mangle rules it did not create.
   * **Why not Simple Queue counters**: On RouterOS 7.x the `bytes` counter of a Simple Queue can silently stay frozen at zero while traffic flows (verified on a hAP be^3 / RouterOS 7.25: a freshly created queue placed first in the queue order, targeting the busiest client, counted 0 bytes through a 4.9 MB burst). Simple Queues are therefore used for **bandwidth shaping only**; all accounting comes from firewall counters, which tracked 243.8 MB against 246 MB of real WAN throughput (99.1%) in the same measurement.
   * **Accounting Health Cross-Check**: Every analytics response carries an `accounting_health` block comparing gateway volume (WAN interface counters) against the sum of per-device counters — reported as `ok`, `partial` (range predates the accounting rules), `degraded` (accounting active but attributing almost nothing) or `no_data`. A broken accounting path is surfaced as a dashboard banner instead of being hidden behind a plausible-looking total.
+  * **Survives a network outage; recognises a router reboot**: volume is accumulated as deltas against a *persisted* baseline, and a failed poll does not advance the baseline. While the connection is down the router keeps counting, so the first successful poll after it returns picks up the entire gap by ordinary differencing (a gap spanning midnight files its bytes on the recovery day — the total is kept, the per-day split for that window is not). A **reboot** is different — every RouterOS byte counter resets to zero, and a busy interface can climb past its stale pre-reboot baseline within one poll, which would read as a tiny delta and lose everything since the reboot. So `/system/resource` uptime is checked each tick; uptime running backwards is treated as an explicit counter reset and the bytes since the reboot are credited in full. (RouterOS has no persistent counter anywhere — `/ip/accounting` resets on reboot too — so the ~10 s between the last poll and a clean reboot is unrecoverable by design; a factory reset additionally clears the accounting rules, so per-device history restarts.)
   * **ISP Billing Cycle Anchor**: Set the exact day of the month (1–31) when your provider quota resets.
   * **Flexible Date Filtering**: Presets for *Today*, *Yesterday*, *Last 7 Days*, *Last 30 Days*, *Current Billing Cycle*, *Previous Billing Cycle*, and *Custom Date Ranges*.
   * **3-Level Synchronized Accounting**:
@@ -48,6 +50,7 @@ govern adding new router calls.
 
 * **📈 Hardware & Multi-Interface Performance Graphs:**
   * Interactive time-series charts for CPU load %, RAM usage %, Board Temperature (°C), and Board Voltage (V).
+  * **Real processor identity on the CPU tile**: the SoC / platform name (`ipq5300`, `al21400`, …) from `/system/routerboard` `firmware-type` — the closest RouterOS gives to a CPU part number on MikroTik hardware, since `/system/resource` only reports the instruction set there — with the architecture, core count and clock beneath it (`arm64 · 4 cores · 1500 MHz`). Falls back to the real `cpu` string on x86 / CHR. Fetched once per connection and cached; also on `GET /api/v1/system/status` as `routerboard` and `cpu_model`.
   * **Dynamic Temperature Scaling**: Automatically scales the Y-axis to zoom in on actual router operating temperatures (e.g. 68°C–76°C) rather than squishing values on a fixed 20°C–75°C range.
   * **Configurable Temperature Warning Threshold**: Custom thermal alert threshold (e.g. 75°C, 80°C, 85°C) with dashed visual threshold markers and telemetry warnings.
   * Multi-interface aggregate bandwidth monitoring (e.g. WAN `ether1` + `sfp-plus1`) with selectable interface checkboxes and live throughput sum.
@@ -62,11 +65,15 @@ govern adding new router calls.
   * **📶 WiFi 7 Multi-Link (MLO) Awareness**: RouterOS reports a multi-link client as a single `mld*` entry that names no actual radio. MikroMan expands `mld-interfaces` and `mld-link-addresses` into the individual radio links and shows **each link with its own interface, band and signal** (e.g. `wifi2 5G·BE −62`). The headline signal is the strongest link, so a weak secondary link never makes a well-connected device look bad, and per-link readings are never invented when the router reports fewer than there are links.
   * **🔗 Multi-Adapter Devices**: a machine that reaches the network over more than one adapter — a laptop docked over Ethernet and roaming over Wi-Fi — has a different MAC per adapter and was previously discovered as several unrelated devices with its traffic split between them. Adapters can be **linked into one logical device**: the row appears once, marked `N×`, listing every live connection, with rate and volume summed across them and pause applied to all adapters at once (otherwise a paused machine simply hops media). Matching hostnames on different media are proposed automatically. This is distinct from **merging**, which exists for MAC rotation and collapses two records because only one address was ever real — here both remain valid and both are kept.
   * Automatic MAC OUI vendor resolution (Apple, Samsung, Sony, Intel, etc.).
+  * **🔄 Automatic Private-MAC Rotation Recovery**: iOS, Android and Windows generate a *new* private MAC whenever a network changes identity — a renamed SSID, a changed passphrase, or the user re-joining the network. To the router that is a first-time arrival, so discovery created a second record and the device's owner, custom name, speed limit and traffic history stayed attached to the address it had abandoned. MikroMan now recognises the signature — *a never-before-seen private MAC arrives carrying a hostname exactly one known device answers to, while that device's address has vanished from the router entirely* — and re-keys the existing record onto the new address, logging a `mac_rotated` history entry and an alert. It deliberately declines to guess: a generic factory hostname (`iPhone`, `android`, `MacBook-Pro`), several matching records, or the old address still being present all leave the case to the manual merge suggestions, because a wrong adoption would hand one person's device to another.
+  * **Rotation is never mistaken for a second adapter**: two randomized MACs sharing a hostname are one device that changed address, not a dual-homed machine — phones have one radio and no socket. Relatedly, a bridge interface is now treated as *inconclusive* rather than as evidence of a cable: every wireless client's ARP entry is recorded against the bridge, and calling that "wired" made a rotated phone appear as one wired and one wireless record, which is exactly the pattern the adapter-linking heuristic scores highest.
+  * **Automatic consolidation of a rotation pile**: discovery-time adoption only fires when it can identify a *single* prior record. Once two or more duplicates for one phone exist — a Wi-Fi change during a session can produce several in minutes — it can no longer tell which to adopt onto and every further rotation adds a row, so the dashboard fills with "Pixel-9-Pro-XL ×5" and the queue tree grows a branch per ghost. A pass on the background tick groups randomized-MAC rows by normalised hostname and, when every owned row in a group has the **same owner**, collapses them into the currently-active one — moving history and daily traffic across, adopting any unassigned duplicates onto that owner, and repointing links. A group split across two users is left alone (two people with the same phone model); a **generic** hostname (`iPhone`, `android`) is held to a stricter bar — one vendor, at most one row online — since a house can hold two.
   * Complete lifecycle event log: Discovery, Hostname changes, IP shifts, and Private / Randomized MAC rotations.
   * One-click **Smart Merge** suggestions to link rotated MACs back into original device profiles.
 
 * **🛡️ Multi-Router Management & Automated SSL Provisioning:**
   * Manage and switch between multiple MikroTik routers from a unified dashboard.
+  * **Editable Connection Details**: A saved router's host, port, transport, username and password can be corrected in place from *Settings → Routers*. This matters most after a factory reset, which drops the router's certificate, its REST user and its password at once and leaves a stored record that can no longer connect. Deleting and re-adding is **not** an equivalent workaround: `devices.router_id` is `ON DELETE SET NULL` so devices survive, but the gateway traffic rollups, system metrics and interface metrics are all `ON DELETE CASCADE` — re-adding the same router silently discards every traffic total and health graph recorded for it. The stored password is never returned by the API, so the field is left blank and a blank field means *keep the current one*; **Test Connection** stays disabled until a password is typed, because testing with an empty one registers on the router as a failed login for that user.
   * **Auto-Configure SSL**: Automatically generates a TLS certificate directly on RouterOS and enables HTTPS REST API (port 443).
   * Support for custom CA root certificates for enterprise PKI environments.
 
@@ -93,7 +100,9 @@ govern adding new router calls.
   * Compact, responsive layouts tailored for mobile, tablet, and desktop viewports.
 
 * **⚙️ Router-Friendly Polling:**
-  * **Pooled keep-alive connections**: the RouterOS client holds one connection instead of opening a new TLS session per request. Measured on a live hAP be^3, this cut the app's CPU cost on the router from **+6.6 to +2.4 percentage points** over idle (median 8% → 5% against a 2% baseline), with peaks halved.
+  * **Pooled keep-alive connections**: the RouterOS client holds one connection instead of opening a new TLS session per request. Measured on a live hAP be^3, this cut the app's CPU cost on the router from **+6.6 to +2.4 percentage points** over idle (median 8% → 5% against a 2% baseline), with peaks halved. Client instances are cached per router and keyed on a fingerprint of their connection parameters, so a router edited in Settings retires its old pool rather than being served a stale one. (The cache was previously consulted only when an explicit router id was passed, which no call site does — it was written on every call and read on none, so every request quietly built a fresh client and keep-alive was never actually in effect.)
+  * **Fail-fast when the router is unreachable**: a failure to reach the router suppresses further connection attempts for 15 seconds, and any answer at all — including `401` or `500` — closes the circuit immediately. Without it every router-touching endpoint paid the full connect timeout on every request: with the router off the network, `/routers`, `/users`, `/system/status` and `/system/interfaces` measured 4.6–5.0s each, so the dashboard sat blank for five seconds on every load and every poll tick. After: 0.002s. Correcting the connection details in Settings retires the cached client, so a repaired router is picked up at once rather than after a cooldown.
+  * **Router-side session cycling is RouterOS, not the client**: the router's log shows a `user rest logged in/out` pair every ten minutes even with pooling working. Measured over six consecutive cycles, the re-login lands within 0–3 seconds. RouterOS keys a REST session by source address and user rather than by TCP connection and ages it out on its own timer, so this neither reflects nor responds to client-side connection reuse.
   * **Configurable telemetry interval** (1–10s) in Settings: each poll costs several REST calls, so a longer interval trades responsiveness for router CPU.
   * Rarely-changing values — WAN IP, router clock — are cached rather than re-read every frame.
 
@@ -150,6 +159,64 @@ directory. Router credentials supplied this way are used only when no router has
 been configured in the database; an unset `ROUTEROS_PASSWORD` means "no
 credentials were supplied", and the app will not attempt a login rather than
 guessing at one.
+
+---
+
+## 💾 Backup & restore
+
+Everything MikroMan knows is in **one SQLite file** — `/data/app.db` inside the
+container, on the `mikroman_data` volume. Users, the device inventory, router
+credentials, and the part that cannot be reconstructed: the historical daily
+traffic rollups, which accumulate over months.
+
+**What the design already protects.** Traffic accounting reads the router's
+monotonic counters and stores *deltas against a persisted baseline*. On a failed
+read the baseline is not advanced, so an outage — router unreachable, or the
+container itself stopped — loses almost nothing: the router keeps counting, and
+the first successful poll after reconnect captures the whole gap (if it spanned
+midnight, the gap's bytes land on the recovery day — the total is kept, the
+per-day split for that window is not). Data is genuinely lost only when the
+router's counters *reset* underneath a gap (a reboot loses up to one poll
+interval; a **factory reset** also wipes the accounting rules, so per-device
+history restarts from zero), or when the volume itself is destroyed.
+
+**What you must set up: a backup.** Nothing guards against `docker compose down
+-v`, `docker volume rm`, or a failed disk.
+
+```bash
+scripts/backup.sh                        # one consistent snapshot into ./backups, rotated
+MIKROMAN_BACKUP_DIR=/mnt/nas/mikroman scripts/backup.sh
+```
+
+`backup.sh` uses SQLite's online-backup API through the container's own Python,
+so it runs with **no downtime** and produces a transactionally consistent file
+even while the poll loop is writing. Each snapshot is `integrity_check`ed before
+it is kept, written atomically, and copies beyond `MIKROMAN_BACKUP_KEEP` (14)
+are pruned. If the container is stopped it falls back to a cold copy. Put it on
+cron:
+
+```
+15 3 * * * /path/to/mikroman/scripts/backup.sh >> /var/log/mikroman-backup.log 2>&1
+```
+
+To restore:
+
+```bash
+scripts/restore.sh backups/app-20260831-031500.db
+```
+
+`restore.sh` stops the container, keeps the database it is about to overwrite as
+`app.db.pre-restore-<timestamp>` on the volume, clears the stale `-wal`/`-shm`
+sidecars, swaps the file in, and starts the container again.
+
+**WAL mode.** The database runs in `journal_mode=WAL` with
+`synchronous=NORMAL`. WAL is what lets the 10-second poll loop and a dashboard
+request stop colliding on `database is locked`, and what makes the hot backup
+above safe. `NORMAL` is the durability level WAL is built for: an application
+crash cannot corrupt the file, and an OS crash or power loss can cost at most
+the last transaction — one telemetry sample, which the next poll rebuilds from
+the router's counters. The setting is applied on every connection and the
+effective mode is logged at startup.
 
 ---
 
@@ -221,7 +288,7 @@ connection-reuse work fixed.
 
 ## 🧪 Testing & Verification
 
-Run the automated test suite with pytest:
+Run the automated backend suite with pytest:
 ```bash
 . .venv/bin/activate
 pytest -v
@@ -232,7 +299,31 @@ Run code formatting and lint check:
 ruff check backend tests
 ```
 
+Run the frontend unit tests (Vitest + Testing Library):
+```bash
+cd frontend && npx vitest run
+```
+
 Build the frontend React bundle:
 ```bash
 cd frontend && npm run build
 ```
+
+### The suite never touches the network
+
+An autouse fixture refuses every socket the tests try to open, and all fixture
+addresses come from RFC 5737 TEST-NET-1 (`192.0.2.0/24`), which cannot route.
+
+This is not hypothetical hygiene. The suite previously used the author's own
+router address as fixture data, and the request paths outside its `respx` blocks
+dialled it for real — the router logged three `login failure for user admin ...
+via rest-api` per run, indistinguishable from a brute-force attempt against the
+default account and enough to trip an anti-bruteforce rule against the
+development machine. Nothing could fail as a result, because those calls sit
+inside `try/except` blocks meant to tolerate an unreachable router; the only
+evidence was in the router's own log.
+
+The guard sits at the socket backend rather than at the HTTP transport, because
+a mocked request never opens a socket while `respx` patches the layers above.
+A test that genuinely needs a connection must request the `allow_real_network`
+fixture, which makes it a visible, deliberate act.
