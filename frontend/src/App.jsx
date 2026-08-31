@@ -13,6 +13,7 @@ import { SettingsModal } from './components/SettingsModal';
 import { formatBytes } from './utils/formatters';
 import { mergeTelemetryIntoUsers } from './utils/telemetryMerge';
 import { SetupWizard } from './components/SetupWizard';
+import { AppFooter } from './components/AppFooter';
 import { Users, Laptop, Activity, BarChart2, Plus, AlertCircle, EyeOff, ChevronDown, ChevronRight, AlertTriangle } from 'lucide-react';
 
 export function App() {
@@ -212,6 +213,10 @@ export function App() {
         onSelectRouter={handleSelectRouter}
         onOpenSettings={() => setSettingsModalOpen(true)}
         onAddRouter={() => setSettingsModalOpen(true)}
+        onRouterCommentSaved={(comment) => {
+          setActiveRouter(prev => (prev ? { ...prev, comment } : prev));
+          setRouters(prev => prev.map(r => (r.id === activeRouter?.id ? { ...r, comment } : r)));
+        }}
       />
 
       <main className="main-content">
@@ -550,6 +555,8 @@ export function App() {
         onReboot={handleReboot}
         onRoutersChanged={loadData}
       />
+
+      <AppFooter />
     </div>
   );
 }

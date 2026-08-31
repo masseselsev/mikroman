@@ -2,6 +2,7 @@ import React from 'react';
 import { useTheme } from '../context/ThemeContext';
 import { useI18n } from '../context/I18nContext';
 import { RouterSelector } from './RouterSelector';
+import { RouterCommentBar } from './RouterCommentBar';
 import { Sun, Moon, Globe, Settings as SettingsIcon, Activity, Clock } from 'lucide-react';
 
 /**
@@ -75,7 +76,7 @@ function RouterClock({ clock }) {
   );
 }
 
-export function Navbar({ isConnected, routerInfo, routers = [], activeRouter, onSelectRouter, onOpenSettings, onAddRouter }) {
+export function Navbar({ isConnected, routerInfo, routers = [], activeRouter, onSelectRouter, onOpenSettings, onAddRouter, onRouterCommentSaved }) {
   const { theme, toggleTheme } = useTheme();
   const { lang, setLang, t } = useI18n();
 
@@ -151,6 +152,12 @@ export function Navbar({ isConnected, routerInfo, routers = [], activeRouter, on
             </div>
           )}
         </div>
+
+        {/* Selected router's note - between the selector and the clock, grows to
+            fill the middle of the bar and drops a full editor down on click. */}
+        {activeRouter && (
+          <RouterCommentBar router={activeRouter} onSaved={onRouterCommentSaved} />
+        )}
 
         {/* Action Controls */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>

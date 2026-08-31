@@ -11,6 +11,7 @@ from sqlalchemy import (
     ForeignKey,
     Integer,
     String,
+    Text,
     UniqueConstraint,
     func,
 )
@@ -33,6 +34,9 @@ class Router(Base):
     ca_cert: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     username: Mapped[str] = mapped_column(String(100), default="admin", nullable=False)
     password: Mapped[str] = mapped_column(String(255), default="", nullable=False)
+    # Operator's free-text notes for this router - location, ISP account, config
+    # quirks, maintenance windows. Surfaced in the header for the selected router.
+    comment: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     is_default: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), nullable=False)

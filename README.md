@@ -108,6 +108,8 @@ govern adding new router calls.
   * **Configurable telemetry interval** (1–10s) in Settings: each poll costs several REST calls, so a longer interval trades responsiveness for router CPU.
   * Rarely-changing values — WAN IP, router clock — are cached rather than re-read every frame.
 
+* **🗒️ Per-Router Note:** a free-text comment for the selected router, in the header between the router selector and the clock. Collapsed it shows the first three lines; a click drops a full editor down (`Ctrl`/`⌘`+`Enter` saves, `Esc` cancels) and it collapses again on save. Stored on the router record (`routers.comment`), so it follows the router, not the browser — a place for its location, ISP account number, config quirks or maintenance window.
+
 * **📉 ISP Cycle Data Limit:**
   * Set an allowance for the billing cycle and watch consumption against it, with remaining bytes and the **daily budget** needed to stay inside it.
   * Alert thresholds and the Telegram toggle round-trip through the API, so turning notifications off stays off.

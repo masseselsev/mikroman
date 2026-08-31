@@ -12,6 +12,7 @@ class RouterBase(BaseModel):
     ssl_verify: bool = Field(default=False, description="Whether to strictly verify SSL certificates")
     ca_cert: Optional[str] = Field(default=None, description="Custom CA certificate (PEM) for strict verification")
     username: str = Field(default="admin", max_length=100)
+    comment: Optional[str] = Field(default=None, description="Operator's free-text notes for this router")
     is_active: bool = Field(default=True)
     is_default: bool = Field(default=False)
 
@@ -29,6 +30,7 @@ class RouterUpdate(BaseModel):
     ca_cert: Optional[str] = None
     username: Optional[str] = None
     password: Optional[str] = None
+    comment: Optional[str] = None
     is_active: Optional[bool] = None
     is_default: Optional[bool] = None
 

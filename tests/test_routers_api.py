@@ -123,6 +123,18 @@ async def test_routers_crud_and_activation(async_client: AsyncClient):
     get_r1 = await async_client.get(f"/api/v1/routers/{r1_data['id']}")
     assert get_r1.json()["data"]["is_default"] is False
 
+    # 6b. The operator's per-router comment round-trips through PUT and GET,
+    # newlines and all - the header shows it collapsed to the first lines.
+    assert r1_data["comment"] is None
+    note = "Rack 3, patch port 12\nISP: acct #55-1029\nreboot window Sun 04:00"
+    put_res = await async_client.put(
+        f"/api/v1/routers/{r1_data['id']}", json={"comment": note}
+    )
+    assert put_res.status_code == 200
+    assert put_res.json()["data"]["comment"] == note
+    reget = await async_client.get(f"/api/v1/routers/{r1_data['id']}")
+    assert reget.json()["data"]["comment"] == note
+
     # 7. Delete Router 2
     del_res = await async_client.delete(f"/api/v1/routers/{r2_data['id']}")
     assert del_res.status_code == 200

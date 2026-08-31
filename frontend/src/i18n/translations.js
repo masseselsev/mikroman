@@ -154,6 +154,17 @@ export const translations = {
     vendor: "Vendor",
     signal: "Signal",
 
+    // Router comment (header)
+    router_comment_add: "Add a note…",
+    router_comment_title: "Note — {name}",
+    router_comment_placeholder: "Location, ISP account, config quirks, maintenance windows…",
+    router_comment_shortcut_hint: "Ctrl+Enter to save · Esc to cancel",
+    router_comment_save_failed: "Could not save the note",
+
+    // Footer
+    footer_tagline: "MikroTik companion",
+    footer_source: "Source on GitHub",
+
     // Modals & Actions
     save: "Save",
     cancel: "Cancel",
@@ -489,6 +500,17 @@ export const translations = {
     ip_address: "IP-адрес",
     vendor: "Вендор",
     signal: "Сигнал",
+
+    // Router comment (header)
+    router_comment_add: "Добавить заметку…",
+    router_comment_title: "Заметка — {name}",
+    router_comment_placeholder: "Расположение, аккаунт провайдера, особенности конфига, окна обслуживания…",
+    router_comment_shortcut_hint: "Ctrl+Enter — сохранить · Esc — отмена",
+    router_comment_save_failed: "Не удалось сохранить заметку",
+
+    // Footer
+    footer_tagline: "Компаньон для MikroTik",
+    footer_source: "Исходники на GitHub",
 
     // Modals & Actions
     save: "Сохранить",
