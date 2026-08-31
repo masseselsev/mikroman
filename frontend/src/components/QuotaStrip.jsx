@@ -62,6 +62,18 @@ export function QuotaStrip({ activeRouterId, onOpenSettings }) {
       ? 'var(--color-warning)'
       : 'var(--color-success)';
 
+  // Everything the retired analytics panel showed, folded into the hover:
+  // cycle window, what is left, the daily budget to stay inside it, and last
+  // cycle's average as the yardstick.
+  const fullTitle = [
+    t('quota_strip_hint'),
+    q.cycle_start && q.cycle_end ? `${q.cycle_start} → ${q.cycle_end}` : null,
+    `${t('quota_remaining')}: ${formatBytes(q.remaining_bytes)} · ${t('quota_daily_budget')}: ${formatBytes(q.projected_daily_budget)}${t('quota_per_day')}`,
+    q.prev_cycle_bytes_per_day > 0
+      ? `${t('quota_last_cycle_avg')}: ${formatBytes(q.prev_cycle_bytes_per_day)}${t('quota_per_day')}`
+      : null,
+  ].filter(Boolean).join('\n');
+
   return (
     <div
       className="quota-strip"
@@ -69,7 +81,7 @@ export function QuotaStrip({ activeRouterId, onOpenSettings }) {
       role="button"
       tabIndex={0}
       onKeyDown={(e) => { if (e.key === 'Enter') onOpenSettings(); }}
-      title={t('quota_strip_hint')}
+      title={fullTitle}
     >
       <Gauge size={14} className="quota-strip-icon" style={{ color: accent }} />
 

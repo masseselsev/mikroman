@@ -159,7 +159,6 @@ export function TrafficAnalytics({ activeRouter }) {
   // question these tables are usually opened to answer.
   const [userSort, setUserSort] = useState({ field: 'total_bytes', dir: 'desc' });
   const [deviceSort, setDeviceSort] = useState({ field: 'total_bytes', dir: 'desc' });
-  const [quota, setQuota] = useState(null);
 
 
   // Billing Cycle Settings Modal
@@ -192,8 +191,6 @@ export function TrafficAnalytics({ activeRouter }) {
       if (res?.data) {
         setData(res.data);
       }
-      const q = await api.getQuota(activeRouter?.id || null).catch(() => null);
-      if (q?.data) setQuota(q.data);
     } catch (err) {
       console.error('Failed to load traffic analytics:', err);
     } finally {
@@ -240,12 +237,6 @@ export function TrafficAnalytics({ activeRouter }) {
       : { field, dir: 'desc' }));
   const toggleUserSort = makeSortToggle(setUserSort);
   const toggleDeviceSort = makeSortToggle(setDeviceSort);
-
-  // Amber approaching the limit, red once past it.
-  const quotaColor = !quota ? 'var(--color-primary)'
-    : quota.used_pct >= 100 ? 'var(--color-danger)'
-    : quota.used_pct >= 80 ? 'var(--color-warning)'
-    : 'var(--color-primary)';
 
   const gateway = data?.gateway || { total_bytes_in: 0, total_bytes_out: 0, total_bytes: 0, monitored_interfaces: [] };
   // Cross-check between WAN-measured gateway volume and per-device accounted volume.
@@ -373,58 +364,8 @@ export function TrafficAnalytics({ activeRouter }) {
       </div>
 
       {/* Gateway Executive Summary Cards */}
-      {/* ISP allowance for the current billing cycle. Shown above the totals
-          because "how much of my quota is gone" outranks the raw byte count. */}
-      {quota?.enabled && (
-        <div className="card">
-          <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap', marginBottom: 8 }}>
-            <span style={{ fontWeight: 700, fontSize: 'var(--fs-sm)', color: 'var(--text-primary)' }}>
-              {t('quota_title')}
-            </span>
-            <span className="font-mono" style={{ fontSize: 'var(--fs-sm)', color: quotaColor }}>
-              {formatBytes(quota.used_bytes)} / {formatBytes(quota.limit_bytes)}
-            </span>
-            <span className="font-mono" style={{ fontSize: 'var(--fs-sm)', fontWeight: 700, color: quotaColor }}>
-              {quota.used_pct.toFixed(1)}%
-            </span>
-            <span style={{ flex: 1 }} />
-            <span style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)' }}>
-              {quota.cycle_start} → {quota.cycle_end} · {t('quota_days_left', { days: quota.days_remaining })}
-            </span>
-          </div>
-
-          <div style={{ height: 7, background: 'var(--bg-secondary)', borderRadius: 'var(--radius-xs)', overflow: 'hidden', position: 'relative' }}>
-            <div style={{
-              width: `${Math.min(quota.used_pct, 100)}%`,
-              height: '100%',
-              background: quotaColor,
-              borderRadius: 'var(--radius-xs)',
-              transition: 'width 0.3s ease'
-            }} />
-            {/* Threshold markers, so the next alert point is visible. */}
-            {(quota.thresholds || []).map(th => (
-              <div
-                key={th}
-                title={`${th}%`}
-                style={{
-                  position: 'absolute',
-                  left: `${th}%`,
-                  top: -1,
-                  width: 2,
-                  height: 9,
-                  background: quota.thresholds_reached?.includes(th) ? quotaColor : 'var(--text-muted)',
-                  opacity: quota.thresholds_reached?.includes(th) ? 1 : 0.55
-                }}
-              />
-            ))}
-          </div>
-
-          <div style={{ display: 'flex', gap: 16, marginTop: 7, fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)' }}>
-            <span>{t('quota_remaining')}: <span className="font-mono" style={{ color: 'var(--text-primary)' }}>{formatBytes(quota.remaining_bytes)}</span></span>
-            <span>{t('quota_daily_budget')}: <span className="font-mono" style={{ color: 'var(--text-primary)' }}>{formatBytes(quota.projected_daily_budget)}</span></span>
-          </div>
-        </div>
-      )}
+      {/* The ISP billing-cycle allowance used to have its own panel here; it now
+          lives in the always-on quota strip under the header, on every page. */}
 
       {/* Accounting coverage notice. The gateway total is measured at the WAN
           interface; the per-user/per-device breakdown is measured per device.
