@@ -104,10 +104,21 @@ async def init_db() -> None:
             try:
                 res = await conn.execute(text("PRAGMA table_info(routers)"))
                 columns = [row[1] for row in res.fetchall()]
-                if columns and "ca_cert" not in columns:
-                    await conn.execute(text("ALTER TABLE routers ADD COLUMN ca_cert TEXT"))
-            except Exception:
-                pass
+                # create_all() never alters an existing table, and this install
+                # is not on Alembic, so a column added to the Router model after
+                # the database was first created must be applied here too - or
+                # every `SELECT ... FROM routers` fails with "no such column" and
+                # the app looks like it has lost its router configuration.
+                if columns:
+                    router_additions = {
+                        "ca_cert": "TEXT",
+                        "comment": "TEXT",
+                    }
+                    for column, ddl in router_additions.items():
+                        if column not in columns:
+                            await conn.execute(text(f"ALTER TABLE routers ADD COLUMN {column} {ddl}"))
+            except Exception as e:
+                logger.warning(f"Could not apply router schema additions: {e}")
 
             try:
                 res = await conn.execute(text("PRAGMA table_info(devices)"))
