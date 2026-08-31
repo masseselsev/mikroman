@@ -83,6 +83,7 @@ govern adding new router calls.
   * **Per-Device Live Metrics**: Live rate and daily volume are exposed per device, not only per user profile, so the specific device saturating the link is named directly.
   * **Compact Telemetry Strip**: Download, Upload, CPU, RAM and Temperature carry inline **sparklines** built from the live telemetry stream (no extra requests, no charting dependency), alongside the **WAN IP**, **active client count** and uptime. Temperature is coloured against your configured warning threshold.
   * **WAN Identity Tile**: shows the interface address, the address the internet actually sees (they differ under carrier-grade NAT), and the **provider name** — resolved together in one cached lookup, since an AS number and operator name are the only way to tell two links apart when both hand out CGNAT addresses. Failure is silent: the router may legitimately have no internet.
+  * **External IP Lookup**: the public address is a link. Click it to open the address on 2ip.io, IPinfo, WhatIsMyIPAddress, AbuseIPDB, Shodan or the BGP Toolkit; with several enabled, the click opens a menu instead of guessing. Settings chooses which are offered and which one a plain click follows, and accepts **your own URL template** — anything containing `{ip}`, which is the only token substituted. Templates are validated on both sides of the wire (`http`/`https` only, no embedded credentials), because a stored template ends up as the `href` of a link you click, and a `javascript:` URL there would execute in the page's origin.
   * **Single Design System**: sizes, widths and corner radii come from one set of CSS tokens — an eight-step type scale, a five-step radius scale and two control heights — instead of the 29 font sizes, 8 raw pixel radii and 40 ad-hoc paddings the components had each invented for themselves. Segmented selectors, panels, list rows, setting rows, dropdowns and toolbar controls are shared classes, so a control cannot look different in two places.
   * **Sortable Analytics Tables** with share-of-traffic bars, defaulting to the heaviest consumer first.
   * **Interface Link Health**: per-interface RX/TX volume plus error and drop counters — the earliest warning of a failing cable or saturated link.
@@ -98,6 +99,7 @@ govern adding new router calls.
 
 * **📉 ISP Cycle Data Limit:**
   * Set an allowance for the billing cycle and watch consumption against it, with remaining bytes and the **daily budget** needed to stay inside it.
+  * Alert thresholds and the Telegram toggle round-trip through the API, so turning notifications off stays off.
   * **Multiple alert thresholds** (50/75/80/90/100%) fire **once per cycle** each and re-arm automatically when the cycle resets — checked on the background tick, so a warning arrives even with no browser open, optionally to Telegram.
 
 * **🕒 Router-Local Time:**
@@ -112,19 +114,42 @@ govern adding new router calls.
 
 ## 🚀 Quick Start (Docker / Docker Compose)
 
-### 1. Clone & Configure
+**No configuration files to edit.** The router is added through the setup wizard
+on first run, and its credentials are stored in the database — not in a file on
+disk.
+
 ```bash
 git clone https://github.com/your-org/mikroman.git
 cd mikroman
-cp .env.example .env
-# Edit .env with your RouterOS IP and admin password
-```
-
-### 2. Run with Docker Compose
-```bash
 docker compose up -d
 ```
-Open **`http://localhost:1928`** in your web browser.
+
+Open **`http://localhost:1928`** and the setup wizard walks you through the
+router connection, an optional Telegram bot, and your theme and language.
+
+> **`.env` is not used by the Docker deployment.** `docker-compose.yml` declares
+> no `env_file` and performs no variable substitution, and `.env` is excluded
+> from the image — so editing it has no effect on the container. It is read only
+> when running the backend directly from the repository root (see below), where
+> it remains an optional alternative to the setup wizard.
+>
+> Earlier revisions of this file told you to copy `.env.example` and put your
+> router password in it. That was wrong: it did nothing, and it pre-filled the
+> username `admin`, which the connection form then probed the router with.
+
+### Running the backend directly (development)
+
+```bash
+python -m venv .venv && .venv/bin/pip install -r backend/requirements.txt
+cp .env.example .env          # optional — the setup wizard covers the same ground
+.venv/bin/uvicorn backend.app.main:app --host 0.0.0.0 --port 1928
+```
+
+Here `.env` *is* read, because pydantic-settings loads it from the working
+directory. Router credentials supplied this way are used only when no router has
+been configured in the database; an unset `ROUTEROS_PASSWORD` means "no
+credentials were supplied", and the app will not attempt a login rather than
+guessing at one.
 
 ---
 

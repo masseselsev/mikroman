@@ -321,12 +321,11 @@ body {
 }
 
 /* Cards & Glass Containers.
-   `.card` and `.panel` are the same surface under two names that grew up in
-   different parts of the app; they are defined together so they can never drift
-   apart again. Callers previously overrode the padding with 11px/13px/14px/16px/
-   18px/20px variants, which is why no two sections lined up. */
-.card,
-.panel {
+   One surface, one name. Callers used to override the padding with
+   11px/13px/14px/16px/18px/20px variants, which is why no two sections lined
+   up; the value lives here now. The panel-* helpers below compose with this
+   rather than redefining it. */
+.card {
   background: var(--bg-card);
   border: 1px solid var(--border-color);
   border-radius: var(--radius-lg);
@@ -603,20 +602,38 @@ body {
   cursor: pointer;
 }
 
-/* Pulse Animation for Live Telemetry */
+/* Pulse animation for live telemetry.
+   Only transform and opacity are animated. An earlier version also animated
+   `filter: drop-shadow`, which is not a compositor property: the browser had to
+   re-rasterise and re-upload the layer on every one of 60 frames a second, for
+   an 8px dot, which showed up as sustained GPU copy-engine load for as long as
+   the page was open. The glow is now a static box-shadow, painted once. */
 @keyframes pulseGlow {
-  0% { transform: scale(0.95); opacity: 0.8; }
-  50% { transform: scale(1.05); opacity: 1; filter: drop-shadow(0 0 6px var(--color-success)); }
-  100% { transform: scale(0.95); opacity: 0.8; }
+  0% { transform: scale(0.95); opacity: 0.75; }
+  50% { transform: scale(1.05); opacity: 1; }
+  100% { transform: scale(0.95); opacity: 0.75; }
 }
 
 .live-indicator {
   width: 8px;
   height: 8px;
-  border-radius: 50%;
+  border-radius: var(--radius-full);
   background-color: var(--color-success);
+  box-shadow: 0 0 6px var(--color-success);
   display: inline-block;
   animation: pulseGlow 2s infinite ease-in-out;
+  /* Promotes the dot to its own layer so its animation can never invalidate
+     whatever it happens to sit inside. */
+  will-change: transform, opacity;
+}
+
+/* Respect a reduced-motion preference, and stop paying for the animation when
+   nobody asked to see it. */
+@media (prefers-reduced-motion: reduce) {
+  .live-indicator,
+  .spin {
+    animation: none;
+  }
 }
 
 .spin {
@@ -725,7 +742,7 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
 /* SURFACES, PANELS AND TILES                                */
 /* ========================================================= */
 
-/* A panel whose content draws its own edges (tables, scroll lists): the frame
+/* A card whose content draws its own edges (tables, scroll lists): the frame
    and radius stay, the inner padding goes. */
 .panel-flush {
   padding: 0;
@@ -989,6 +1006,42 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
   color: var(--color-radio);
   font-weight: 700;
   letter-spacing: 0.02em;
+}
+
+/* The public address in the WAN tile, as a link to an external lookup service.
+   Styled to stay subordinate to the figures above it: underlined only on hover,
+   so the tile does not read as a row of links. */
+.ip-lookup-link {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  text-decoration: none;
+  border-bottom: 1px dotted currentColor;
+}
+
+.ip-lookup-link:hover {
+  color: var(--color-primary);
+  border-bottom-color: var(--color-primary);
+}
+
+/* Version tag beside the app name. Sized and coloured to sit under the title
+   without competing with it - it is a fact you look up, not one you read. */
+.version-tag {
+  font-family: var(--font-mono);
+  font-size: var(--fs-3xs);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--color-primary);
+  background: var(--color-primary-light);
+  border: 1px solid rgba(11, 114, 201, 0.28);
+  border-radius: var(--radius-full);
+  padding: 1px 7px;
+  line-height: 1.5;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 /* Round presence indicator. Written inline as a 7px or 8px circle in a dozen

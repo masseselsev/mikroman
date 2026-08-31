@@ -3,9 +3,9 @@ import logging
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from backend.app.api.v1.endpoints.telegram import set_telegram_service
@@ -14,7 +14,7 @@ from backend.app.api.v1.router import api_v1_router
 from backend.app.core.config import settings
 from backend.app.db.session import AsyncSessionLocal, init_db
 from backend.app.services.device_manager import DeviceManager
-from backend.app.services.router_manager import router_manager
+from backend.app.services.router_manager import NoRouterConfiguredError, router_manager
 from backend.app.services.telegram_bot import TelegramBotService
 
 logging.basicConfig(
@@ -228,6 +228,22 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.exception_handler(NoRouterConfiguredError)
+async def no_router_configured_handler(request: Request, exc: NoRouterConfiguredError):
+    """Answer "no router set up yet" as a plain 503 rather than a 500.
+
+    This is an expected state on a fresh install, not a fault: the setup wizard
+    has simply not been completed. Previously these requests built a client from
+    the environment defaults and authenticated as `admin` with an empty
+    password, so a first run announced itself in the router's log as a series of
+    failed logins.
+    """
+    return JSONResponse(
+        status_code=503,
+        content={"success": False, "message": str(exc), "data": None},
+    )
+
 
 app.include_router(api_v1_router)
 app.include_router(ws_router)

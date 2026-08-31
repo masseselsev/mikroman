@@ -25,6 +25,10 @@ class QuotaStatusDTO(BaseModel):
     thresholds: List[int] = Field(default_factory=list)
     thresholds_reached: List[int] = Field(default_factory=list)
     enabled: bool = False
+    # Echoed back so the settings form can restore the saved choice. Without it
+    # the UI had to assume a value, and assumed True - which silently re-enabled
+    # Telegram alerts for anyone who had turned them off.
+    notify_telegram: bool = True
 
 
 class BillingCycleConfig(BaseModel):

@@ -1,9 +1,12 @@
 import logging
-from typing import Dict, List, Optional
+from contextlib import asynccontextmanager
+from typing import AsyncIterator, Dict, List, Optional
 
+import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.core.config import settings
 from backend.app.db.models import Router
 from backend.app.db.session import AsyncSessionLocal
 from backend.app.schemas.router import (
@@ -20,6 +23,41 @@ from backend.app.services.routeros_compat import (
 )
 
 logger = logging.getLogger("mikroman.router_manager")
+
+
+class NoRouterConfiguredError(RuntimeError):
+    """Raised when an operation needs a router and none has been set up."""
+
+
+class OfflineRouterOSClient(RouterOSClient):
+    """Stand-in used when no router is configured. Never opens a connection.
+
+    Endpoints like "create user" or "set a device limit" are database
+    operations with a best-effort router sync attached, and they have always
+    been expected to succeed before a router exists. They previously got a
+    client built from the settings *defaults* - user ``admin`` with an empty
+    password - whose calls failed at the router and were swallowed upstream.
+
+    The observable result was a burst of ``login failure for user admin ... via
+    rest-api`` in the router's log on every such request: indistinguishable from
+    a brute-force attempt, and enough to trip an anti-bruteforce rule and get
+    the app's own address blacklisted.
+
+    This keeps the identical calling contract - every router call raises and is
+    swallowed exactly as before - while sending nothing over the network.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(host="", username="", password="")
+
+    @asynccontextmanager
+    async def _get_client(self) -> AsyncIterator[httpx.AsyncClient]:
+        raise NoRouterConfiguredError(
+            "No RouterOS router is configured. Add one in Settings, or supply "
+            "ROUTEROS_HOST and ROUTEROS_PASSWORD in the environment."
+        )
+        yield  # pragma: no cover - unreachable, satisfies the generator contract
+
 
 
 class RouterManager:
@@ -73,6 +111,50 @@ class RouterManager:
         finally:
             if should_close_session:
                 await session.close()
+
+    def env_fallback_client(self) -> Optional[RouterOSClient]:
+        """Client built from environment credentials, or None if none were set.
+
+        The documented `.env` deployment path configures the router entirely
+        through the environment, so that route has to keep working. What must
+        not happen is constructing a client from the *defaults* - user `admin`
+        with an empty password - and firing it at the router.
+
+        Doing so produced a burst of `login failure for user admin via rest-api`
+        in the router's log every time an API request arrived with no router
+        configured. That is indistinguishable from a brute-force attempt: it
+        pollutes the log, and on a router with anti-bruteforce rules it can get
+        the app's own address blacklisted. An unset password means "no
+        credentials were supplied", not "try an empty one".
+        """
+        if not settings.ROUTEROS_PASSWORD:
+            return None
+        return RouterOSClient()
+
+    async def require_client(
+        self,
+        router_id: Optional[int] = None,
+        session: Optional[AsyncSession] = None
+    ) -> RouterOSClient:
+        """Client for the active router, or an offline stand-in if none exists.
+
+        Never returns a client that would authenticate against the router with
+        credentials nobody supplied, so a missing router can never show up in
+        the router's log as a failed login.
+        """
+        client = await self.get_client(router_id=router_id, session=session)
+        if client is not None:
+            return client
+
+        fallback = self.env_fallback_client()
+        if fallback is not None:
+            return fallback
+
+        # Never a client that would authenticate as admin with an empty
+        # password. Callers that genuinely need the router see the failure on
+        # their first call; callers doing database work with a best-effort sync
+        # carry on as they always have.
+        return OfflineRouterOSClient()
 
     async def remove_client(self, router_id: int) -> None:
         """Close and remove a client from the active cache."""

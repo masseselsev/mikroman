@@ -1,5 +1,5 @@
 # ==============================================================================
-# MikroTik RouterOS 7.24+ Container Setup Script for MikroMan
+# MikroTik RouterOS 7.4+ Container Setup Script for MikroMan
 # ==============================================================================
 # Run this script directly in RouterOS Terminal (/import setup_ros_container.rsc)
 # or paste commands section by section.

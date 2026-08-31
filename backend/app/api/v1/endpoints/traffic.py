@@ -5,15 +5,13 @@ from backend.app.db.session import get_db
 from backend.app.schemas.common import APIResponse
 from backend.app.schemas.traffic import PauseStateUpdate, SpeedLimitUpdate
 from backend.app.services.router_manager import router_manager
-from backend.app.services.routeros import RouterOSClient
 from backend.app.services.traffic_controller import TrafficController
 
 router = APIRouter(prefix="/traffic", tags=["Traffic Control"])
 
 
 async def get_traffic_controller(db: AsyncSession = Depends(get_db)) -> TrafficController:
-    client = await router_manager.get_client(session=db)
-    return TrafficController(client or RouterOSClient())
+    return TrafficController(await router_manager.require_client(session=db))
 
 
 @router.post("/users/{user_id}/limit", response_model=APIResponse[bool])

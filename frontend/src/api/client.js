@@ -132,6 +132,8 @@ export const api = {
   getInterfaces: () => request('/system/interfaces'),
   getAlerts: () => request('/system/alerts'),
   getSettings: () => request('/system/settings'),
+  getIpLookup: () => request('/system/ip-lookup'),
+  saveIpLookup: (config) => request('/system/ip-lookup', { method: 'POST', body: JSON.stringify(config) }),
   saveSettings: (settings) => request('/system/settings', { method: 'POST', body: JSON.stringify(settings) }),
   rebootRouter: () => request('/system/reboot', { method: 'POST' }),
   testTelegram: (data = {}) => request('/telegram/test', { method: 'POST', body: JSON.stringify(data) }),

@@ -160,6 +160,7 @@ async def build_quota_status(db: AsyncSession, router_id: Optional[int] = None) 
         thresholds=config.thresholds,
         thresholds_reached=await unfired_for_cycle(db, cycle_start),
         enabled=limit > 0,
+        notify_telegram=config.notify_telegram,
     )
 
 

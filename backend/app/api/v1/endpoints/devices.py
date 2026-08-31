@@ -26,7 +26,6 @@ from backend.app.services.device_linking import (
 )
 from backend.app.services.device_manager import DeviceManager
 from backend.app.services.router_manager import router_manager
-from backend.app.services.routeros import RouterOSClient
 from backend.app.services.traffic_controller import TrafficController
 from backend.app.services.vendor_lookup import vendor_service
 
@@ -34,8 +33,7 @@ router = APIRouter(prefix="/devices", tags=["Devices"])
 
 
 async def get_traffic_controller(db: AsyncSession = Depends(get_db)) -> TrafficController:
-    client = await router_manager.get_client(session=db)
-    return TrafficController(client or RouterOSClient())
+    return TrafficController(await router_manager.require_client(session=db))
 
 
 @router.get("", response_model=APIResponse[List[DeviceDTO]])
@@ -89,8 +87,7 @@ async def get_merge_suggestions(
     db: AsyncSession = Depends(get_db)
 ):
     """Get smart suggestions for unassigned rotated MAC devices matching existing user devices."""
-    client = await router_manager.get_client(session=db)
-    dev_mgr = DeviceManager(client or RouterOSClient())
+    dev_mgr = DeviceManager(await router_manager.require_client(session=db))
     suggestions = await dev_mgr.find_merge_suggestions(db)
     return APIResponse(data=suggestions)
 
@@ -147,10 +144,7 @@ async def scan_network(
     db: AsyncSession = Depends(get_db)
 ):
     """Trigger immediate network discovery scan from RouterOS."""
-    client = await router_manager.get_client(session=db)
-    if not client:
-        client = RouterOSClient()
-    dev_mgr = DeviceManager(client)
+    dev_mgr = DeviceManager(await router_manager.require_client(session=db))
     all_devs, newly_discovered = await dev_mgr.sync_devices_from_router(db)
     return APIResponse(
         data=[DeviceDTO.model_validate(d) for d in all_devs],
@@ -166,8 +160,7 @@ async def merge_device(
     traffic_ctrl: TrafficController = Depends(get_traffic_controller)
 ):
     """Merge an unassigned rotated MAC device into an existing user device."""
-    client = await router_manager.get_client(session=db)
-    dev_mgr = DeviceManager(client or RouterOSClient())
+    dev_mgr = DeviceManager(await router_manager.require_client(session=db))
     try:
         merged_device = await dev_mgr.merge_devices(
             session=db,

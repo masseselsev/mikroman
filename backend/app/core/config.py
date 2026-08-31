@@ -13,13 +13,13 @@ class Settings(BaseSettings):
     )
 
     APP_NAME: str = "MikroMan"
-    APP_VERSION: str = "1.0.0"
+    APP_VERSION: str = "0.2.0"
     DEBUG: bool = False
 
     # Database
     DATABASE_URL: str = "sqlite+aiosqlite:///./data/app.db"
 
-    # MikroTik RouterOS 7.24+ REST API Settings
+    # MikroTik RouterOS REST API settings (7.1+, see routeros_compat.py)
     ROUTEROS_HOST: str = "192.168.88.1"
     ROUTEROS_PORT: int = 443
     ROUTEROS_USE_SSL: bool = True

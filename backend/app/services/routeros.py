@@ -108,7 +108,11 @@ def build_wifi_links(
 
 
 class RouterOSClient:
-    """Async HTTP Client for MikroTik RouterOS 7.24+ REST API."""
+    """Async HTTP client for the MikroTik RouterOS REST API (7.1+).
+
+    See backend/app/services/routeros_compat.py for the menus this depends on
+    and the release each was introduced in.
+    """
 
     def __init__(
         self,

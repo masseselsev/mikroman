@@ -45,7 +45,9 @@ export function SetupWizard({ onComplete }) {
     use_ssl: false,
     ssl_verify: false,
     ca_cert: '',
-    username: 'admin',
+    // Blank rather than "admin": see SettingsModal. The wizard must not probe
+    // the router with a username nobody typed.
+    username: '',
     password: ''
   });
 
@@ -891,7 +893,7 @@ export function SetupWizard({ onComplete }) {
                     onChange={e => setTelegramForm({ ...telegramForm, bot_token: e.target.value })}
                   />
                 </div>
-                <span className="form-hint">Obtain from @BotFather in Telegram</span>
+                <span className="form-hint">{t('tg_token_hint')}</span>
               </div>
 
               <div className="form-group">

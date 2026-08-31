@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useI18n } from '../context/I18nContext';
 import { api } from '../api/client';
+import { templateErrorKey } from '../utils/ipLookup';
 import { X, Settings as SettingsIcon, Send, CheckCircle2, AlertTriangle, Power, Server, Plus, Trash2, Check, Loader2 } from 'lucide-react';
 
 export function SettingsModal({ isOpen, onClose, onReboot, onRoutersChanged }) {
@@ -28,7 +29,11 @@ export function SettingsModal({ isOpen, onClose, onReboot, onRoutersChanged }) {
     port: 443,
     use_ssl: true,
     ssl_verify: false,
-    username: 'admin',
+    // Deliberately blank. Pre-filling "admin" meant a click on Test Connection
+    // probed the router with a username the user never chose - and the probe
+    // chain (HTTPS, then port 80) turned one click into several failed logins
+    // in the router's log.
+    username: '',
     password: ''
   });
   const [testRouterResult, setTestRouterResult] = useState(null);
@@ -61,7 +66,10 @@ export function SettingsModal({ isOpen, onClose, onReboot, onRoutersChanged }) {
         setQuota({
           limit_gb: Math.round((res.data.limit_bytes || 0) / (1024 ** 3)),
           thresholds: res.data.thresholds || [],
-          notify_telegram: true,
+          // Read back rather than assumed: assuming true meant that turning
+          // Telegram alerts off survived the save but not the next page load,
+          // and the following save wrote the assumption back over the choice.
+          notify_telegram: res.data.notify_telegram ?? true,
         });
       }
     } catch (e) {
@@ -69,10 +77,73 @@ export function SettingsModal({ isOpen, onClose, onReboot, onRoutersChanged }) {
     }
   };
 
+  // External IP lookup services. The catalogue comes from the server so the
+  // built-ins can change without a frontend release.
+  const [ipLookup, setIpLookup] = useState({ services: [], enabled_ids: [], default_id: null });
+  const [customLookup, setCustomLookup] = useState({ name: '', url_template: '' });
+  const [ipLookupError, setIpLookupError] = useState('');
+
+  const loadIpLookup = async () => {
+    try {
+      const res = await api.getIpLookup();
+      if (res?.data) setIpLookup(res.data);
+    } catch (e) {
+      console.debug('Failed to load IP lookup config', e);
+    }
+  };
+
+  const toggleLookupService = (id) => {
+    setIpLookup(cfg => {
+      const enabled = cfg.enabled_ids.includes(id)
+        ? cfg.enabled_ids.filter(x => x !== id)
+        : [...cfg.enabled_ids, id];
+      // Disabling the default would leave a click with nowhere to go.
+      const default_id = enabled.includes(cfg.default_id) ? cfg.default_id : (enabled[0] || null);
+      return { ...cfg, enabled_ids: enabled, default_id };
+    });
+  };
+
+  const addCustomService = () => {
+    const name = customLookup.name.trim();
+    const template = customLookup.url_template.trim();
+    if (!name || templateErrorKey(template)) return;
+
+    // Derived from the name so the id stays readable in stored settings, with a
+    // suffix to keep it unique.
+    const base = name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 24) || 'custom';
+    const taken = new Set(ipLookup.services.map(s => s.id));
+    let id = base;
+    let n = 2;
+    while (taken.has(id)) id = `${base}_${n++}`;
+
+    setIpLookup(cfg => ({
+      ...cfg,
+      services: [...cfg.services, { id, name, url_template: template, builtin: false }],
+      enabled_ids: [...cfg.enabled_ids, id],
+    }));
+    setCustomLookup({ name: '', url_template: '' });
+    setIpLookupError('');
+  };
+
+  const removeCustomService = (id) => {
+    setIpLookup(cfg => {
+      const services = cfg.services.filter(s => s.id !== id);
+      const enabled = cfg.enabled_ids.filter(x => x !== id);
+      return {
+        ...cfg,
+        services,
+        enabled_ids: enabled,
+        default_id: enabled.includes(cfg.default_id) ? cfg.default_id : (enabled[0] || null),
+      };
+    });
+  };
+
   useEffect(() => {
     if (isOpen) {
       loadSettingsAndRouters();
       loadQuota();
+      loadIpLookup();
+      setIpLookupError('');
       setTestResult(null);
       setTestRouterResult(null);
       setStatusMsg('');
@@ -91,6 +162,15 @@ export function SettingsModal({ isOpen, onClose, onReboot, onRoutersChanged }) {
         limit_bytes: Math.max(0, Math.round(quota.limit_gb * (1024 ** 3))),
         thresholds: quota.thresholds,
         notify_telegram: quota.notify_telegram,
+      });
+      // Only the user's own entries travel back; the built-in catalogue is the
+      // server's and is reconstructed there.
+      await api.saveIpLookup({
+        enabled_ids: ipLookup.enabled_ids,
+        default_id: ipLookup.default_id || undefined,
+        custom: ipLookup.services.filter(sv => !sv.builtin).map(sv => ({
+          id: sv.id, name: sv.name, url_template: sv.url_template,
+        })),
       });
       setStatusMsg(t('save') + ' OK');
       setTimeout(() => {
@@ -382,6 +462,115 @@ export function SettingsModal({ isOpen, onClose, onReboot, onRoutersChanged }) {
                   />
                   {t('quota_notify_tg')}
                 </label>
+              </div>
+
+              <div style={{ height: 1, background: 'var(--border-color)', margin: '6px 0' }}></div>
+
+              {/* External IP lookup services */}
+              <div>
+                <h3 style={{ fontSize: 'var(--fs-md)', fontWeight: 700, marginBottom: 4, color: 'var(--color-primary)' }}>
+                  {t('ip_lookup_title')}
+                </h3>
+                <p style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginBottom: 10 }}>
+                  {t('ip_lookup_desc')}
+                </p>
+
+                <div className="list-box" style={{ maxHeight: 210, marginBottom: 10 }}>
+                  {ipLookup.services.map(svc => {
+                    const on = ipLookup.enabled_ids.includes(svc.id);
+                    const isDefault = ipLookup.default_id === svc.id;
+                    return (
+                      <div key={svc.id} className={`list-row${on ? ' is-selected' : ''}`}>
+                        <label style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0, flex: 1, cursor: 'pointer' }}>
+                          <input
+                            type="checkbox"
+                            checked={on}
+                            onChange={() => toggleLookupService(svc.id)}
+                            style={{ cursor: 'pointer', accentColor: 'var(--color-primary)' }}
+                          />
+                          <span style={{ minWidth: 0 }}>
+                            <span style={{ fontWeight: on ? 700 : 500 }}>{svc.name}</span>
+                            <span className="font-mono truncate" style={{
+                              display: 'block',
+                              fontSize: 'var(--fs-3xs)',
+                              color: 'var(--text-muted)'
+                            }}>
+                              {svc.url_template}
+                            </span>
+                          </span>
+                        </label>
+
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+                          {/* The service a plain click on the IP follows. */}
+                          <button
+                            type="button"
+                            className={`badge ${isDefault ? 'badge-primary' : 'badge-neutral'}`}
+                            disabled={!on}
+                            onClick={() => setIpLookup(c => ({ ...c, default_id: svc.id }))}
+                            style={{ border: 'none', cursor: on ? 'pointer' : 'not-allowed', opacity: on ? 1 : 0.4 }}
+                            title={t('ip_lookup_set_default')}
+                          >
+                            {isDefault ? t('ip_lookup_default') : t('ip_lookup_set_default')}
+                          </button>
+                          {!svc.builtin && (
+                            <button
+                              type="button"
+                              className="btn-icon"
+                              style={{ width: 24, height: 24, color: 'var(--color-danger)' }}
+                              onClick={() => removeCustomService(svc.id)}
+                              title={t('delete')}
+                            >
+                              <Trash2 size={12} />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Custom service. The {ip} placeholder is the whole contract:
+                    the app substitutes the address and nothing else. */}
+                <div className="form-row" style={{ gridTemplateColumns: '1fr 2fr auto', alignItems: 'end', gap: 8 }}>
+                  <div className="form-group">
+                    <label className="form-label">{t('ip_lookup_custom_name')}</label>
+                    <input
+                      type="text"
+                      className="form-input"
+                      value={customLookup.name}
+                      onChange={e => setCustomLookup({ ...customLookup, name: e.target.value })}
+                      placeholder={t('ip_lookup_name_placeholder')}
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label className="form-label">{t('ip_lookup_custom_url')}</label>
+                    <input
+                      type="text"
+                      className="form-input font-mono"
+                      value={customLookup.url_template}
+                      onChange={e => setCustomLookup({ ...customLookup, url_template: e.target.value })}
+                      placeholder="https://example.com/lookup/{ip}"
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    onClick={addCustomService}
+                    disabled={!customLookup.name.trim() || !!templateErrorKey(customLookup.url_template)}
+                  >
+                    <Plus size={13} />
+                    {t('add')}
+                  </button>
+                </div>
+
+                {customLookup.url_template.trim() && templateErrorKey(customLookup.url_template) && (
+                  <div className="alert alert-warning" style={{ marginTop: 8 }}>
+                    {t(templateErrorKey(customLookup.url_template))}
+                  </div>
+                )}
+                {ipLookupError && (
+                  <div className="alert alert-danger" style={{ marginTop: 8 }}>{ipLookupError}</div>
+                )}
               </div>
 
               <div style={{ height: 1, background: 'var(--border-color)', margin: '6px 0' }}></div>

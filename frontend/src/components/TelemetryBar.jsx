@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useI18n } from '../context/I18nContext';
 import { api } from '../api/client';
 import { formatSpeed, formatUptime } from '../utils/formatters';
+import { buildLookupUrl } from '../utils/ipLookup';
 import {
   Cpu,
   HardDrive,
@@ -14,7 +15,8 @@ import {
   Check,
   Network,
   Users,
-  Globe
+  Globe,
+  ExternalLink
 } from 'lucide-react';
 
 /** How many telemetry ticks each sparkline remembers (~1 tick/second). */
@@ -53,6 +55,86 @@ function Sparkline({ values, color, max }) {
       <polyline points={points} fill="none" stroke={color} strokeWidth="1.5"
                 vectorEffect="non-scaling-stroke" strokeLinejoin="round" />
     </svg>
+  );
+}
+
+/**
+ * The public address, as a link to an external lookup service.
+ *
+ * The address alone answers little; the useful questions - where is this, who
+ * owns it, is it flagged anywhere - are answered by third-party lookup sites.
+ * One enabled service means a plain link. Several means a small menu, rather
+ * than silently picking one.
+ *
+ * Every href is built through buildLookupUrl, which refuses anything that is
+ * not http(s); a template that fails renders as plain text, never as a link.
+ */
+function PublicIpLink({ ip, services, t }) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const wrapRef = React.useRef(null);
+
+  useEffect(() => {
+    if (!menuOpen) return undefined;
+    const onOutside = (e) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target)) setMenuOpen(false);
+    };
+    document.addEventListener('mousedown', onOutside);
+    return () => document.removeEventListener('mousedown', onOutside);
+  }, [menuOpen]);
+
+  const usable = (services || [])
+    .map(s => ({ ...s, url: buildLookupUrl(s.url_template, ip) }))
+    .filter(s => s.url);
+
+  if (usable.length === 0) {
+    return <span>↗ {ip}</span>;
+  }
+
+  if (usable.length === 1) {
+    return (
+      <a
+        className="ip-lookup-link"
+        href={usable[0].url}
+        target="_blank"
+        rel="noopener noreferrer"
+        onClick={e => e.stopPropagation()}
+        title={t('ip_lookup_open', { service: usable[0].name })}
+      >
+        ↗ {ip}
+      </a>
+    );
+  }
+
+  return (
+    <span ref={wrapRef} style={{ position: 'relative' }}>
+      <button
+        type="button"
+        className="ip-lookup-link"
+        onClick={e => { e.stopPropagation(); setMenuOpen(o => !o); }}
+        title={t('ip_lookup_choose')}
+      >
+        ↗ {ip}
+      </button>
+      {menuOpen && (
+        <div className="popover" style={{ top: 'calc(100% + 4px)', left: 0, minWidth: 170 }}>
+          <div className="popover-head">{t('ip_lookup_choose')}</div>
+          {usable.map(s => (
+            <a
+              key={s.id}
+              className="popover-item"
+              href={s.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={() => setMenuOpen(false)}
+              style={{ textDecoration: 'none' }}
+            >
+              {s.name}
+              <ExternalLink size={12} style={{ opacity: 0.6, flexShrink: 0 }} />
+            </a>
+          ))}
+        </div>
+      )}
+    </span>
   );
 }
 
@@ -123,6 +205,25 @@ export function TelemetryBar({ router, activeRouter, interfaces = [] }) {
       setTempHistory(prev => pushHistory(prev, router.temperature));
     }
   }, [router]);
+
+  // Which external lookup services the public IP links to. Configured in
+  // Settings; a failure here simply leaves the address as plain text.
+  const [lookupServices, setLookupServices] = useState([]);
+
+  useEffect(() => {
+    api.getIpLookup()
+      .then(res => {
+        const data = res?.data;
+        if (!data?.services) return;
+        const enabled = new Set(data.enabled_ids || []);
+        // Default first, so a single click lands where the user expects.
+        const ordered = data.services
+          .filter(s => enabled.has(s.id))
+          .sort((a, b) => (a.id === data.default_id ? -1 : b.id === data.default_id ? 1 : 0));
+        setLookupServices(ordered);
+      })
+      .catch(() => {});
+  }, []);
 
   // Warning threshold is configured in Settings; used to colour the temperature.
   useEffect(() => {
@@ -305,7 +406,9 @@ export function TelemetryBar({ router, activeRouter, interfaces = [] }) {
           // the interface, the address the internet actually sees (they differ
           // under carrier-grade NAT), and who the link belongs to.
           sub={[
-            router.public_ip && router.public_ip !== router.wan_ip ? `↗ ${router.public_ip}` : null,
+            router.public_ip && router.public_ip !== router.wan_ip
+              ? <PublicIpLink key="pub" ip={router.public_ip} services={lookupServices} t={t} />
+              : null,
             router.isp || null,
             !router.public_ip && !router.isp ? (router.version || '') : null
           ]}

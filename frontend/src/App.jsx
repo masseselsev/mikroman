@@ -123,34 +123,62 @@ export function App() {
     0
   );
 
-  // Merge live WebSocket telemetry into users state for smooth animation
+  // Merge live WebSocket telemetry into users state for smooth animation.
+  //
+  // Object identity is preserved wherever the numbers did not actually move.
+  // Rebuilding every user and device object on every frame made React re-render
+  // - and the browser repaint - every card once a second even on an idle
+  // network, which is pure cost for no visible change.
   useEffect(() => {
-    if (telemetry?.users && users.length > 0) {
-      const telemetryMap = new Map(telemetry.users.map(u => [u.user_id, u]));
-      setUsers(prevUsers =>
-        prevUsers.map(u => {
-          const live = telemetryMap.get(u.id);
-          if (live) {
-            // Per-device live figures ride along in the same telemetry frame,
-            // so device rows animate at the same cadence as the user totals.
-            const perDevice = live.devices || {};
-            return {
-              ...u,
-              current_rate_in: live.current_rate_in,
-              current_rate_out: live.current_rate_out,
-              bytes_today_in: live.bytes_in,
-              bytes_today_out: live.bytes_out,
-              is_paused: live.is_paused,
-              devices: (u.devices || []).map(d => {
-                const dm = perDevice[d.id];
-                return dm ? { ...d, ...dm } : d;
-              })
-            };
-          }
-          return u;
-        })
-      );
-    }
+    if (!telemetry?.users || users.length === 0) return;
+
+    const telemetryMap = new Map(telemetry.users.map(u => [u.user_id, u]));
+
+    setUsers(prevUsers => {
+      let usersChanged = false;
+
+      const nextUsers = prevUsers.map(u => {
+        const live = telemetryMap.get(u.id);
+        if (!live) return u;
+
+        // Per-device live figures ride along in the same telemetry frame, so
+        // device rows animate at the same cadence as the user totals.
+        const perDevice = live.devices || {};
+        let devicesChanged = false;
+
+        const nextDevices = (u.devices || []).map(d => {
+          const dm = perDevice[d.id];
+          if (!dm) return d;
+          const differs = Object.keys(dm).some(key => d[key] !== dm[key]);
+          if (!differs) return d;
+          devicesChanged = true;
+          return { ...d, ...dm };
+        });
+
+        const userDiffers =
+          u.current_rate_in !== live.current_rate_in ||
+          u.current_rate_out !== live.current_rate_out ||
+          u.bytes_today_in !== live.bytes_in ||
+          u.bytes_today_out !== live.bytes_out ||
+          u.is_paused !== live.is_paused;
+
+        if (!userDiffers && !devicesChanged) return u;
+
+        usersChanged = true;
+        return {
+          ...u,
+          current_rate_in: live.current_rate_in,
+          current_rate_out: live.current_rate_out,
+          bytes_today_in: live.bytes_in,
+          bytes_today_out: live.bytes_out,
+          is_paused: live.is_paused,
+          devices: devicesChanged ? nextDevices : u.devices
+        };
+      });
+
+      // Returning the previous array lets React bail out of the update entirely.
+      return usersChanged ? nextUsers : prevUsers;
+    });
   }, [telemetry]);
 
   const handleSelectRouter = (router) => {

@@ -1,4 +1,23 @@
 # ==========================================
+# Frontend build
+# ==========================================
+# The compiled bundle is built here rather than on the host. frontend/dist is
+# generated output and is not committed, so a Dockerfile that COPYied it could
+# only ever build on a machine that had already run `npm run build` - which made
+# the documented `git clone && docker compose up -d` fail on the COPY step.
+FROM node:22-alpine AS frontend
+
+WORKDIR /build
+
+# Manifest first, so `npm ci` is only re-run when the dependencies change and
+# not on every source edit.
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
+
+COPY frontend/ ./
+RUN npm run build
+
+# ==========================================
 # Production Python Runtime (Slim)
 # ==========================================
 FROM python:3.12-slim AS runtime
@@ -20,8 +39,8 @@ RUN pip install --no-cache-dir --default-timeout=120 --retries=10 -r /app/backen
 # Copy backend code
 COPY backend/ /app/backend/
 
-# Copy compiled frontend assets
-COPY frontend/dist/ /app/frontend/dist/
+# Compiled frontend assets from the build stage above
+COPY --from=frontend /build/dist/ /app/frontend/dist/
 
 # Create persistent storage volume mount directory
 RUN mkdir -p /data

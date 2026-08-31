@@ -1,7 +1,7 @@
 import logging
 from typing import Any, Dict, List
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -10,6 +10,14 @@ from backend.app.db.models import AlertLog, AppSetting
 from backend.app.db.session import get_db
 from backend.app.schemas.common import AlertLogDTO, APIResponse
 from backend.app.schemas.routeros import InterfaceDTO, RouterSystemHealth, RouterSystemResource
+from backend.app.services.ip_lookup import (
+    BUILTIN_SERVICES,
+    IpLookupConfig,
+    TemplateError,
+    all_services,
+)
+from backend.app.services.ip_lookup import get_config as get_ip_lookup_config
+from backend.app.services.ip_lookup import save_config as save_ip_lookup_config
 from backend.app.services.router_manager import router_manager
 from backend.app.services.routeros import RouterOSClient
 from backend.app.services.routeros_compat import (
@@ -25,8 +33,7 @@ router = APIRouter(prefix="/system", tags=["System & Settings"])
 
 
 async def get_router_client(db: AsyncSession = Depends(get_db)) -> RouterOSClient:
-    client = await router_manager.get_client(session=db)
-    return client or RouterOSClient()
+    return await router_manager.require_client(session=db)
 
 
 @router.get("/status", response_model=APIResponse[Dict[str, Any]])
@@ -112,7 +119,10 @@ async def get_settings(db: AsyncSession = Depends(get_db)):
     if "router_port" not in data:
         data["router_port"] = str(settings.ROUTEROS_PORT)
     if "router_user" not in data:
-        data["router_user"] = settings.ROUTEROS_USER
+        # Only when credentials were actually configured. Serving the bare
+        # default put "admin" into the connection form, which then probed the
+        # router with a username the operator never supplied.
+        data["router_user"] = settings.ROUTEROS_USER if settings.ROUTEROS_PASSWORD else ""
     if "unassigned_device_speed_limit" not in data:
         data["unassigned_device_speed_limit"] = "5M/5M"
     if "temp_warning_threshold" not in data:
@@ -182,3 +192,40 @@ async def save_settings(payload: Dict[str, str], db: AsyncSession = Depends(get_
         logger.debug(f"Failed to dynamically reconfigure Telegram bot: {e}")
 
     return APIResponse(data=True, message="Settings saved successfully")
+
+
+@router.get("/ip-lookup", response_model=APIResponse[Dict[str, Any]])
+async def get_ip_lookup(db: AsyncSession = Depends(get_db)):
+    """Configured external IP-lookup services for the WAN tile.
+
+    Returns the whole catalogue - built-ins plus the user's own entries - so the
+    settings form can render it without a second round trip, along with which
+    are enabled and which one a plain click follows.
+    """
+    config = await get_ip_lookup_config(db)
+    return APIResponse(data={
+        "services": [s.model_dump() for s in all_services(config)],
+        "enabled_ids": config.enabled_ids,
+        "default_id": config.default_id,
+        "builtin_ids": [s.id for s in BUILTIN_SERVICES],
+    })
+
+
+@router.post("/ip-lookup", response_model=APIResponse[Dict[str, Any]])
+async def save_ip_lookup(payload: IpLookupConfig, db: AsyncSession = Depends(get_db)):
+    """Store the lookup-service selection and any custom URL templates.
+
+    A rejected template is a user error, not a server fault, so it comes back as
+    a 400 carrying the specific reason rather than a generic failure.
+    """
+    try:
+        resolved = await save_ip_lookup_config(db, payload)
+    except TemplateError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    return APIResponse(data={
+        "services": [s.model_dump() for s in all_services(resolved)],
+        "enabled_ids": resolved.enabled_ids,
+        "default_id": resolved.default_id,
+        "builtin_ids": [s.id for s in BUILTIN_SERVICES],
+    }, message="IP lookup services saved")

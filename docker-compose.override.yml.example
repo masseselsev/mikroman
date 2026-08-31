@@ -1,0 +1,20 @@
+# Development overrides. Copy to docker-compose.override.yml to activate -
+# Compose loads that filename automatically, and it is gitignored.
+#
+# Bind-mounts the backend source over the image so Python changes take effect on
+# container restart without a rebuild. The frontend still needs `npm run build`
+# in ./frontend after a change, because the bundle is compiled, not interpreted.
+#
+# These mounts are not in docker-compose.yml on purpose: mounting a host
+# directory over the image is only correct when that directory is guaranteed to
+# be populated, which is true for a working copy and false for a fresh clone.
+
+services:
+  mikroman:
+    volumes:
+      - mikroman_data:/data
+      - ./backend:/app/backend
+      - ./frontend/dist:/app/frontend/dist
+    environment:
+      - DATABASE_URL=sqlite+aiosqlite:////data/app.db
+      - DEBUG=true

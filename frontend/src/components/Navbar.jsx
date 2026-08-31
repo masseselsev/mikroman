@@ -5,6 +5,20 @@ import { RouterSelector } from './RouterSelector';
 import { Sun, Moon, Globe, Settings as SettingsIcon, Activity, Clock } from 'lucide-react';
 
 /**
+ * Trim a trailing zero patch from a semver string for display.
+ *
+ * "0.1.0" reads as "0.1" in the header; the full string stays in the tooltip,
+ * so a bug report can still quote an exact build.
+ */
+function formatVersionTag(version) {
+  const parts = String(version).split('.');
+  if (parts.length === 3 && parts[2] === '0') {
+    return `v${parts[0]}.${parts[1]}`;
+  }
+  return `v${version}`;
+}
+
+/**
  * Live clock in the router's own timezone.
  *
  * Every time the dashboard shows - lease ages, billing cycles, daily rollups -
@@ -104,8 +118,14 @@ export function Navbar({ isConnected, routerInfo, routers = [], activeRouter, on
               <Activity size={20} />
             </div>
             <div>
-              <div style={{ fontWeight: 800, fontSize: 'var(--fs-xl)', letterSpacing: '-0.02em', color: 'var(--text-primary)' }}>
-                {t('app_title')}
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: 7 }}>
+                <span style={{ fontWeight: 800, fontSize: 'var(--fs-xl)', letterSpacing: '-0.02em', color: 'var(--text-primary)' }}>
+                  {t('app_title')}
+                </span>
+                {/* Injected from package.json at build time - see vite.config.js */}
+                <span className="version-tag" title={`MikroMan ${__APP_VERSION__}`}>
+                  {formatVersionTag(__APP_VERSION__)}
+                </span>
               </div>
               <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginTop: -2 }}>
                 {routerInfo?.board_name ? `${routerInfo.board_name} (${routerInfo.version || 'ROS 7.x'})` : t('app_subtitle')}
@@ -121,10 +141,15 @@ export function Navbar({ isConnected, routerInfo, routers = [], activeRouter, on
             onAddRouter={onAddRouter}
           />
 
-          <div className={`badge ${isConnected ? 'badge-success' : 'badge-danger'}`} style={{ marginLeft: 4 }}>
-            <span className={isConnected ? "live-indicator" : ""} style={{ width: 6, height: 6, borderRadius: 'var(--radius-full)', background: isConnected ? 'var(--color-success)' : 'var(--color-danger)' }}></span>
-            {isConnected ? t('connected') : t('disconnected')}
-          </div>
+          {/* Only the bad news is worth a badge. A healthy stream is already
+              signalled by the router selector's own green dot, so saying it
+              twice spends space on the state nobody needs telling about. */}
+          {!isConnected && (
+            <div className="badge badge-danger" style={{ marginLeft: 4 }}>
+              <span style={{ width: 6, height: 6, borderRadius: 'var(--radius-full)', background: 'var(--color-danger)' }} />
+              {t('disconnected')}
+            </div>
+          )}
         </div>
 
         {/* Action Controls */}

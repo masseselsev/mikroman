@@ -9,10 +9,16 @@ services:
     ports:
       - "1928:1928"
     environment:
+      # The only setting the container needs. Everything else - the router, the
+      # Telegram bot, polling intervals - is configured in the UI and stored in
+      # this database. No .env file is read; see README.
       - DATABASE_URL=sqlite+aiosqlite:////data/app.db
     volumes:
-      - ./backend:/app/backend
-      - ./frontend/dist:/app/frontend/dist
+      # Named volume, so the database survives `docker compose down` and image
+      # rebuilds. Source directories are deliberately NOT mounted here: bind
+      # mounting ./frontend/dist over the image shadowed the compiled bundle
+      # with an empty directory on any machine that had not built it by hand.
+      # For live-reloading development, see docker-compose.override.yml.example.
       - mikroman_data:/data
 
 volumes:
