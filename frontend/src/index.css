@@ -1528,3 +1528,115 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
 .app-footer-link:hover {
   color: var(--color-primary);
 }
+
+/* ============================================================
+   ISP quota strip (under the telemetry tiles, every page)
+   ============================================================ */
+.quota-strip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 10px 0 0;
+  padding: 7px 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  font-size: var(--fs-2xs);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.quota-strip:hover {
+  border-color: var(--border-focus);
+  background: var(--bg-secondary);
+}
+
+.quota-strip-icon {
+  flex-shrink: 0;
+}
+
+.quota-strip-bar {
+  position: relative;
+  flex: 0 1 160px;
+  min-width: 90px;
+  height: 6px;
+  border-radius: var(--radius-full);
+  background: var(--bg-secondary);
+  overflow: hidden;
+}
+
+.quota-strip-bar-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: var(--radius-full);
+  transition: width 0.4s ease, background 0.2s ease;
+}
+
+.quota-strip-main {
+  flex-shrink: 0;
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.quota-strip-sep {
+  margin: 0 6px;
+  opacity: 0.5;
+}
+
+.quota-strip-forecast {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-left: auto;
+}
+
+.quota-strip-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 7px;
+  border-radius: var(--radius-full);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: var(--fs-3xs);
+}
+
+.quota-strip-pill.is-ok {
+  background: var(--color-success-bg);
+  color: var(--color-success);
+}
+
+.quota-strip-pill.is-over {
+  background: var(--color-danger-bg);
+  color: var(--color-danger);
+}
+
+.quota-strip-proj {
+  font-weight: 700;
+}
+
+.quota-strip-pace {
+  color: var(--text-muted);
+}
+
+.quota-strip-portal {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  border-radius: var(--radius-sm);
+  background: var(--color-primary-light);
+  color: var(--color-primary);
+  font-weight: 700;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.quota-strip-portal:hover {
+  background: var(--color-primary);
+  color: #fff;
+}

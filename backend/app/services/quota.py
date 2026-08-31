@@ -28,6 +28,11 @@ LIMIT_SETTING_KEY = "quota_limit_bytes"
 THRESHOLDS_SETTING_KEY = "quota_alert_thresholds"
 NOTIFY_SETTING_KEY = "quota_notify_telegram"
 FIRED_SETTING_KEY = "quota_fired_thresholds"
+# Link to the ISP account / usage page, or the modem's own stats page. Shown as
+# a button on the quota strip so the operator can jump to the authoritative
+# figure in one click.
+PORTAL_URL_SETTING_KEY = "isp_portal_url"
+PORTAL_LABEL_SETTING_KEY = "isp_portal_label"
 
 
 @dataclass
@@ -37,6 +42,8 @@ class QuotaConfig:
     limit_bytes: int = 0
     thresholds: List[int] = field(default_factory=list)
     notify_telegram: bool = True
+    portal_url: Optional[str] = None
+    portal_label: Optional[str] = None
 
 
 def parse_thresholds(raw: Optional[str]) -> List[int]:
@@ -103,11 +110,35 @@ async def get_quota_config(session: AsyncSession) -> QuotaConfig:
         limit = 0
 
     notify_raw = await _get(session, NOTIFY_SETTING_KEY)
+    portal_url = (await _get(session, PORTAL_URL_SETTING_KEY) or "").strip() or None
+    portal_label = (await _get(session, PORTAL_LABEL_SETTING_KEY) or "").strip() or None
     return QuotaConfig(
         limit_bytes=max(0, limit),
         thresholds=parse_thresholds(await _get(session, THRESHOLDS_SETTING_KEY)),
         notify_telegram=(notify_raw is None or notify_raw.lower() != "false"),
+        portal_url=portal_url,
+        portal_label=portal_label,
     )
+
+
+def clean_portal_url(raw: Optional[str]) -> Optional[str]:
+    """Validate the ISP/modem link before it is stored and later rendered.
+
+    It ends up as the ``href`` of a button the operator clicks, so only
+    ``http``/``https`` is allowed and credentials embedded in the URL are
+    rejected - the same rule the IP-lookup templates are held to. Returns the
+    trimmed URL, or None for an empty value; raises ``ValueError`` on a bad one.
+    """
+    if not raw or not raw.strip():
+        return None
+    url = raw.strip()
+    lowered = url.lower()
+    if not (lowered.startswith("http://") or lowered.startswith("https://")):
+        raise ValueError("Portal URL must start with http:// or https://")
+    host_part = url.split("://", 1)[1].split("/", 1)[0]
+    if "@" in host_part:
+        raise ValueError("Portal URL must not contain embedded credentials")
+    return url
 
 
 async def save_quota_config(session: AsyncSession, config: QuotaConfig) -> QuotaConfig:
@@ -119,6 +150,10 @@ async def save_quota_config(session: AsyncSession, config: QuotaConfig) -> Quota
         "Percentages of the quota at which to alert")
     await _set(session, NOTIFY_SETTING_KEY, "true" if config.notify_telegram else "false",
                "Send quota threshold alerts to Telegram")
+    await _set(session, PORTAL_URL_SETTING_KEY, clean_portal_url(config.portal_url) or "",
+               "Link to the ISP usage/billing page or the modem's stats page")
+    await _set(session, PORTAL_LABEL_SETTING_KEY, (config.portal_label or "").strip()[:40],
+               "Short label for the ISP portal link button")
     await session.commit()
     return await get_quota_config(session)
 

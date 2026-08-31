@@ -151,6 +151,47 @@ async def test_analytics_api_endpoints(api_client: AsyncClient):
 
 
 @pytest.mark.asyncio
+async def test_quota_status_carries_a_consistent_end_of_cycle_forecast(api_client: AsyncClient):
+    """The strip's forecast: a conservative cycle-so-far projection plus an
+    'at current pace' figure. Asserted by self-consistency so the test does not
+    depend on the calendar date it runs on."""
+    from backend.app.db.models import RouterTrafficRollup
+    from backend.app.services.router_time import router_local_date
+
+    await api_client.post("/api/v1/analytics/billing-cycle", json={"anchor_day": 1})
+
+    LIMIT = 100 * 1024 ** 3
+    async with api_client.session_factory() as session:
+        today = await router_local_date(session)
+        # A single heavy day inside the current cycle.
+        session.add(RouterTrafficRollup(
+            router_id=1, record_date=today,
+            bytes_in=30 * 1024 ** 3, bytes_out=5 * 1024 ** 3,
+        ))
+        await session.commit()
+
+    await api_client.post(
+        "/api/v1/analytics/quota",
+        json={"limit_bytes": LIMIT, "thresholds": [80, 100], "notify_telegram": False},
+    )
+    q = (await api_client.get("/api/v1/analytics/quota")).json()["data"]
+
+    assert q["enabled"] is True
+    assert q["cycle_days_total"] >= 28
+    assert 1 <= q["cycle_days_elapsed"] <= q["cycle_days_total"]
+
+    used, total, elapsed = q["used_bytes"], q["cycle_days_total"], q["cycle_days_elapsed"]
+    # Headline projection is the cycle-so-far daily average held for the cycle.
+    assert q["projected_bytes_linear"] == int(used / elapsed * total)
+    assert q["projected_pct_linear"] == round(q["projected_bytes_linear"] / LIMIT * 100, 1)
+    assert q["on_track"] is (q["projected_bytes_linear"] <= LIMIT)
+    # "At current pace" is used-so-far plus the recent daily mean over the days
+    # left, so it can never come out below what is already spent.
+    assert q["projected_bytes_at_pace"] >= used
+    assert q["pace_bytes_per_day"] >= 0
+
+
+@pytest.mark.asyncio
 async def test_device_limit_and_pause_endpoints(api_client: AsyncClient):
     """Test POST /api/v1/devices/{id}/limit and POST /api/v1/devices/{id}/pause."""
     async with api_client.session_factory() as session:

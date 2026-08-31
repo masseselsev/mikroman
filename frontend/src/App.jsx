@@ -14,6 +14,7 @@ import { formatBytes } from './utils/formatters';
 import { mergeTelemetryIntoUsers } from './utils/telemetryMerge';
 import { SetupWizard } from './components/SetupWizard';
 import { AppFooter } from './components/AppFooter';
+import { QuotaStrip } from './components/QuotaStrip';
 import { Users, Laptop, Activity, BarChart2, Plus, AlertCircle, EyeOff, ChevronDown, ChevronRight, AlertTriangle } from 'lucide-react';
 
 export function App() {
@@ -228,6 +229,12 @@ export function App() {
           activeRouter={activeRouter}
           interfaces={interfaces}
           onNavigate={setActiveTab}
+        />
+
+        {/* ISP billing-cycle allowance - shows on every tab, only when set. */}
+        <QuotaStrip
+          activeRouterId={activeRouter?.id}
+          onOpenSettings={() => setSettingsModalOpen(true)}
         />
 
         {/* Tab Navigation */}

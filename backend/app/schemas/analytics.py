@@ -9,6 +9,8 @@ class QuotaConfigDTO(BaseModel):
     limit_bytes: int = Field(default=0, ge=0, description="Cycle allowance in bytes; 0 disables the quota")
     thresholds: List[int] = Field(default_factory=list, description="Percentages at which to alert, e.g. [50, 80, 100]")
     notify_telegram: bool = True
+    portal_url: Optional[str] = Field(default=None, description="Link to the ISP usage/billing page or the modem's stats page")
+    portal_label: Optional[str] = Field(default=None, max_length=40, description="Short label for the portal link button")
 
 
 class QuotaStatusDTO(BaseModel):
@@ -22,9 +24,26 @@ class QuotaStatusDTO(BaseModel):
     days_remaining: int = 0
     # Average daily allowance for the rest of the cycle to stay within quota.
     projected_daily_budget: int = 0
+    # --- end-of-cycle forecast -------------------------------------------------
+    # Length of the cycle and how much of it has passed (today counts).
+    cycle_days_total: int = 0
+    cycle_days_elapsed: int = 0
+    # Conservative projection: the cycle-so-far daily average, held for the whole
+    # cycle. This is the headline number and what `on_track` is judged on.
+    projected_bytes_linear: int = 0
+    projected_pct_linear: float = 0.0
+    # "At current pace": the mean of the last few days, extrapolated over the
+    # days left. Reacts fast to a binge; shown as a secondary figure.
+    pace_bytes_per_day: int = 0
+    projected_bytes_at_pace: int = 0
+    projected_pct_at_pace: float = 0.0
+    # True while the conservative projection lands at or under the limit.
+    on_track: bool = True
     thresholds: List[int] = Field(default_factory=list)
     thresholds_reached: List[int] = Field(default_factory=list)
     enabled: bool = False
+    portal_url: Optional[str] = None
+    portal_label: Optional[str] = None
     # Echoed back so the settings form can restore the saved choice. Without it
     # the UI had to assume a value, and assumed True - which silently re-enabled
     # Telegram alerts for anyone who had turned them off.

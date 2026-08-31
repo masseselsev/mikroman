@@ -47,7 +47,7 @@ export function SettingsModal({ isOpen, onClose, onReboot, onRoutersChanged }) {
 
   // Quota is kept apart from the key/value settings map because it has its own
   // endpoint and derived status, and is expressed in GB for the operator.
-  const [quota, setQuota] = useState({ limit_gb: 0, thresholds: [], notify_telegram: true });
+  const [quota, setQuota] = useState({ limit_gb: 0, thresholds: [], notify_telegram: true, portal_url: '', portal_label: '' });
 
   const loadQuota = async () => {
     try {
@@ -60,6 +60,8 @@ export function SettingsModal({ isOpen, onClose, onReboot, onRoutersChanged }) {
           // Telegram alerts off survived the save but not the next page load,
           // and the following save wrote the assumption back over the choice.
           notify_telegram: res.data.notify_telegram ?? true,
+          portal_url: res.data.portal_url || '',
+          portal_label: res.data.portal_label || '',
         });
       }
     } catch (e) {
@@ -146,6 +148,8 @@ export function SettingsModal({ isOpen, onClose, onReboot, onRoutersChanged }) {
         limit_bytes: Math.max(0, Math.round(quota.limit_gb * (1024 ** 3))),
         thresholds: quota.thresholds,
         notify_telegram: quota.notify_telegram,
+        portal_url: quota.portal_url.trim() || null,
+        portal_label: quota.portal_label.trim() || null,
       });
       // Only the user's own entries travel back; the built-in catalogue is the
       // server's and is reconstructed there.
@@ -459,6 +463,34 @@ export function SettingsModal({ isOpen, onClose, onReboot, onRoutersChanged }) {
                   />
                   {t('quota_notify_tg')}
                 </label>
+
+                {/* ISP / modem portal link shown as a button on the quota strip. */}
+                <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 8 }}>
+                  <div>
+                    <label className="form-label">{t('quota_portal_url')}</label>
+                    <input
+                      type="url"
+                      className="form-input font-mono"
+                      placeholder="https://my.isp.example/usage"
+                      value={quota.portal_url}
+                      onChange={e => setQuota({ ...quota, portal_url: e.target.value })}
+                    />
+                  </div>
+                  <div>
+                    <label className="form-label">{t('quota_portal_label')}</label>
+                    <input
+                      type="text"
+                      className="form-input"
+                      maxLength={40}
+                      placeholder={t('quota_portal_label_ph')}
+                      value={quota.portal_label}
+                      onChange={e => setQuota({ ...quota, portal_label: e.target.value })}
+                    />
+                  </div>
+                </div>
+                <p style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', marginTop: -2 }}>
+                  {t('quota_portal_hint')}
+                </p>
               </div>
 
               <div style={{ height: 1, background: 'var(--border-color)', margin: '6px 0' }}></div>

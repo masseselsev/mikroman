@@ -1,7 +1,7 @@
 from datetime import date
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.db.session import get_db
@@ -148,6 +148,21 @@ async def build_quota_status(db: AsyncSession, router_id: Optional[int] = None) 
     # includes what is left of the current day.
     days_remaining = max(0, (cycle_end - today).days + 1)
 
+    # --- end-of-cycle forecast ---------------------------------------------
+    cycle_days_total = max(1, (cycle_end - cycle_start).days + 1)
+    cycle_days_elapsed = min(cycle_days_total, max(1, (today - cycle_start).days + 1))
+    days_left_after_today = max(0, cycle_days_total - cycle_days_elapsed)
+
+    # Conservative: the average day so far, projected across the whole cycle.
+    avg_per_day = used / cycle_days_elapsed
+    projected_bytes_linear = int(avg_per_day * cycle_days_total)
+
+    # "At current pace": mean of up to the last 7 daily totals actually on
+    # record for this cycle, added to what is already used.
+    recent = [p.total_bytes for p in sorted(data.timeline, key=lambda p: p.record_date)][-7:]
+    pace_per_day = (sum(recent) / len(recent)) if recent else avg_per_day
+    projected_bytes_at_pace = int(used + pace_per_day * days_left_after_today)
+
     return QuotaStatusDTO(
         limit_bytes=limit,
         used_bytes=used,
@@ -157,10 +172,20 @@ async def build_quota_status(db: AsyncSession, router_id: Optional[int] = None) 
         cycle_end=cycle_end,
         days_remaining=days_remaining,
         projected_daily_budget=(max(0, limit - used) // days_remaining) if (limit and days_remaining) else 0,
+        cycle_days_total=cycle_days_total,
+        cycle_days_elapsed=cycle_days_elapsed,
+        projected_bytes_linear=projected_bytes_linear,
+        projected_pct_linear=round(projected_bytes_linear / limit * 100, 1) if limit else 0.0,
+        pace_bytes_per_day=int(pace_per_day),
+        projected_bytes_at_pace=projected_bytes_at_pace,
+        projected_pct_at_pace=round(projected_bytes_at_pace / limit * 100, 1) if limit else 0.0,
+        on_track=bool(limit) and projected_bytes_linear <= limit,
         thresholds=config.thresholds,
         thresholds_reached=await unfired_for_cycle(db, cycle_start),
         enabled=limit > 0,
         notify_telegram=config.notify_telegram,
+        portal_url=config.portal_url,
+        portal_label=config.portal_label,
     )
 
 
@@ -179,10 +204,15 @@ async def set_quota_config(
     router_id: Optional[int] = Query(None),
     db: AsyncSession = Depends(get_db)
 ):
-    """Set the ISP allowance and the percentages at which to warn."""
-    await save_quota_config(db, QuotaConfig(
-        limit_bytes=payload.limit_bytes,
-        thresholds=payload.thresholds,
-        notify_telegram=payload.notify_telegram,
-    ))
+    """Set the ISP allowance, the warning percentages, and the portal link."""
+    try:
+        await save_quota_config(db, QuotaConfig(
+            limit_bytes=payload.limit_bytes,
+            thresholds=payload.thresholds,
+            notify_telegram=payload.notify_telegram,
+            portal_url=payload.portal_url,
+            portal_label=payload.portal_label,
+        ))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
     return APIResponse(data=await build_quota_status(db, router_id))

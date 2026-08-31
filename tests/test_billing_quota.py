@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from backend.app.db.models import AppSetting, Base
 from backend.app.services.quota import (
     QuotaConfig,
+    clean_portal_url,
     crossed_thresholds,
     get_quota_config,
     parse_thresholds,
@@ -87,6 +88,35 @@ async def test_defaults_are_inert_when_nothing_is_configured(session):
     loaded = await get_quota_config(session)
     assert loaded.limit_bytes == 0
     assert loaded.thresholds == []
+    assert loaded.portal_url is None
+    assert loaded.portal_label is None
+
+
+@pytest.mark.asyncio
+async def test_portal_link_round_trips_and_clears(session):
+    await save_quota_config(session, QuotaConfig(
+        limit_bytes=100, thresholds=[80],
+        portal_url="https://my.isp.example/usage", portal_label="ISP usage",
+    ))
+    loaded = await get_quota_config(session)
+    assert loaded.portal_url == "https://my.isp.example/usage"
+    assert loaded.portal_label == "ISP usage"
+
+    # An empty URL removes the link rather than storing a blank href.
+    await save_quota_config(session, QuotaConfig(limit_bytes=100, portal_url="  "))
+    assert (await get_quota_config(session)).portal_url is None
+
+
+def test_clean_portal_url_rejects_anything_that_is_not_plain_http():
+    assert clean_portal_url(None) is None
+    assert clean_portal_url("") is None
+    assert clean_portal_url("https://modem.local/stats") == "https://modem.local/stats"
+    with pytest.raises(ValueError):
+        clean_portal_url("javascript:alert(1)")
+    with pytest.raises(ValueError):
+        clean_portal_url("ftp://host/x")
+    with pytest.raises(ValueError):
+        clean_portal_url("https://user:pass@host/x")  # embedded credentials
 
 
 @pytest.mark.asyncio
