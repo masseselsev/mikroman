@@ -7,8 +7,8 @@ An ultra-lightweight, high-performance companion app and Telegram bot for **Mikr
 | | Version | Why |
 |---|---|---|
 | **Minimum** | **7.1** | The release that first shipped the REST API this app speaks. Every other menu it uses predates RouterOS v7. |
-| **Recommended** | **7.13+** | The `wifiwave2` menu was renamed to `wifi` in 7.13. Below it the app falls back to the legacy `/interface/wireless` menu, which works but reports less. |
 | **RouterOS container deployment** | **7.4** | The `container` package. Not needed when running on a Docker host. |
+| **Recommended** | **7.13+** | The `wifiwave2` menu was renamed to `wifi` in 7.13. Below it the app falls back to the legacy `/interface/wireless` menu, which works but reports less. |
 | **Verified against** | **7.25** | hAP be³ Media. Newer releases are expected to work but are unverified — the app says so in the connection result. |
 
 The floor is **derived from the code**, not asserted here:
