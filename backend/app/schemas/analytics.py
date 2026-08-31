@@ -165,6 +165,21 @@ class AccountingHealth(BaseModel):
     pre_accounting_accounted_bytes: int = 0
 
 
+class RouterSelfTrafficSummary(BaseModel):
+    """Volume the router moved on its own behalf over the range.
+
+    DNS, NTP, package and cloud checks, DDNS, whatever the router's containers
+    pull, and MikroMan's own REST polling. It travels the input/output chains,
+    which per-device counters structurally cannot see, so before this was
+    measured it could only appear as part of the gap between the WAN total and
+    the sum of the devices.
+    """
+    bytes_in: int = 0
+    bytes_out: int = 0
+    total_bytes: int = 0
+    pct_of_total: float = 0.0
+
+
 class TrafficAnalyticsResponse(BaseModel):
     """Comprehensive historical traffic accounting across Gateway, Users, and Devices."""
     start_date: date
@@ -172,6 +187,7 @@ class TrafficAnalyticsResponse(BaseModel):
     range_preset: str
     billing_anchor_day: int
     gateway: GatewayTrafficSummary
+    router_self: RouterSelfTrafficSummary = RouterSelfTrafficSummary()
     users: List[UserTrafficSummary]
     devices: List[DeviceTrafficSummary]
     timeline: List[DailyTrafficPoint]

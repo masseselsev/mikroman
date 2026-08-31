@@ -17,6 +17,7 @@ from backend.app.db.models import (
 from backend.app.services.traffic_accounting import (
     TrafficAccountingService,
     parse_acct_comment,
+    parse_self_comment,
 )
 
 
@@ -115,20 +116,29 @@ async def test_sync_creates_one_rule_pair_per_device(session):
     svc = TrafficAccountingService(router, router_id=1)
 
     summary = await svc.sync_counter_rules(session)
-    assert summary["created"] == 2
+    # One pair for the device, plus one pair for the router's own input/output
+    # traffic on the monitored WAN interface.
+    assert summary["created"] == 4
 
     tags = {r.get("comment") for r in router.rules}
     assert f"mikroman:acct:dev_{device.id}:up" in tags
     assert f"mikroman:acct:dev_{device.id}:down" in tags
+    assert "mikroman:acct:self:up:ether1" in tags
+    assert "mikroman:acct:self:down:ether1" in tags
     # foreign rule untouched
     assert "special dummy rule to show fasttrack counters" in tags
     assert router.deleted == []
 
     # Rules must count without altering traffic.
     for rule in router.rules:
-        if (rule.get("comment") or "").startswith("mikroman:acct:"):
-            assert rule["action"] == "passthrough"
-            assert rule["chain"] == "forward"
+        comment = rule.get("comment") or ""
+        if not comment.startswith("mikroman:acct:"):
+            continue
+        assert rule["action"] == "passthrough"
+        # Device volume is forwarded traffic; the router's own is not, and
+        # matching it in `forward` would measure nothing at all.
+        expected = "forward" if parse_acct_comment(comment) else ("input", "output")
+        assert rule["chain"] == expected or rule["chain"] in expected
 
 
 @pytest.mark.asyncio
@@ -178,7 +188,10 @@ async def test_sync_prunes_rules_for_removed_devices(session):
 
     summary = await svc.sync_counter_rules(session)
     assert summary["removed"] == 2
-    assert not any((r.get("comment") or "").startswith("mikroman:acct:") for r in router.rules)
+    # The device's rules are gone; the router's own self-traffic pair is not a
+    # device rule and must survive a device going inactive.
+    assert not any(parse_acct_comment(r.get("comment")) for r in router.rules)
+    assert sum(1 for r in router.rules if parse_self_comment(r.get("comment"))) == 2
 
 
 @pytest.mark.asyncio
@@ -189,7 +202,8 @@ async def test_devices_without_router_id_are_still_accounted(session):
     svc = TrafficAccountingService(router, router_id=1)
 
     summary = await svc.sync_counter_rules(session)
-    assert summary["created"] == 2, "device with NULL router_id must still be accounted"
+    # 2 for the device + 2 for the router's own traffic.
+    assert summary["created"] == 4, "device with NULL router_id must still be accounted"
 
 
 @pytest.mark.asyncio
@@ -575,3 +589,124 @@ class TestOutageWithoutReboot:
 
         baselines = await TrafficAccountingService._load_baselines(session)
         assert f"{device.id}:down" not in baselines  # series closed cleanly
+
+
+# --- the router's own traffic -------------------------------------------------
+
+class TestRouterSelfTraffic:
+    """Volume the router generates or receives on its own behalf.
+
+    Per-device rules match the `forward` chain and so are structurally incapable
+    of seeing it: DNS, NTP, package checks, DDNS, whatever the router's own
+    containers pull, and MikroMan's REST polling all travel `input`/`output`.
+    That volume used to appear only as part of the unexplained gap between the
+    WAN interface total and the sum of the devices.
+    """
+
+    @pytest.mark.asyncio
+    async def test_self_rules_sit_in_the_input_and_output_chains(self, session):
+        await _seed(session)
+        router = FakeRouter()
+        svc = TrafficAccountingService(router, router_id=1)
+        await svc.sync_counter_rules(session)
+
+        by_tag = {r["comment"]: r for r in router.rules if parse_self_comment(r.get("comment"))}
+        assert set(by_tag) == {"mikroman:acct:self:down:ether1", "mikroman:acct:self:up:ether1"}
+
+        down = by_tag["mikroman:acct:self:down:ether1"]
+        assert down["chain"] == "input"
+        assert down["in-interface"] == "ether1"
+        assert down["action"] == "passthrough"
+
+        up = by_tag["mikroman:acct:self:up:ether1"]
+        assert up["chain"] == "output"
+        assert up["out-interface"] == "ether1"
+
+    @pytest.mark.asyncio
+    async def test_a_second_sync_does_not_duplicate_them(self, session):
+        await _seed(session)
+        router = FakeRouter()
+        svc = TrafficAccountingService(router, router_id=1)
+        await svc.sync_counter_rules(session)
+        second = await svc.sync_counter_rules(session)
+        assert second["created"] == 0
+        assert sum(1 for r in router.rules if parse_self_comment(r.get("comment"))) == 2
+
+    @pytest.mark.asyncio
+    async def test_self_volume_accumulates_as_deltas_into_its_own_rollup(self, session):
+        from backend.app.db.models import RouterSelfTrafficRollup
+
+        await _seed(session)
+        router = FakeRouter()
+        svc = TrafficAccountingService(router, router_id=1)
+        await svc.sync_counter_rules(session)
+
+        def set_self(direction, value):
+            tag = f"mikroman:acct:self:{direction}:ether1"
+            for r in router.rules:
+                if r.get("comment") == tag:
+                    r["bytes"] = str(value)
+
+        # First read establishes the baseline and credits nothing.
+        set_self("down", 1_000)
+        set_self("up", 400)
+        await svc.collect(session)
+        rows = (await session.execute(select(RouterSelfTrafficRollup))).scalars().all()
+        assert rows == []
+
+        set_self("down", 6_000)
+        set_self("up", 900)
+        await svc.collect(session)
+
+        rows = (await session.execute(select(RouterSelfTrafficRollup))).scalars().all()
+        assert len(rows) == 1
+        assert (rows[0].bytes_in, rows[0].bytes_out) == (5_000, 500)
+        assert rows[0].router_id == 1
+
+        # A second tick adds onto the same day's row rather than making another.
+        set_self("down", 6_500)
+        set_self("up", 900)
+        await svc.collect(session)
+        rows = (await session.execute(select(RouterSelfTrafficRollup))).scalars().all()
+        assert len(rows) == 1
+        assert (rows[0].bytes_in, rows[0].bytes_out) == (5_500, 500)
+
+    @pytest.mark.asyncio
+    async def test_the_rollup_is_found_again_when_the_router_id_is_null(self, session):
+        """`= NULL` matches nothing; without an IS NULL lookup this made a new
+        row every tick, turning one day into thousands of rows."""
+        from backend.app.db.models import RouterSelfTrafficRollup
+
+        await _seed(session, router_id=None)
+        router = FakeRouter()
+        svc = TrafficAccountingService(router, router_id=None)
+        await svc.sync_counter_rules(session)
+
+        def set_self(direction, value):
+            tag = f"mikroman:acct:self:{direction}:ether1"
+            for r in router.rules:
+                if r.get("comment") == tag:
+                    r["bytes"] = str(value)
+
+        set_self("down", 100)
+        await svc.collect(session)
+        for step in (200, 300, 400):
+            set_self("down", step)
+            await svc.collect(session)
+
+        rows = (await session.execute(select(RouterSelfTrafficRollup))).scalars().all()
+        assert len(rows) == 1, "one row per day, not one per collection tick"
+        assert rows[0].bytes_in == 300
+        assert rows[0].router_id is None
+
+
+def test_parse_self_comment_ignores_everything_else():
+    assert parse_self_comment("mikroman:acct:self:down:ether1") == ("down", "ether1")
+    assert parse_self_comment("mikroman:acct:self:up:pppoe-out1") == ("up", "pppoe-out1")
+    # A device tag has four segments, not five - the two parsers must not overlap.
+    assert parse_self_comment("mikroman:acct:dev_7:up") is None
+    assert parse_acct_comment("mikroman:acct:self:down:ether1") is None
+    assert parse_self_comment("mikroman:acct:self:sideways:ether1") is None
+    assert parse_self_comment("mikroman:acct:self:down:") is None
+    assert parse_self_comment("some user rule") is None
+    assert parse_self_comment(None) is None

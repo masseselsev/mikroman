@@ -218,3 +218,92 @@ async def test_the_banner_split_adds_up_to_the_breakdown_tables(session):
     # difference the banner has to explain rather than hide.
     assert h.measured_accounted_bytes < h.accounted_bytes
     assert h.pre_accounting_accounted_bytes > 0
+
+
+@pytest.mark.asyncio
+async def test_the_routers_own_traffic_counts_as_attributed(session):
+    """Volume in the input/output chains is measured and owned, so it closes a
+    real part of the gap rather than sitting in it.
+
+    Per-device rules match `forward` only, so DNS, NTP, updates and whatever the
+    router's containers pull could never appear in the device sum. Before this
+    was measured it looked identical to accounting having lost it.
+    """
+    from backend.app.db.models import RouterSelfTrafficRollup
+
+    session.add(Router(id=1, name="Main", host="10.0.0.1", username="u", password="p"))
+    user = User(name="Mark", speed_limit="unlimited")
+    session.add(user)
+    await session.commit()
+    await session.refresh(user)
+    device = Device(user_id=user.id, router_id=1, mac_address="AA:BB:CC:00:11:22",
+                    ip_address="192.168.88.50", is_active=True)
+    session.add(device)
+    session.add(AppSetting(key=STARTED_SETTING_KEY, value="2026-08-30"))
+    await session.commit()
+    await session.refresh(device)
+
+    day = date(2026, 8, 31)
+    session.add(RouterTrafficRollup(router_id=1, record_date=day, bytes_in=10 * GB, bytes_out=0))
+    session.add(DeviceTrafficRollup(device_id=device.id, record_date=day, bytes_in=8 * GB, bytes_out=0))
+    session.add(TrafficRollup(user_id=user.id, record_date=day, bytes_in=8 * GB, bytes_out=0))
+    # The router pulled 1.5 GB for itself that day.
+    session.add(RouterSelfTrafficRollup(router_id=1, record_date=day,
+                                        bytes_in=1 * GB, bytes_out=GB // 2))
+    await session.commit()
+
+    data = await AnalyticsEngine.get_historical_traffic(
+        session, start_date=day, end_date=day, router_id=1
+    )
+
+    assert data.router_self.total_bytes == GB + GB // 2
+    assert data.router_self.pct_of_total == pytest.approx(15.0, abs=0.1)
+
+    h = data.accounting_health
+    # 8 GB of devices + 1.5 GB of router = 9.5 of 10 GB, not 8 of 10.
+    assert h.accounted_bytes == 8 * GB + GB + GB // 2
+    assert h.coverage_pct == pytest.approx(95.0, abs=0.1)
+    assert h.status == "ok"
+
+
+@pytest.mark.asyncio
+async def test_router_traffic_lands_in_the_window_it_was_measured_in(session):
+    """Self-traffic is split per day like everything else.
+
+    Summing it only as a range total and subtracting would credit all of it to
+    the pre-accounting window, breaking the reconciliation the banner relies on.
+    """
+    from backend.app.db.models import RouterSelfTrafficRollup
+
+    session.add(Router(id=1, name="Main", host="10.0.0.1", username="u", password="p"))
+    user = User(name="Mark", speed_limit="unlimited")
+    session.add(user)
+    await session.commit()
+    await session.refresh(user)
+    device = Device(user_id=user.id, router_id=1, mac_address="AA:BB:CC:00:11:22",
+                    ip_address="192.168.88.50", is_active=True)
+    session.add(device)
+    session.add(AppSetting(key=STARTED_SETTING_KEY, value="2026-08-30"))
+    await session.commit()
+    await session.refresh(device)
+
+    early, late = date(2026, 8, 29), date(2026, 8, 31)
+    for day, gw, dev, selfy in ((early, 20 * GB, 0, 0), (late, 10 * GB, 8 * GB, 1 * GB)):
+        session.add(RouterTrafficRollup(router_id=1, record_date=day, bytes_in=gw, bytes_out=0))
+        if dev:
+            session.add(DeviceTrafficRollup(device_id=device.id, record_date=day, bytes_in=dev, bytes_out=0))
+            session.add(TrafficRollup(user_id=user.id, record_date=day, bytes_in=dev, bytes_out=0))
+        if selfy:
+            session.add(RouterSelfTrafficRollup(router_id=1, record_date=day, bytes_in=selfy, bytes_out=0))
+    await session.commit()
+
+    h = (await AnalyticsEngine.get_historical_traffic(
+        session, start_date=early, end_date=late, router_id=1
+    )).accounting_health
+
+    # The router's gigabyte was measured on the 31st, inside the window.
+    assert h.measured_accounted_bytes == 9 * GB
+    assert h.measured_bytes == 10 * GB
+    assert h.coverage_pct == pytest.approx(90.0, abs=0.1)
+    # And the halves still reconstruct the range total exactly.
+    assert h.measured_accounted_bytes + h.pre_accounting_accounted_bytes == h.accounted_bytes

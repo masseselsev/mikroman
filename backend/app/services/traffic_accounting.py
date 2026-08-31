@@ -38,6 +38,7 @@ from backend.app.db.models import (
     AppSetting,
     Device,
     DeviceTrafficRollup,
+    RouterSelfTrafficRollup,
     TrafficRollup,
 )
 from backend.app.services.router_time import router_local_date
@@ -71,6 +72,44 @@ REBOOT_SLACK_SECONDS = 90
 # the *destination* of its downloads.
 DIRECTION_FIELDS = {"up": "src-address", "down": "dst-address"}
 
+# --- the router's own traffic ------------------------------------------------
+#
+# Per-device rules match the `forward` chain, which by construction only sees
+# traffic passing *through* the router. Everything the router does on its own
+# behalf - DNS, NTP, package and cloud checks, DDNS, whatever its containers
+# pull, and MikroMan's own REST polling - travels `input` and `output` instead
+# and was therefore invisible to per-device accounting, surfacing only as part
+# of the unexplained gap between the WAN interface total and the sum of the
+# devices. One passthrough pair per monitored WAN interface names that volume.
+SELF_COMMENT = "mikroman:acct:self:{direction}:{interface}"
+# direction -> (chain, interface match field). The router is the *destination*
+# of what it downloads (arriving on the WAN port) and the *source* of what it
+# sends (leaving by it).
+SELF_DIRECTION_RULES = {
+    "down": ("input", "in-interface"),
+    "up": ("output", "out-interface"),
+}
+
+
+def parse_self_comment(comment: Optional[str]) -> Optional[Tuple[str, str]]:
+    """Parse a router self-traffic tag into ``(direction, interface)``.
+
+    Separate from :func:`parse_acct_comment` rather than folded into it: these
+    rules have no device, live in different chains, and match on an interface
+    instead of an address, so a single parser returning a union type would push
+    that difference onto every caller.
+    """
+    if not comment or not comment.startswith(ACCT_PREFIX):
+        return None
+    parts = comment.split(":")
+    # mikroman : acct : self : <direction> : <interface>
+    if len(parts) != 5 or parts[2] != "self":
+        return None
+    direction, interface = parts[3], parts[4]
+    if direction not in SELF_DIRECTION_RULES or not interface:
+        return None
+    return direction, interface
+
 
 def parse_acct_comment(comment: Optional[str]) -> Optional[Tuple[int, str]]:
     """Parse an accounting rule comment into ``(device_id, direction)``.
@@ -81,7 +120,7 @@ def parse_acct_comment(comment: Optional[str]) -> Optional[Tuple[int, str]]:
     if not comment or not comment.startswith(ACCT_PREFIX):
         return None
     parts = comment.split(":")
-    # mikroman : acct : dev_<id> : <direction>
+    # mikroman : acct : dev_<id> : <direction>   (self-traffic tags have 5 parts)
     if len(parts) != 4 or not parts[2].startswith("dev_"):
         return None
     try:
@@ -205,6 +244,26 @@ class TrafficAccountingService:
         result = await session.execute(stmt)
         return [d for d in result.scalars().all() if (d.ip_address or "").strip()]
 
+    async def _monitored_interfaces(self, session: AsyncSession) -> List[str]:
+        """WAN interfaces to measure the router's own traffic on.
+
+        The same setting the gateway rollups are measured from, so the two
+        figures describe the same link and can be compared meaningfully.
+        """
+        key = (
+            f"monitored_interfaces_{self.router_id}"
+            if self.router_id else "monitored_interfaces_default"
+        )
+        setting = await session.get(AppSetting, key)
+        if setting and setting.value:
+            try:
+                names = json.loads(setting.value)
+                if isinstance(names, list) and names:
+                    return [str(n) for n in names]
+            except (json.JSONDecodeError, TypeError):
+                logger.debug(f"Could not parse {key} for self-traffic accounting")
+        return ["ether1"]
+
     async def sync_counter_rules(self, session: AsyncSession) -> Dict[str, int]:
         """Create, correct and prune the per-device accounting rules.
 
@@ -224,12 +283,37 @@ class TrafficAccountingService:
             return {"created": 0, "updated": 0, "removed": 0}
 
         existing: Dict[Tuple[int, str], Dict[str, Any]] = {}
+        existing_self: Dict[Tuple[str, str], Dict[str, Any]] = {}
         for rule in rules:
             parsed = parse_acct_comment(rule.get("comment"))
             if parsed:
                 existing[parsed] = rule
+                continue
+            parsed_self = parse_self_comment(rule.get("comment"))
+            if parsed_self:
+                existing_self[parsed_self] = rule
 
         created = updated = removed = 0
+
+        # The router's own input/output traffic, one passthrough pair per WAN
+        # interface. Created before the device rules are pruned so a freshly
+        # monitored interface starts counting on the same tick it is added.
+        for interface in await self._monitored_interfaces(session):
+            for direction, (chain, field) in SELF_DIRECTION_RULES.items():
+                if (direction, interface) in existing_self:
+                    continue
+                try:
+                    await self.router_client.create_mangle_rule({
+                        "chain": chain,
+                        "action": "passthrough",
+                        field: interface,
+                        "comment": SELF_COMMENT.format(direction=direction, interface=interface),
+                    })
+                    created += 1
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to create self-traffic rule for {interface} ({direction}): {e}"
+                    )
 
         # Create or correct
         for key, ip in desired.items():
@@ -470,18 +554,23 @@ class TrafficAccountingService:
             return {"devices": 0, "bytes_in": 0, "bytes_out": 0}
 
         readings: Dict[int, Dict[str, int]] = {}
+        # (direction, interface) -> counter, for the router's own input/output.
+        self_readings: Dict[Tuple[str, str], int] = {}
         for rule in rules:
-            parsed = parse_acct_comment(rule.get("comment"))
-            if not parsed:
-                continue
-            device_id, direction = parsed
             try:
                 value = int(rule.get("bytes", 0) or 0)
             except (TypeError, ValueError):
                 continue
-            readings.setdefault(device_id, {})[direction] = value
+            parsed = parse_acct_comment(rule.get("comment"))
+            if parsed:
+                device_id, direction = parsed
+                readings.setdefault(device_id, {})[direction] = value
+                continue
+            parsed_self = parse_self_comment(rule.get("comment"))
+            if parsed_self:
+                self_readings[parsed_self] = value
 
-        if not readings:
+        if not readings and not self_readings:
             return {"devices": 0, "bytes_in": 0, "bytes_out": 0}
 
         baselines = await self._load_baselines(session)
@@ -516,10 +605,26 @@ class TrafficAccountingService:
             if down or up:
                 per_device[device_id] = (down, up)
 
+        # The router's own traffic, summed across every monitored WAN interface.
+        self_down = self_up = 0
+        for (direction, interface), current in self_readings.items():
+            key = f"self:{direction}:{interface}"
+            delta = self.compute_delta(current, baselines.get(key), reset=rebooted)
+            baselines[key] = current
+            if direction == "down":
+                self_down += delta
+            else:
+                self_up += delta
+
         if router_uptime_seconds is not None:
             baselines[UPTIME_BASELINE_KEY] = router_uptime_seconds
 
         total_in, total_out = await self._flush_deltas(session, today, per_device)
+        if self_down or self_up:
+            await self._add_rollup(
+                session, RouterSelfTrafficRollup, "router_id", self.router_id,
+                today, self_down, self_up,
+            )
 
         await self._save_baselines(session, baselines)
         await session.commit()
@@ -585,14 +690,21 @@ class TrafficAccountingService:
         session: AsyncSession,
         model: Any,
         fk_name: str,
-        fk_value: int,
+        fk_value: Optional[int],
         record_date: date,
         bytes_in: int,
         bytes_out: int,
     ) -> None:
-        """Add today's delta onto the existing daily rollup row, or create it."""
+        """Add today's delta onto the existing daily rollup row, or create it.
+
+        ``fk_value`` may be None for router self-traffic on a single-router
+        install that predates multi-router support, so the lookup has to use
+        ``IS NULL`` - ``= NULL`` matches nothing and would create a fresh row on
+        every tick, turning one day's rollup into thousands.
+        """
+        column = getattr(model, fk_name)
         stmt = select(model).where(
-            getattr(model, fk_name) == fk_value,
+            column.is_(None) if fk_value is None else column == fk_value,
             model.record_date == record_date,
         )
         existing = (await session.execute(stmt)).scalar_one_or_none()

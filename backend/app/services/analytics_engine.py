@@ -19,6 +19,7 @@ from backend.app.schemas.analytics import (
     DailyTrafficPoint,
     DeviceTrafficSummary,
     GatewayTrafficSummary,
+    RouterSelfTrafficSummary,
     TrafficAnalyticsResponse,
     UserTrafficSummary,
 )
@@ -187,6 +188,12 @@ class AnalyticsEngine:
         r_daily_map = daily["router"]
         u_daily_map = daily["user"]
         d_daily_map = daily["device"]
+        s_daily_map = daily["self"]
+
+        # Summed from the per-day map rather than queried again, so the range
+        # total and the coverage split can never describe different volumes.
+        self_in = sum(v[0] for v in s_daily_map.values())
+        self_out = sum(v[1] for v in s_daily_map.values())
 
         # The gateway total is the timeline summed, so the headline figure and
         # the chart under it are the same number by construction.
@@ -222,8 +229,11 @@ class AnalyticsEngine:
         sum_dev_out = sum(v[1] for v in dev_totals.values())
         sum_user_in = sum(v[0] for v in user_totals.values())
         sum_user_out = sum(v[1] for v in user_totals.values())
-        accounted_in = max(sum_dev_in, sum_user_in)
-        accounted_out = max(sum_dev_out, sum_user_out)
+        # The router's own traffic is attributed volume like any other: it is
+        # measured, and it belongs to something. Leaving it out of the numerator
+        # would report a coverage gap that has in fact been closed.
+        accounted_in = max(sum_dev_in, sum_user_in) + self_in
+        accounted_out = max(sum_dev_out, sum_user_out) + self_out
 
         has_gateway_sample = (r_gw_in + r_gw_out) > 0
         if has_gateway_sample:
@@ -254,7 +264,7 @@ class AnalyticsEngine:
             measured_accounted = max(
                 rollups.sum_window(d_daily_map, after=started),
                 rollups.sum_window(u_daily_map, after=started),
-            )
+            ) + rollups.sum_window(s_daily_map, after=started)
             # The remainder of the range total, rather than an independent sum
             # of the earlier days. The two figures then always add back up to
             # the number the user and device tables show, which is what lets a
@@ -334,6 +344,14 @@ class AnalyticsEngine:
             except Exception:
                 monitored_ifaces = []
 
+        self_total = self_in + self_out
+        router_self = RouterSelfTrafficSummary(
+            bytes_in=self_in,
+            bytes_out=self_out,
+            total_bytes=self_total,
+            pct_of_total=round((self_total / gateway_total * 100), 2) if gateway_total > 0 else 0.0,
+        )
+
         gateway_summary = GatewayTrafficSummary(
             total_bytes_in=gateway_in,
             total_bytes_out=gateway_out,
@@ -347,6 +365,7 @@ class AnalyticsEngine:
             range_preset=range_preset,
             billing_anchor_day=anchor_day,
             gateway=gateway_summary,
+            router_self=router_self,
             users=user_summaries,
             devices=device_summaries,
             timeline=timeline,

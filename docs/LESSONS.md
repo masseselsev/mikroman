@@ -374,3 +374,48 @@ either, because nothing rendered those components. Two guards now exist:
 each file imports or defines. Lesson: "it builds" proves nothing about a
 component move; only rendering does. Write the render test before the move, not
 after.
+
+**[2026-09-01] Problem:** RouterOS containers would have shown up as ordinary
+network clients. **Solution:** a container's `veth` end answers ARP with a MAC
+and an IP and is indistinguishable from a laptop by every signal discovery
+uses. Left alone it would create a device record, queue in the unassigned inbox
+asking to be assigned to a family member, and get a quarantine queue. The
+interface *type* is the one thing that separates them, so discovery reads
+`/interface`, collects the `veth` names, and flags anything seen on one as
+`is_container`. Suppressing the record instead would have been wrong - it would
+lose the container's traffic, which is real and forwarded like any other. It
+belongs to the router, not to a person, so it is listed separately and excluded
+from the household breakdown. Lesson: when a new kind of thing starts appearing
+in an existing pipeline, decide where it belongs *before* it arrives; the
+default of "it looks like a client, so it is one" is a decision too.
+
+**[2026-09-01] Problem:** How to run an internet speed test on a router whose
+API has no way to execute a command inside a container. **Solution:** RouterOS
+has no internet speed test at all - `/tool/speed-test` and
+`/tool/bandwidth-test` measure against *another RouterOS device*. Ookla's CLI
+answers the real question, and RouterOS 7.4+ runs OCI containers, but there is
+no `docker exec` over REST and `/container/shell` is console-only. What made it
+work was noticing that the purpose-built image *runs once and exits*: start the
+container over REST, and read its stdout out of `/log`. Two caveats found while
+building it: RouterOS ships no `container` logging action, so without adding one
+the output is produced and discarded; and the log is a ring buffer that still
+holds the *previous* run's numbers, so the ids present before the start must be
+recorded and excluded or a stale measurement is returned instantly as a fresh
+one. Lesson: when an API seems to be missing the verb you need, check whether
+the thing you are driving can be shaped to fit the verbs that exist.
+
+**[2026-09-01] Problem:** Per-device accounting can never see the router's own
+traffic. **Solution:** the accounting rules match `chain=forward`, which by
+definition only carries traffic passing *through* the router. DNS, NTP, package
+and cloud checks, DDNS, container image pulls and MikroMan's own REST polling
+all travel `input`/`output`, so none of it could ever appear in the device sum -
+it could only ever look like accounting having lost it. A
+`mikroman:acct:self:{direction}:{interface}` passthrough pair per monitored WAN
+interface names it. Two details mattered: the self-traffic rollup has to be
+split *per day* like every other level, because coverage is judged over a
+sub-window and a range total cannot be split back into days; and `_add_rollup`
+needed an `IS NULL` lookup, since `router_id` is nullable on single-router
+installs and `= NULL` matches nothing - which would have created a new row on
+every tick instead of finding the day's. Lesson: an unexplained gap in a
+measurement is a question, not a constant. Ask what the instrument is
+structurally incapable of seeing.

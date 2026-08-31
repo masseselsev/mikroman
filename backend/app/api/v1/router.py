@@ -5,6 +5,7 @@ from backend.app.api.v1.endpoints.containers import router as containers_router
 from backend.app.api.v1.endpoints.devices import router as devices_router
 from backend.app.api.v1.endpoints.metrics import router as metrics_router
 from backend.app.api.v1.endpoints.routers import router as routers_router
+from backend.app.api.v1.endpoints.speedtest import router as speedtest_router
 from backend.app.api.v1.endpoints.system import router as system_router
 from backend.app.api.v1.endpoints.telegram import router as telegram_router
 from backend.app.api.v1.endpoints.traffic import router as traffic_router
@@ -20,3 +21,4 @@ api_v1_router.include_router(telegram_router)
 api_v1_router.include_router(metrics_router)
 api_v1_router.include_router(analytics_router)
 api_v1_router.include_router(containers_router)
+api_v1_router.include_router(speedtest_router)

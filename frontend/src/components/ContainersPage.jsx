@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { api } from '../api/client';
+import { ContainerWorkloads } from './ContainerWorkloads';
 import { useI18n } from '../context/I18nContext';
 import {
   Container as ContainerIcon,
@@ -315,6 +316,11 @@ export function ContainersPage({ activeRouter }) {
           </tbody>
         </table>
       </div>
+
+      {/* Devices discovery found on veth interfaces - the containers above,
+          seen from the network side. Kept out of the unassigned inbox, which
+          is for devices that belong to somebody. */}
+      <ContainerWorkloads />
 
       {/* Reference panels: the router's container config, and the mount / env
           definitions a new container can attach by name. */}

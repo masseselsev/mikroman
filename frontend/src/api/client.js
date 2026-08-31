@@ -47,6 +47,19 @@ export const api = {
   createContainer: (routerId, payload) =>
     request(`/routers/${routerId}/containers`, { method: 'POST', body: JSON.stringify(payload) }),
 
+  // Speed test (runs in a container on the router, so it measures the ISP link
+  // rather than the path from the router to this browser).
+  getSpeedTestStatus: (routerId) => request(`/routers/${routerId}/speedtest`),
+  // A run blocks for as long as the test takes - up to a couple of minutes.
+  // `fetch` imposes no timeout of its own, so nothing here needs to raise one;
+  // the backend caps the wait and returns a 'timeout' result rather than hanging.
+  runSpeedTest: (routerId) =>
+    request(`/routers/${routerId}/speedtest/run`, { method: 'POST' }),
+  createSpeedTestContainer: (routerId, payload) =>
+    request(`/routers/${routerId}/speedtest/container`, { method: 'POST', body: JSON.stringify(payload) }),
+  getSpeedTestHistory: (routerId, limit = 20) =>
+    request(`/routers/${routerId}/speedtest/history?limit=${limit}`),
+
   // Users
   getUsers: () => request('/users'),
   createUser: (data) => request('/users', { method: 'POST', body: JSON.stringify(data) }),
@@ -55,7 +68,11 @@ export const api = {
   deleteUser: (id) => request(`/users/${id}`, { method: 'DELETE' }),
 
   // Devices
-  getDevices: (unassignedOnly = false, showHidden = true) => request(`/devices?unassigned_only=${unassignedOnly}&show_hidden=${showHidden}`),
+  // `kind` defaults to 'client' server-side: containers are router workloads,
+  // not people's devices, and must not queue in the unassigned inbox.
+  getDevices: (unassignedOnly = false, showHidden = true, kind = 'client') =>
+    request(`/devices?unassigned_only=${unassignedOnly}&show_hidden=${showHidden}&kind=${kind}`),
+  getContainerDevices: () => request('/devices?kind=container&show_hidden=true'),
   scanNetwork: () => request('/devices/scan', { method: 'POST' }),
   updateDevice: (id, data) => request(`/devices/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
   deleteDevice: (id) => request(`/devices/${id}`, { method: 'DELETE' }),

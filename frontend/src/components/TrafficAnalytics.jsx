@@ -146,6 +146,9 @@ export function TrafficAnalytics({ activeRouter }) {
   const users = data?.users || [];
   const devices = data?.devices || [];
   const timeline = data?.timeline || [];
+  // What the router moved for itself: DNS, NTP, updates, its own containers.
+  // Measured separately because per-device counters structurally cannot see it.
+  const routerSelf = data?.router_self || { total_bytes: 0, pct_of_total: 0 };
 
   // Filter devices
   const filteredDevices = devices.filter(d => {
@@ -423,6 +426,7 @@ export function TrafficAnalytics({ activeRouter }) {
               timeline={timeline}
               users={users}
               devices={devices}
+              routerSelf={routerSelf}
             />
           )}
 

@@ -1,6 +1,6 @@
 import logging
 from datetime import datetime, timezone
-from typing import List
+from typing import List, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, select, update
@@ -47,9 +47,17 @@ async def list_devices(
     unassigned_only: bool = False,
     active_only: bool = False,
     show_hidden: bool = False,
+    kind: Literal["client", "container", "all"] = "client",
     db: AsyncSession = Depends(get_db)
 ):
-    """List network devices with optional unassigned/active/hidden filtering."""
+    """List network devices with optional unassigned/active/hidden filtering.
+
+    ``kind`` splits network clients from the router's own container workloads.
+    It defaults to ``client`` because that is what every existing view wants:
+    nobody is going to assign a container to a family member, and letting them
+    queue in the unassigned inbox teaches the operator to ignore that queue.
+    The containers page asks for ``container``; ``all`` is for diagnostics.
+    """
     query = select(Device).options(selectinload(Device.history))
     if unassigned_only:
         query = query.where(Device.user_id.is_(None))
@@ -57,6 +65,8 @@ async def list_devices(
         query = query.where(Device.is_active.is_(True))
     if not show_hidden:
         query = query.where(Device.is_hidden.is_(False))
+    if kind != "all":
+        query = query.where(Device.is_container.is_(kind == "container"))
 
     result = await db.execute(query)
     devices = list(result.scalars().all())

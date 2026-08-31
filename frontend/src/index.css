@@ -1852,3 +1852,120 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+/* ---------------------------------------------------------------------------
+   Speed test badge on the WAN IP tile
+
+   Sits in a tile's subtitle line, so everything here is sized to fit a 2xs
+   context without changing the tile's height.
+   ------------------------------------------------------------------------ */
+.speedtest-row,
+.speedtest-note {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: var(--fs-2xs);
+  color: var(--text-muted);
+  min-width: 0;
+}
+
+.speedtest-figures {
+  font-weight: 700;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.speedtest-sep {
+  opacity: 0.4;
+  margin: 0 2px;
+}
+
+.speedtest-unit {
+  font-weight: 500;
+  opacity: 0.7;
+}
+
+.speedtest-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 6px;
+  border-radius: var(--radius-xl);
+  border: 1px solid var(--border-color);
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-size: var(--fs-2xs);
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: border-color 0.15s ease, color 0.15s ease;
+}
+
+.speedtest-btn:hover:not(:disabled) {
+  border-color: var(--border-focus);
+  color: var(--text-primary);
+}
+
+.speedtest-btn:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+
+.speedtest-error {
+  color: var(--color-danger);
+  display: inline-flex;
+}
+
+/* A container workload is not somebody's device; mark it as such wherever it
+   appears next to real clients. */
+.container-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 0 5px;
+  border-radius: var(--radius-xs);
+  background: rgba(155, 89, 182, 0.18);
+  color: #b07cc6;
+  border: 1px solid rgba(155, 89, 182, 0.32);
+  font-size: var(--fs-3xs);
+  font-weight: 700;
+}
+
+/* The router's own input/output volume: one line above the breakdown, because
+   it belongs to the same total but to nobody in the household. */
+.router-self-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
+  border: 1px solid var(--border-color);
+  border-left: 3px solid #9b59b6;
+  border-radius: var(--radius-md);
+  background: var(--bg-secondary);
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+  min-width: 0;
+}
+
+.router-self-label {
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.router-self-value {
+  font-weight: 800;
+  color: var(--text-primary);
+}
+
+.router-self-pct {
+  font-weight: 700;
+  color: #b07cc6;
+}
+
+.router-self-note {
+  font-size: var(--fs-2xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}

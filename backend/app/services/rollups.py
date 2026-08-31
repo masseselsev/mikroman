@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.db.models import (
     DeviceTrafficRollup,
+    RouterSelfTrafficRollup,
     RouterTrafficRollup,
     TrafficRollup,
 )
@@ -90,7 +91,13 @@ async def daily_totals(
     *,
     router_id: Optional[int] = None,
 ) -> Dict[str, Dict[date, Volume]]:
-    """Every level's per-day volume in one call, keyed ``router``/``user``/``device``."""
+    """Every level's per-day volume in one call.
+
+    Keyed ``router`` (the WAN interface total), ``user``, ``device``, and
+    ``self`` (what the router moved on its own behalf). All four are needed per
+    day rather than only in total, because coverage is judged over a sub-window
+    of the range and a total cannot be split back into days.
+    """
     return {
         "router": await sum_by(
             session, RouterTrafficRollup, RouterTrafficRollup.record_date,
@@ -102,6 +109,10 @@ async def daily_totals(
         "device": await sum_by(
             session, DeviceTrafficRollup, DeviceTrafficRollup.record_date,
             start_date, end_date,
+        ),
+        "self": await sum_by(
+            session, RouterSelfTrafficRollup, RouterSelfTrafficRollup.record_date,
+            start_date, end_date, router_id=router_id,
         ),
     }
 

@@ -133,6 +133,7 @@ async def init_db() -> None:
                     "linked_to_device_id": "INTEGER",
                     "connection_kind": "VARCHAR(20)",
                     "wifi_links": "TEXT",
+                    "is_container": "BOOLEAN NOT NULL DEFAULT 0",
                 }
                 for column, ddl in additions.items():
                     if column not in columns:

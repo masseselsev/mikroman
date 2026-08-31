@@ -85,6 +85,14 @@ class Device(Base):
         Integer, ForeignKey("devices.id", ondelete="SET NULL"), nullable=True, index=True
     )
     connection_kind: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)  # 'wired' | 'wireless'
+    # A workload running on the router itself, reached over a `veth` interface,
+    # rather than a client on the network. Discovery cannot tell the difference
+    # from the ARP table alone - a container answers there exactly like a laptop
+    # does - so this is set from the interface type. Containers are kept out of
+    # the unassigned inbox and the household breakdown: nobody owns them, and
+    # letting them queue up for assignment trains the operator to ignore that
+    # queue.
+    is_container: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     # Radio links of the current wireless association. A WiFi 7 multi-link
     # client is bonded over several radios at once, each with its own signal.
     wifi_links: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
@@ -194,6 +202,60 @@ class RouterTrafficRollup(Base):
     record_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
     bytes_in: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)   # Download
     bytes_out: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)  # Upload
+
+
+class RouterSelfTrafficRollup(Base):
+    """Traffic the router generated or received on its own behalf, per day.
+
+    Per-device accounting matches the ``forward`` chain, which by definition
+    only sees traffic passing *through* the router. Everything the router does
+    for itself - DNS resolution, NTP, package checks, cloud/DDNS, the REST calls
+    MikroMan itself makes - travels the ``input`` and ``output`` chains and was
+    therefore invisible to it, showing up only as part of the gap between the
+    WAN interface total and the sum of the devices.
+
+    Measured with its own pair of passthrough rules so that gap can be named
+    instead of guessed at.
+    """
+    __tablename__ = "router_self_traffic_rollups"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    router_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("routers.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    record_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    bytes_in: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)   # Download
+    bytes_out: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)  # Upload
+
+
+class SpeedTestResult(Base):
+    """One completed WAN speed test, run from a container on the router itself.
+
+    Kept as history rather than a single latest value: a speed test is a sample
+    of a noisy quantity, and one reading says much less than a trend does.
+    """
+    __tablename__ = "speed_test_results"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    router_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("routers.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), nullable=False, index=True)
+    download_mbps: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    upload_mbps: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    ping_ms: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    jitter_ms: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    packet_loss_pct: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    server_name: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    isp: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    result_url: Mapped[Optional[str]] = mapped_column(String(300), nullable=True)
+    # 'ok' | 'failed' | 'timeout' - a failed run is still worth recording, so a
+    # run that never produces a figure is distinguishable from one never started.
+    status: Mapped[str] = mapped_column(String(20), default="ok", nullable=False)
+    error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Raw container output, kept so a parser change can be checked against real
+    # output rather than against what we assumed the output looked like.
+    raw_output: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
 
 class AppSetting(Base):

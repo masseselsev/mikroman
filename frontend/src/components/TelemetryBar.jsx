@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useI18n } from '../context/I18nContext';
+import { SpeedTestBadge } from './SpeedTestBadge';
 import { api } from '../api/client';
 import { formatSpeed, formatUptime } from '../utils/formatters';
 import { buildLookupUrl } from '../utils/ipLookup';
@@ -143,6 +144,8 @@ function Tile({ icon, tone, label, value, sub, history, historyMax, onClick, tit
  *                    leads to the users and their traffic.
  */
 export function TelemetryBar({ router, activeRouter, interfaces = [], onNavigate }) {
+  // The speed test acts on a specific router record, not on the telemetry frame.
+  const activeRouterId = activeRouter?.id;
   const { t, lang } = useI18n();
   const [modalOpen, setModalOpen] = useState(false);
   const [availableIfaces, setAvailableIfaces] = useState([]);
@@ -417,6 +420,11 @@ export function TelemetryBar({ router, activeRouter, interfaces = [], onNavigate
               ? <PublicIpLink key="pub" ip={router.public_ip} service={lookupService} t={t} />
               : null,
             router.isp || null,
+            // The line's measured speed belongs with its address and its owner:
+            // three facts about the same link.
+            activeRouterId
+              ? <SpeedTestBadge key="speedtest" routerId={activeRouterId} />
+              : null,
             !router.public_ip && !router.isp ? (router.version || '') : null
           ]}
         />

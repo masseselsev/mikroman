@@ -144,6 +144,28 @@ class DeviceManager(DeviceConsolidationMixin):
                 logger.debug(f"Could not parse {key}; falling back to default WAN interface")
         return {"ether1"}
 
+    async def _get_container_interfaces(self) -> set:
+        """Names of ``veth`` interfaces - the router-side end of a container.
+
+        RouterOS attaches each container to a ``veth`` pair and gives the router
+        an address on it, so the container shows up in the ARP table with a MAC
+        and an IP and is indistinguishable from a network client by any other
+        signal. The interface *type* is the one thing that tells them apart.
+
+        Returns an empty set on any failure, which degrades to the previous
+        behaviour (containers treated as ordinary devices) rather than losing
+        real clients because one call did not answer.
+        """
+        try:
+            interfaces = await self.router_client.get_interfaces()
+        except Exception as e:
+            logger.debug(f"Could not read interfaces to identify containers: {e}")
+            return set()
+        return {
+            iface.name for iface in interfaces
+            if (getattr(iface, "type", "") or "").lower() == "veth"
+        }
+
     async def _adopt_rotation(
         self,
         session: AsyncSession,
@@ -256,8 +278,17 @@ class DeviceManager(DeviceConsolidationMixin):
             if (a.interface or "") not in wan_interfaces and a.complete
         ]
 
+        # Interfaces that carry a container rather than a client. A container's
+        # veth end answers ARP exactly like a laptop does, so without this every
+        # workload the operator runs on the router queues up in the unassigned
+        # inbox asking to be given to somebody.
+        container_interfaces = await self._get_container_interfaces()
+
         wifi_map = {w.mac_address: w for w in wifis}
         arp_map = {a.mac_address: a for a in arps}
+        container_macs = {
+            a.mac_address for a in arps if (a.interface or "") in container_interfaces
+        }
 
         # Every address the router can see right now, across all three tables.
         # Computed up front because rotation detection needs to ask whether a
@@ -488,6 +519,24 @@ class DeviceManager(DeviceConsolidationMixin):
             device.is_active = (mac in active_macs)
             if device.is_active:
                 device.last_seen = now_utc
+
+        # Flag whatever answered on a veth interface as a container. Done in one
+        # pass at the end rather than at each creation site: a device can be
+        # discovered through the lease table, the ARP table or both, and the
+        # interface evidence only lives in the ARP entry.
+        for mac in container_macs:
+            device = db_devices.get(mac)
+            if device is not None and not device.is_container:
+                device.is_container = True
+                logger.info(
+                    f"{device.hostname or mac} answered on a container interface; "
+                    f"classifying it as a router workload, not a network client"
+                )
+        # A container that was rehomed onto an ordinary interface stops being one.
+        for mac in active_macs - container_macs:
+            device = db_devices.get(mac)
+            if device is not None and device.is_container:
+                device.is_container = False
 
         # Remember any pair of same-named private-MAC devices that were both
         # online in this sweep. That is the evidence consolidation needs to keep

@@ -6,7 +6,7 @@ hardware identity cannot change while the router is up, and it is asked for on
 every telemetry frame.
 """
 import logging
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from backend.app.schemas.routeros import (
     RouterBoardInfo,
@@ -120,6 +120,49 @@ class SystemMixin:
             except Exception as e:
                 logger.debug(f"RouterOS /system/health not available: {e}")
                 return RouterSystemHealth(temperature=None, voltage=None)
+
+    async def get_log(self, topics: Optional[str] = None, limit: int = 300) -> List[Dict[str, Any]]:
+        """Recent entries from the RouterOS in-memory log, newest last.
+
+        This is the only way to read a container's stdout over REST - there is
+        no ``docker logs`` equivalent and ``/container/shell`` is an interactive
+        console command. ``topics`` filters client-side rather than through a
+        query parameter, because RouterOS stores topics as one comma-joined
+        string and its REST filtering does not match inside it.
+        """
+        async with self._get_client() as client:
+            resp = await client.get("/log")
+            if resp.status_code != 200:
+                return []
+            raw = resp.json()
+            entries = raw if isinstance(raw, list) else [raw]
+
+        if topics:
+            wanted = topics.lower()
+            entries = [e for e in entries if wanted in (e.get("topics") or "").lower()]
+        return entries[-limit:]
+
+    async def get_logging_rules(self) -> List[Dict[str, Any]]:
+        """Configured `/system/logging` actions."""
+        async with self._get_client() as client:
+            resp = await client.get("/system/logging")
+            if resp.status_code != 200:
+                return []
+            raw = resp.json()
+            return raw if isinstance(raw, list) else [raw]
+
+    async def add_logging_rule(self, topics: str, action: str = "memory") -> str:
+        """Start recording a topic RouterOS does not log by default.
+
+        ``container`` is one of those: without a rule for it, a container's
+        output is produced and discarded, so anything that reads results back
+        out of the log has to make sure the rule exists first.
+        """
+        async with self._get_client() as client:
+            resp = await client.put("/system/logging", json={"topics": topics, "action": action})
+            resp.raise_for_status()
+            body = resp.json()
+            return body.get(".id", "") if isinstance(body, dict) else ""
 
     async def get_system_clock(self) -> Dict[str, Any]:
         """Router date, time and timezone.

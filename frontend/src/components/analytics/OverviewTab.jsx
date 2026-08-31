@@ -4,17 +4,11 @@ import { formatBytes } from '../../utils/formatters';
 import { DonutChart, DONUT_PALETTE, DONUT_OTHER_COLOR } from '../DonutChart';
 import {
   Calendar,
+  Server,
   Smartphone,
   Users,
 } from 'lucide-react';
 
-/**
- * Breakdown tab 1: who used the range, and when.
- *
- * Two donuts answering "who" - by profile and by device - over a daily timeline
- * answering "when". Reads only from the analytics response; all the sorting and
- * filtering state belongs to the sibling tabs, so this one takes no callbacks.
- */
 /**
  * Turn per-row totals into donut segments: the biggest `topN` by volume get
  * their own colour, everything else is folded into a single muted "Other" slice
@@ -40,7 +34,16 @@ function toDonutSegments(rows, labelOf, otherLabel, topN = 6) {
   return head;
 }
 
-export function OverviewTab({ gateway, timeline, users, devices }) {
+/**
+ * Breakdown tab 1: who used the range, and when.
+ *
+ * Two donuts answering "who" - by profile and by device - over a daily timeline
+ * answering "when", with the router's own volume called out above them because
+ * it belongs to the same total but to nobody in the household. Reads only from
+ * the analytics response; the sorting and filtering state belongs to the
+ * sibling tabs, so this one takes no callbacks.
+ */
+export function OverviewTab({ gateway, timeline, users, devices, routerSelf }) {
   const { t } = useI18n();
 
   // Biggest few by volume, the rest folded into one "Other" slice.
@@ -55,6 +58,19 @@ export function OverviewTab({ gateway, timeline, users, devices }) {
 
   return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
+        {/* What the router moved for itself. Shown only when it was actually
+            measured, so an install without the input/output rules yet does not
+            get a permanent zero implying the router uses nothing. */}
+        {routerSelf?.total_bytes > 0 && (
+          <div className="router-self-row" title={t('router_self_hint')}>
+            <Server size={14} />
+            <span className="router-self-label">{t('router_self_traffic')}</span>
+            <span className="font-mono router-self-value">{formatBytes(routerSelf.total_bytes)}</span>
+            <span className="router-self-pct">{routerSelf.pct_of_total}%</span>
+            <span className="router-self-note">{t('router_self_hint')}</span>
+          </div>
+        )}
+
         {/* Consumption share for the selected range, as pie charts. */}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 20 }}>
           <div>

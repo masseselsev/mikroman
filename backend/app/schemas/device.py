@@ -27,6 +27,10 @@ class DeviceBase(BaseModel):
     last_wifi_signal: Optional[int] = None
     is_active: bool = True
     is_hidden: bool = False
+    # A workload on the router itself, seen on a veth interface, rather than a
+    # client on the network. Kept out of the unassigned inbox and the household
+    # breakdown - nobody owns it.
+    is_container: bool = False
     speed_limit: str = "default"  # "default" (inherits user limit), "unlimited", or "10M/30M"
     is_paused: bool = False
     priority: int = 1  # 0 = Low, 1 = Normal, 2 = High
