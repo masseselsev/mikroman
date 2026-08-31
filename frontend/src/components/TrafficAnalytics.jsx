@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useI18n } from '../context/I18nContext';
 import { api } from '../api/client';
 import { formatBytes } from '../utils/formatters';
+import { DonutChart, DONUT_PALETTE, DONUT_OTHER_COLOR } from './DonutChart';
 import {
   Calendar,
   Clock,
@@ -21,6 +22,31 @@ import {
   EyeOff,
   AlertTriangle
 } from 'lucide-react';
+
+/**
+ * Turn per-row totals into donut segments: the biggest `topN` by volume get
+ * their own colour, everything else is folded into a single muted "Other" slice
+ * so the chart never sprouts a dozen hairline wedges.
+ */
+function toDonutSegments(rows, labelOf, otherLabel, topN = 6) {
+  const sorted = rows
+    .map(r => ({ label: labelOf(r), value: r.total_bytes || 0 }))
+    .filter(s => s.value > 0)
+    .sort((a, b) => b.value - a.value);
+  const head = sorted.slice(0, topN).map((s, i) => ({
+    ...s,
+    color: DONUT_PALETTE[i % DONUT_PALETTE.length],
+  }));
+  const tail = sorted.slice(topN);
+  if (tail.length) {
+    head.push({
+      label: `${otherLabel} (${tail.length})`,
+      value: tail.reduce((sum, s) => sum + s.value, 0),
+      color: DONUT_OTHER_COLOR,
+    });
+  }
+  return head;
+}
 
 /**
  * Share of total traffic as a bar plus its number. A bare percentage forces the
@@ -110,9 +136,17 @@ const PRESETS = [
   { id: 'custom', labelKey: 'range_custom' },
 ];
 
+// Per-browser dismissal of the coverage notice. Keyed by a signature of the
+// gap's severity, so a worse gap - or a different kind - shows again rather than
+// staying silenced forever on data we cannot reconstruct.
+const COVERAGE_DISMISS_KEY = 'mm_coverage_notice_dismissed';
+
 export function TrafficAnalytics({ activeRouter }) {
   const { t } = useI18n();
   const [preset, setPreset] = useState('7d');
+  const [coverageDismissed, setCoverageDismissed] = useState(() => {
+    try { return localStorage.getItem(COVERAGE_DISMISS_KEY) || ''; } catch { return ''; }
+  });
   const [customStart, setCustomStart] = useState('');
   const [customEnd, setCustomEnd] = useState('');
   const [data, setData] = useState(null);
@@ -216,9 +250,23 @@ export function TrafficAnalytics({ activeRouter }) {
   const gateway = data?.gateway || { total_bytes_in: 0, total_bytes_out: 0, total_bytes: 0, monitored_interfaces: [] };
   // Cross-check between WAN-measured gateway volume and per-device accounted volume.
   const health = data?.accounting_health || { status: 'no_data', coverage_pct: 0, message: null };
+  const coverageSig = `${health.status}:${Math.round(health.coverage_pct || 0)}`;
+  const showCoverageNotice =
+    health.status !== 'ok' && health.status !== 'no_data' && coverageSig !== coverageDismissed;
+  const dismissCoverageNotice = () => {
+    try { localStorage.setItem(COVERAGE_DISMISS_KEY, coverageSig); } catch { /* private mode */ }
+    setCoverageDismissed(coverageSig);
+  };
   const users = data?.users || [];
   const devices = data?.devices || [];
   const timeline = data?.timeline || [];
+
+  // Pie segments for the current range - biggest few by volume, the rest in one
+  // "Other" slice.
+  const userSegments = toDonutSegments(users, u => u.user_name, t('donut_other'));
+  const deviceSegments = toDonutSegments(
+    devices, d => d.custom_name || d.hostname || d.mac_address, t('donut_other')
+  );
 
   // Filter devices
   const filteredDevices = devices.filter(d => {
@@ -382,7 +430,7 @@ export function TrafficAnalytics({ activeRouter }) {
           interface; the per-user/per-device breakdown is measured per device.
           When the two disagree the breakdown is incomplete and must say so
           rather than quietly showing plausible-looking zeros. */}
-      {health.status !== 'ok' && health.status !== 'no_data' && (
+      {showCoverageNotice && (
         <div
           className="card"
           style={{
@@ -401,7 +449,7 @@ export function TrafficAnalytics({ activeRouter }) {
               color: health.status === 'degraded' ? 'var(--color-danger, #e74c3c)' : 'var(--color-warning, #f39c12)'
             }}
           />
-          <div>
+          <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontWeight: 700, fontSize: 'var(--fs-sm)', color: 'var(--text-primary)' }}>
               {health.status === 'degraded' ? t('acct_degraded_title') : t('acct_partial_title')}
               <span className="font-mono" style={{ fontWeight: 600, color: 'var(--text-muted)', marginLeft: 8 }}>
@@ -411,7 +459,21 @@ export function TrafficAnalytics({ activeRouter }) {
             <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-muted)', marginTop: 2 }}>
               {health.message}
             </div>
+            {health.status === 'partial' && (
+              <div style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', marginTop: 4 }}>
+                {t('acct_partial_help')}
+              </div>
+            )}
           </div>
+          <button
+            type="button"
+            className="btn-icon"
+            style={{ width: 22, height: 22, flexShrink: 0 }}
+            onClick={dismissCoverageNotice}
+            title={t('acct_dismiss_hint')}
+          >
+            <X size={13} />
+          </button>
         </div>
       )}
 
@@ -559,6 +621,34 @@ export function TrafficAnalytics({ activeRouter }) {
           {/* TAB 1: OVERVIEW */}
           {breakdownTab === 'overview' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
+              {/* Consumption share for the selected range, as pie charts. */}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 20 }}>
+                <div>
+                  <h4 style={{ fontSize: 'var(--fs-md)', fontWeight: 700, marginBottom: 12, display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <Users size={16} style={{ color: 'var(--color-primary)' }} />
+                    {t('share_by_user')}
+                  </h4>
+                  <DonutChart
+                    segments={userSegments}
+                    centerLabel={formatBytes(gateway.total_bytes)}
+                    centerSub={t('range_total_short')}
+                    formatValue={formatBytes}
+                  />
+                </div>
+                <div>
+                  <h4 style={{ fontSize: 'var(--fs-md)', fontWeight: 700, marginBottom: 12, display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <Smartphone size={16} style={{ color: 'var(--color-primary)' }} />
+                    {t('share_by_device')}
+                  </h4>
+                  <DonutChart
+                    segments={deviceSegments}
+                    centerLabel={String(devices.length)}
+                    centerSub={t('devs_short')}
+                    formatValue={formatBytes}
+                  />
+                </div>
+              </div>
+
               {/* Daily Timeline Visual */}
               <div>
                 <h4 style={{ fontSize: 'var(--fs-md)', fontWeight: 700, marginBottom: 12, display: 'flex', alignItems: 'center', gap: 6 }}>
