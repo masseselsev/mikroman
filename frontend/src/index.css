@@ -124,6 +124,16 @@
   padding: 0;
 }
 
+/* Keep the vertical scrollbar track present at all times. Tabs differ in
+   height - some scroll, some do not - and without this the page width jumped
+   by the scrollbar's ~15px every time you switched between them, shifting the
+   whole layout sideways. `scrollbar-gutter` reserves the space on browsers
+   that support it; `overflow-y: scroll` is the universal fallback. */
+html {
+  overflow-y: scroll;
+  scrollbar-gutter: stable;
+}
+
 body {
   font-family: var(--font-sans);
   background-color: var(--bg-primary);

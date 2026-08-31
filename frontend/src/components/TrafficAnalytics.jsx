@@ -804,7 +804,7 @@ export function TrafficAnalytics({ activeRouter }) {
                     placeholder={t('search_devices_placeholder')}
                     value={searchTerm}
                     onChange={e => setSearchTerm(e.target.value)}
-                    style={{ paddingLeft: 32, height: 34, fontSize: 'var(--fs-sm)' }}
+                    style={{ paddingLeft: 32, paddingTop: 6, paddingBottom: 6, fontSize: 'var(--fs-sm)' }}
                   />
                 </div>
 
@@ -812,7 +812,7 @@ export function TrafficAnalytics({ activeRouter }) {
                   className="form-select"
                   value={userFilter}
                   onChange={e => setUserFilter(e.target.value)}
-                  style={{ width: 180, height: 34, fontSize: 'var(--fs-sm)' }}
+                  style={{ width: 180, paddingTop: 6, paddingBottom: 6, fontSize: 'var(--fs-sm)' }}
                 >
                   <option value="all">{t('all_users_filter')}</option>
                   <option value="unassigned">{t('unassigned_traffic')}</option>

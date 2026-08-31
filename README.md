@@ -116,6 +116,8 @@ govern adding new router calls.
 
 * **🗒️ Per-Router Note:** a free-text comment for the selected router, in the header between the router selector and the clock. Collapsed it shows the first three lines; a click drops a full editor down (`Ctrl`/`⌘`+`Enter` saves, `Esc` cancels) and it collapses again on save. Stored on the router record (`routers.comment`), so it follows the router, not the browser — a place for its location, ISP account number, config quirks or maintenance window.
 
+* **🧭 UI chrome:** the vertical scrollbar gutter is reserved on every tab, so switching between a tab that scrolls and one that does not no longer shifts the layout sideways. A quiet page footer carries the copyright line and a link to the project source.
+
 * **📉 ISP Cycle Data Limit:**
   * Set an allowance for the billing cycle and watch consumption against it, with remaining bytes and the **daily budget** needed to stay inside it.
   * **Always-on quota strip**: when a limit is set, a slim band sits under the header tiles on *every* tab — used / limit, days left in the cycle, an **on-track / over-limit** verdict, and two end-of-cycle projections: a conservative one from the cycle-so-far daily average (the headline, and what the verdict is judged on) and an **at-current-pace** figure. The at-pace figure blends the last few recorded days with the **previous billing cycle's daily average** on a weight that ramps over the first week, so a single heavy day early in the cycle no longer throws it; a tooltip says whether it is `blended`, `recent`-only, or `sparse` (falls back to the projection). Clicking the strip opens Settings.

@@ -80,7 +80,7 @@ export function QuotaStrip({ activeRouterId, onOpenSettings }) {
       <span className="quota-strip-main font-mono">
         {formatBytes(q.used_bytes)} / {formatBytes(q.limit_bytes)}
         <span className="quota-strip-sep">·</span>
-        {t('quota_days_left', { n: q.days_remaining })}
+        {t('quota_days_left', { days: q.days_remaining })}
       </span>
 
       <span className="quota-strip-forecast">
