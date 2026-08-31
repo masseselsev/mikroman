@@ -567,6 +567,7 @@ export function App() {
         isOpen={userModalOpen}
         onClose={() => setUserModalOpen(false)}
         onSave={handleCreateOrUpdateUser}
+        onDeviceChanged={loadData}
       />
 
       {/* Settings Modal */}

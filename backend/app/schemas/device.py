@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import List, Optional
 
-from pydantic import BaseModel, ConfigDict, computed_field
+from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 
 class DeviceHistoryDTO(BaseModel):
@@ -46,11 +46,20 @@ class DeviceCreate(DeviceBase):
 class DeviceUpdate(BaseModel):
     user_id: Optional[int] = None
     custom_name: Optional[str] = None
+    ip_address: Optional[str] = None  # send explicit null to clear a stale lease
     is_active: Optional[bool] = None
     is_hidden: Optional[bool] = None
     speed_limit: Optional[str] = None
     is_paused: Optional[bool] = None
     priority: Optional[int] = None
+    # When unassigning (user_id -> null): also subtract this device's recorded
+    # daily volume back out of the profile's totals. Defaults to true.
+    detach_traffic: Optional[bool] = None
+
+
+class DeviceSplitRequest(BaseModel):
+    """Break a wrongly-merged MAC back out into its own device record."""
+    mac_address: str = Field(..., description="An address from this device's history to split off")
 
 
 class DeviceSpeedLimitUpdate(BaseModel):

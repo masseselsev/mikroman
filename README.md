@@ -78,6 +78,11 @@ govern adding new router calls.
   * **Per-device volume readout**: each device row carries a compact `today / all-time / share` figure beside its name, in whole gigabytes (rounded), where *share* is that device's all-time traffic as a percentage of every assigned device's all-time traffic. Hovering shows the field legend and the exact byte figures. All-time totals are summed from the daily per-device rollups.
   * Complete lifecycle event log: Discovery, Hostname changes, IP shifts, and Private / Randomized MAC rotations.
   * One-click **Smart Merge** suggestions to link rotated MACs back into original device profiles.
+  * **Device maintenance from inside a profile**: each assigned device in the profile editor expands to three actions the checkbox list cannot express.
+    * **Clear a stale IP** — sends an explicit null; the accounting rule and any queue for the old address are pruned on the next sync.
+    * **Split a wrongly-merged MAC** — pick any address from the device's history and it becomes its own **unassigned** device, with the pair written to `device_coexistence` so the consolidation pass never folds them together again. Traffic recorded *before* the split stays with the original device: once daily rollups were coalesced by a merge, the individual share is gone and cannot be divided back out. Only future traffic on the split-off address is tracked separately.
+    * **Delete the device for good** — the row and its own history and per-device rollups go; the **profile's traffic totals are kept** (the per-user rollup is a separate table). A linked adapter that pointed at it is detached.
+  * **Moving a device back to unassigned takes its traffic with it.** Per-device and per-user daily rollups are written from the same deltas, so when a device leaves a profile its recorded volume is subtracted back out of that profile's daily totals, date for date, clamped at zero (a device that was unassigned earlier contributed nothing then, and the rollups carry no per-date owner). `detach_traffic: false` on the device PATCH opts out. Deleting keeps the traffic; unassigning removes it — the two actions are deliberately different.
 
 * **🛡️ Multi-Router Management & Automated SSL Provisioning:**
   * Manage and switch between multiple MikroTik routers from a unified dashboard.

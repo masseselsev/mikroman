@@ -13,6 +13,7 @@ from backend.app.db.models import (
     Device,
     DeviceCoexistence,
     DeviceHistory,
+    TrafficRollup,
 )
 from backend.app.schemas.device import DeviceSuggestionDTO
 from backend.app.schemas.routeros import ARPTableEntry, DHCPLeaseDTO, WiFiRegistrationDTO
@@ -47,6 +48,46 @@ GENERIC_VENDOR_LABELS = {
 def lookup_vendor(mac: str) -> str:
     """Lookup hardware vendor using synchronous cache."""
     return vendor_service.lookup_sync(mac)
+
+
+async def detach_device_traffic_from_user(
+    session: AsyncSession, device: Device, user_id: int
+) -> int:
+    """Subtract a device's recorded daily volume back out of a user's totals.
+
+    ``TrafficAccountingService.collect`` writes the per-device and per-user daily
+    rollups from the *same* deltas, so a user's ``TrafficRollup`` for a date is
+    the sum of that user's devices' ``DeviceTrafficRollup`` for the date. When a
+    device leaves the profile, its share can be taken back out by subtracting it
+    date-for-date.
+
+    Clamped at zero. A device that was unassigned for part of its life
+    contributed nothing to the user then, and the rollups carry no record of
+    *which* user owned the device on each date, so a blind subtraction could
+    otherwise push a historical total negative. Over-keeping a little is the
+    safer error than showing a negative month.
+
+    Returns the number of user rollup rows adjusted.
+    """
+    await session.refresh(device, ["traffic_rollups"])
+    by_date = {r.record_date: r for r in device.traffic_rollups}
+    if not by_date:
+        return 0
+
+    rows = (await session.execute(
+        select(TrafficRollup).where(
+            TrafficRollup.user_id == user_id,
+            TrafficRollup.record_date.in_(list(by_date.keys())),
+        )
+    )).scalars().all()
+
+    adjusted = 0
+    for user_roll in rows:
+        dev_roll = by_date[user_roll.record_date]
+        user_roll.bytes_in = max(0, user_roll.bytes_in - dev_roll.bytes_in)
+        user_roll.bytes_out = max(0, user_roll.bytes_out - dev_roll.bytes_out)
+        adjusted += 1
+    return adjusted
 
 
 def apply_wifi_registration(device: Device, wifi: WiFiRegistrationDTO) -> None:

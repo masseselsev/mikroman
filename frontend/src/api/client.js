@@ -58,6 +58,8 @@ export const api = {
   getDevices: (unassignedOnly = false, showHidden = true) => request(`/devices?unassigned_only=${unassignedOnly}&show_hidden=${showHidden}`),
   scanNetwork: () => request('/devices/scan', { method: 'POST' }),
   updateDevice: (id, data) => request(`/devices/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  deleteDevice: (id) => request(`/devices/${id}`, { method: 'DELETE' }),
+  splitDevice: (id, macAddress) => request(`/devices/${id}/split`, { method: 'POST', body: JSON.stringify({ mac_address: macAddress }) }),
   toggleHideDevice: (id, isHidden) => request(`/devices/${id}`, { method: 'PATCH', body: JSON.stringify({ is_hidden: isHidden }) }),
   getDeviceHistory: (id) => request(`/devices/${id}/history`),
   reorderUsers: (userIds) => request('/users/reorder', {

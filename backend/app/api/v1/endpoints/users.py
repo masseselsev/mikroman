@@ -8,6 +8,7 @@ from backend.app.db.models import Device, DeviceTrafficRollup, User
 from backend.app.db.session import get_db
 from backend.app.schemas.common import APIResponse
 from backend.app.schemas.user import UserCreate, UserDTO, UserReorderRequest, UserUpdate
+from backend.app.services.device_manager import detach_device_traffic_from_user
 from backend.app.services.router_manager import router_manager
 from backend.app.services.traffic_controller import TrafficController
 
@@ -147,9 +148,11 @@ async def update_user(
     # Handle device assignments / unassignments by MAC address
     if payload.device_macs is not None:
         target_macs = set(m.upper().strip() for m in payload.device_macs if m and m.strip())
-        # Unassign devices that were deselected
+        # Unassign devices that were deselected, taking their recorded daily
+        # volume back out of this profile's totals as they go.
         for dev in list(user.devices):
             if dev.mac_address.upper() not in target_macs:
+                await detach_device_traffic_from_user(db, dev, user.id)
                 dev.user_id = None
 
         # Assign newly selected devices

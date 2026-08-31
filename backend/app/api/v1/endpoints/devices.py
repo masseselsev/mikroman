@@ -1,11 +1,13 @@
+import logging
+from datetime import datetime, timezone
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from backend.app.db.models import Device, User
+from backend.app.db.models import AlertLog, Device, DeviceCoexistence, DeviceHistory, User
 from backend.app.db.session import get_db
 from backend.app.schemas.common import APIResponse
 from backend.app.schemas.device import (
@@ -15,6 +17,7 @@ from backend.app.schemas.device import (
     DeviceMergeRequest,
     DevicePauseUpdate,
     DeviceSpeedLimitUpdate,
+    DeviceSplitRequest,
     DeviceSuggestionDTO,
     DeviceUpdate,
 )
@@ -24,10 +27,13 @@ from backend.app.services.device_linking import (
     link_device,
     unlink_device,
 )
-from backend.app.services.device_manager import DeviceManager
+from backend.app.services.device_manager import DeviceManager, detach_device_traffic_from_user
+from backend.app.services.mac_rotation import canonical_pair, normalise_hostname
 from backend.app.services.router_manager import router_manager
 from backend.app.services.traffic_controller import TrafficController, resolve_unassigned_limit
 from backend.app.services.vendor_lookup import vendor_service
+
+logger = logging.getLogger("mikroman.devices")
 
 router = APIRouter(prefix="/devices", tags=["Devices"])
 
@@ -197,6 +203,10 @@ async def update_device(
 
     if payload.custom_name is not None:
         device.custom_name = payload.custom_name
+    if "ip_address" in payload.model_fields_set:
+        # Explicit null clears a stale lease; the accounting rule and any queue
+        # for the old address are pruned on the next sync tick.
+        device.ip_address = payload.ip_address
     if payload.is_active is not None:
         device.is_active = payload.is_active
     if payload.is_hidden is not None:
@@ -220,6 +230,22 @@ async def update_device(
         quarantine = await resolve_unassigned_limit(db)
         if device.speed_limit in (quarantine, None):
             device.speed_limit = "default"
+
+    # Leaving a profile: unless told otherwise, take this device's recorded
+    # daily volume back out of that profile's totals, so the breakdown stays
+    # honest after the move.
+    became_unassigned = (
+        old_user_id is not None
+        and "user_id" in payload.model_fields_set
+        and payload.user_id is None
+    )
+    if became_unassigned and (payload.detach_traffic is None or payload.detach_traffic):
+        moved = await detach_device_traffic_from_user(db, device, old_user_id)
+        if moved:
+            logger.info(
+                f"Detached device {device.id} traffic from user {old_user_id} "
+                f"across {moved} day(s)"
+            )
 
     await db.commit()
     await db.refresh(device)
@@ -268,3 +294,154 @@ async def toggle_device_pause(
     if not success:
         raise HTTPException(status_code=404, detail="Device not found")
     return APIResponse(data=True, message=msg)
+
+
+@router.delete("/{device_id}", response_model=APIResponse[bool])
+async def delete_device(
+    device_id: int,
+    db: AsyncSession = Depends(get_db),
+    traffic_ctrl: TrafficController = Depends(get_traffic_controller),
+):
+    """Delete a device record for good.
+
+    The profile's traffic totals are **not** touched: a deleted device's bytes
+    stay counted for whoever owned it (the per-user ``TrafficRollup`` is a
+    separate table). Only the device row and its own history / daily rollups
+    go. Any adapter that pointed at this device as its primary is detached, and
+    the router-side accounting rule and managed queue are cleared on the next
+    background sync.
+    """
+    device = await db.get(
+        Device, device_id,
+        options=[selectinload(Device.history), selectinload(Device.traffic_rollups)],
+    )
+    if not device:
+        raise HTTPException(status_code=404, detail="Device not found")
+
+    owner_id = device.user_id
+    name = device.custom_name or device.hostname or device.mac_address
+    days = len(device.traffic_rollups)
+
+    # Adapters linked to this device lose their primary rather than dangling.
+    await db.execute(
+        update(Device)
+        .where(Device.linked_to_device_id == device_id)
+        .values(linked_to_device_id=None)
+    )
+
+    db.add(AlertLog(
+        router_id=device.router_id,
+        alert_type="device_deleted",
+        message=(
+            f"Device '{name}' ({device.mac_address}) deleted"
+            + (f"; its {days} day(s) of traffic stay counted for the profile" if owner_id and days else "")
+        ),
+    ))
+
+    await db.delete(device)  # cascade removes DeviceHistory + DeviceTrafficRollup
+    await db.commit()
+
+    if owner_id:
+        user = await db.get(User, owner_id)
+        if user:
+            active_ips = [d.ip_address for d in user.devices if d.is_active and d.ip_address]
+            await traffic_ctrl.sync_user_queue(user.id, user.name, active_ips, user.speed_limit)
+
+    return APIResponse(data=True, message=f"Device '{name}' deleted")
+
+
+@router.post("/{device_id}/split", response_model=APIResponse[DeviceDTO])
+async def split_device(
+    device_id: int,
+    payload: DeviceSplitRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Break a wrongly-merged MAC back out into its own device record.
+
+    Use this when discovery folded two genuinely separate devices together (two
+    identical phones, say). A new **unassigned** device is created for the given
+    address, and the pair is recorded in ``device_coexistence`` so the
+    consolidation pass never merges them again.
+
+    What this cannot do: divide the *past*. Once daily rollups were coalesced by
+    a merge, the individual device's share is gone. Traffic already recorded
+    stays with the original device; only traffic seen on the split-off address
+    from now on is tracked separately.
+    """
+    device = await db.get(Device, device_id, options=[selectinload(Device.history)])
+    if not device:
+        raise HTTPException(status_code=404, detail="Device not found")
+
+    wanted = payload.mac_address.strip().upper()
+    if not wanted:
+        raise HTTPException(status_code=400, detail="mac_address is required")
+    if wanted == (device.mac_address or "").upper():
+        raise HTTPException(status_code=400, detail="That is the device's current address")
+
+    hist_row = next(
+        (h for h in device.history if (h.mac_address or "").upper() == wanted), None
+    )
+    if hist_row is None:
+        raise HTTPException(
+            status_code=400,
+            detail="That address is not in this device's history",
+        )
+
+    clash = (await db.execute(
+        select(Device).where(func.upper(Device.mac_address) == wanted)
+    )).scalar_one_or_none()
+    if clash is not None:
+        raise HTTPException(status_code=400, detail="A device with that address already exists")
+
+    original_case = hist_row.mac_address
+    now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+    new_device = Device(
+        mac_address=original_case,
+        router_id=device.router_id,
+        ip_address=None,
+        hostname=device.hostname,
+        custom_name=device.custom_name or device.hostname or original_case,
+        vendor=device.vendor,
+        user_id=None,
+        speed_limit="default",
+        is_active=False,
+        last_seen=hist_row.created_at or now_utc,
+    )
+    db.add(new_device)
+    await db.flush()
+
+    lo, hi = canonical_pair(original_case, device.mac_address)
+    db.add(DeviceCoexistence(
+        mac_a=lo, mac_b=hi,
+        hostname=normalise_hostname(device.custom_name) or normalise_hostname(device.hostname),
+        first_seen_together=now_utc,
+        last_seen_together=now_utc,
+        observations=1,
+    ))
+
+    split_note = (
+        f"Split {original_case} out of device #{device.id} ({device.mac_address}). "
+        f"Traffic recorded before now stays with #{device.id} - coalesced daily "
+        f"totals cannot be divided retroactively."
+    )
+    db.add(DeviceHistory(
+        device_id=new_device.id, mac_address=original_case,
+        hostname=new_device.hostname, event_type="split", details=split_note,
+    ))
+    db.add(DeviceHistory(
+        device_id=device.id, mac_address=original_case,
+        hostname=device.hostname, event_type="split",
+        details=f"Split {original_case} out into a separate device (#{new_device.id}).",
+    ))
+    db.add(AlertLog(
+        router_id=device.router_id,
+        alert_type="device_split",
+        message=(
+            f"Split {original_case} out of '{device.custom_name or device.hostname or device.mac_address}' "
+            f"into a new unassigned device. They will not be auto-merged again."
+        ),
+    ))
+
+    await db.commit()
+    await db.refresh(new_device)
+    return APIResponse(data=DeviceDTO.model_validate(new_device), message="Device split")

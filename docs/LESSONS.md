@@ -271,3 +271,27 @@ filters such pairs out. Lesson: "identical + same owner" is not identity;
 non-overlapping presence over time is the signal that separates a rotation from
 two real devices, and it has to be recorded when observed because the cleanup
 pass runs later, when only one of the two is on.
+
+**[2026-09-01] Problem:** Editing a profile's devices needed to (a) delete a
+device without losing its traffic for the owner, (b) move a device back to
+unassigned and have its share leave the owner's totals, and (c) undo a wrong
+merge. Three different truths:
+* **Delete keeps the traffic.** The per-user `TrafficRollup` is a separate table
+  from `DeviceTrafficRollup`; `session.delete(device)` cascades the device's own
+  rollups but never touches the user's, so the owner's monthly total is
+  unchanged by design. Nothing to do but *not* touch the user rollup.
+* **Unassign detaches the traffic.** `collect()` writes the per-device and
+  per-user daily rollups from the *same* deltas, so `user.rollup[date]` is the
+  sum of that user's devices' `rollup[date]`. Subtract the leaving device
+  date-for-date - but **clamp at zero**: the rollups carry no per-date owner, so
+  a device that was unassigned for part of its life would otherwise push an old
+  month negative. Over-keeping a little beats a negative figure.
+* **A merge cannot be undone for the past.** `_absorb_device` / `merge_devices`
+  coalesce rollups by date (`existing.bytes_in += victim.bytes_in`); the
+  addends are gone. `POST /devices/{id}/split` therefore only re-creates a
+  separate record for a historical MAC (and writes a `device_coexistence` pair
+  so it is never re-merged) - future traffic on that address is tracked apart,
+  the past stays with the original device. Say so in the UI rather than
+  pretending to divide it.
+Lesson: "remove a device" is two operations with opposite effects on the
+totals; pick the semantics deliberately and make the UI name them.

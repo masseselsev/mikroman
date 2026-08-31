@@ -1701,3 +1701,70 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
   font-size: var(--fs-2xs);
   color: var(--text-secondary);
 }
+
+/* ============================================================
+   Device maintenance rows inside the profile editor
+   ============================================================ */
+.list-row-wrap {
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.list-row-wrap.is-selected {
+  background: var(--color-primary-light);
+  border-color: var(--color-primary);
+}
+.list-row-wrap .list-row {
+  border: none;
+  background: transparent;
+}
+
+.btn-xs {
+  height: 24px;
+  padding: 2px 8px;
+  font-size: var(--fs-2xs);
+  gap: 4px;
+  border-radius: var(--radius-sm);
+}
+
+.dev-edit-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 12px 10px;
+  margin: 0 4px 4px;
+  border-top: 1px dashed var(--border-color);
+  font-size: var(--fs-2xs);
+}
+
+.dev-edit-line {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.dev-edit-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px 0;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.dev-edit-block-title {
+  font-weight: 700;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: var(--fs-3xs);
+}
+
+.dev-edit-hint {
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+.dev-edit-error {
+  color: var(--color-danger);
+}
