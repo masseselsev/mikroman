@@ -287,6 +287,12 @@ export function TelemetryBar({ router, activeRouter, interfaces = [], onNavigate
   // CPU tile subtitle: the processor model, then its characteristics. The model
   // line is dropped when it is only the architecture repeated (a CHR or x86
   // box with no SoC name), leaving just the spec line.
+  //
+  // `cpu_model_exact` false means RouterOS could only name the SoC *family*
+  // (its bootloader platform, e.g. "ipq5300") because this product code is not
+  // in the published-specification table. Mark it, so a family is never read as
+  // a part number.
+  const cpuExact = router.cpu_model_exact !== false;
   const cpuModel = router.cpu_model || '';
   const cpuArch = router.cpu_arch || '';
   const cpuSpecBits = [
@@ -298,6 +304,14 @@ export function TelemetryBar({ router, activeRouter, interfaces = [], onNavigate
     cpuModel || null,
     cpuSpecBits.length ? cpuSpecBits.join(' · ') : null,
   ].filter(Boolean);
+  // Say outright which of the two the model line is, so nobody has to guess
+  // whether "ipq5300" is this board's part number (it is not - it is the family
+  // its bootloader belongs to).
+  const cpuTitle = [
+    cpuModel && (cpuExact ? t('cpu_model_exact') : t('cpu_model_family')),
+    !cpuExact && router.cpu_platform ? `${t('cpu_platform')}: ${router.cpu_platform}` : null,
+    onNavigate ? t('open_health_hint') : null,
+  ].filter(Boolean).join('\n') || undefined;
 
   const monitored = router.monitored_interfaces || selectedIfaces || [];
   const monitoredShort = monitored.length === 0
@@ -350,7 +364,7 @@ export function TelemetryBar({ router, activeRouter, interfaces = [], onNavigate
           history={cpuHistory}
           historyMax={100}
           onClick={goHealth}
-          title={onNavigate ? t('open_health_hint') : undefined}
+          title={cpuTitle}
         />
 
         <Tile

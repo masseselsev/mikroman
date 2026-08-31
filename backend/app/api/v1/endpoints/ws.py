@@ -9,6 +9,7 @@ from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 from backend.app.core.config import settings
 from backend.app.db.models import AppSetting
 from backend.app.db.session import AsyncSessionLocal
+from backend.app.services.hardware import resolve_cpu_identity
 from backend.app.services.public_network import public_network_resolver
 from backend.app.services.router_manager import router_manager
 from backend.app.services.router_time import store_router_offset
@@ -215,6 +216,13 @@ async def websocket_telemetry_endpoint(
                 # Resolved once here rather than inline three times below, so a
                 # single frame never triggers more than one lookup.
                 public_net = await public_network_resolver.resolve()
+                cpu_identity = resolve_cpu_identity(
+                    product_code=board.model,
+                    board_name=res.board_name,
+                    firmware_type=board.firmware_type,
+                    resource_cpu=res.cpu,
+                    architecture=res.architecture_name,
+                )
 
                 payload = {
                     "type": "telemetry_tick",
@@ -223,12 +231,13 @@ async def websocket_telemetry_endpoint(
                         "board_name": res.board_name,
                         "version": res.version,
                         "cpu_load": res.cpu_load,
-                        # The real processor. On MikroTik hardware `/system/
-                        # resource` only knows the instruction set ("ARM64"), so
-                        # the SoC name comes from `/system/routerboard`
-                        # (firmware-type, e.g. "ipq5300"); x86 and CHR report a
-                        # real part in `cpu` and have no RouterBOARD.
-                        "cpu_model": board.firmware_type or res.cpu or res.architecture_name,
+                        # The real processor. RouterOS only reports the SoC
+                        # *family* on MikroTik hardware (firmware-type, e.g.
+                        # "ipq5300"), so the exact part is looked up from the
+                        # product code where MikroTik publishes it.
+                        "cpu_model": cpu_identity.model,
+                        "cpu_model_exact": cpu_identity.exact,
+                        "cpu_platform": cpu_identity.platform,
                         "cpu_arch": res.architecture_name or res.cpu,
                         "cpu_count": res.cpu_count,
                         "cpu_frequency_mhz": res.cpu_frequency,

@@ -1768,3 +1768,87 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
 .dev-edit-error {
   color: var(--color-danger);
 }
+
+/* ---------------------------------------------------------------------------
+   Compact figure strip (StatTile)
+
+   Range totals are context, not content. At full card width (220px minimum,
+   44px icon, 2xl figure) four of them filled the first screen of the analytics
+   tab on a laptop and pushed the breakdown out of sight. Roughly half the
+   footprint, same information.
+   ------------------------------------------------------------------------ */
+.stat-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 8px;
+}
+
+.stat-tile {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  padding: 8px 10px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+  transition: border-color 0.2s ease;
+}
+
+.stat-tile-clickable {
+  cursor: pointer;
+}
+
+.stat-tile-clickable:hover {
+  border-color: var(--border-focus);
+}
+
+.stat-tile-icon {
+  width: 30px;
+  height: 30px;
+  flex-shrink: 0;
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.stat-tile-body {
+  min-width: 0;
+}
+
+.stat-tile-label {
+  font-size: var(--fs-2xs);
+  font-weight: 600;
+  color: var(--text-muted);
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.stat-tile-value {
+  font-size: var(--fs-lg);
+  font-weight: 800;
+  line-height: 1.25;
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+
+/* "users" / "devs" after a count - present but subordinate to the number. */
+.stat-tile-unit {
+  font-size: var(--fs-2xs);
+  font-weight: 500;
+  color: var(--text-muted);
+  margin-left: 3px;
+}
+
+.stat-tile-sub {
+  font-size: var(--fs-2xs);
+  color: var(--text-muted);
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

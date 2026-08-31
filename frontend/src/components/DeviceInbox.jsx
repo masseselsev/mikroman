@@ -35,6 +35,8 @@ export function DeviceInbox({ devices = [], users = [], onAssign, onScan, isScan
   const [linkingId, setLinkingId] = useState(null);
   const [showHidden, setShowHidden] = useState(false);
   const [autoScanEnabled, setAutoScanEnabled] = useState(true);
+  // device id -> target device id chosen by hand for a merge
+  const [mergeTargetMap, setMergeTargetMap] = useState({});
 
   // Load auto-scan setting
   useEffect(() => {
@@ -123,6 +125,17 @@ export function DeviceInbox({ devices = [], users = [], onAssign, onScan, isScan
   };
 
   const visibleDevices = devices.filter(d => showHidden || !d.is_hidden);
+
+  // Every device already belonging to somebody, as merge targets. Automatic
+  // suggestions only fire when rotation heuristics are confident; a person
+  // looking at their own hardware often is when the heuristics are not, so the
+  // same operation is offered with the target picked by hand.
+  const mergeTargets = users.flatMap(u =>
+    (u.devices || []).map(d => ({
+      id: d.id,
+      label: `${d.custom_name || d.hostname || d.mac_address} — ${u.name}`,
+    }))
+  ).sort((a, b) => a.label.localeCompare(b.label));
 
   return (
     <div>
@@ -459,6 +472,40 @@ export function DeviceInbox({ devices = [], users = [], onAssign, onScan, isScan
                     {t('assign_btn')}
                   </button>
                 </div>
+
+                {/* Manual merge. The row above attaches this device to a person
+                    as a record of its own; this one folds it into an existing
+                    device, which is what you want when the same phone came back
+                    on a fresh randomised MAC and the heuristics missed it. */}
+                {mergeTargets.length > 0 && (
+                  <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                    <select
+                      className="form-select"
+                      style={{ flex: 1, minWidth: 0, padding: '5px 8px', fontSize: 'var(--fs-xs)' }}
+                      value={mergeTargetMap[device.id] || ''}
+                      onChange={(e) => setMergeTargetMap(prev => ({ ...prev, [device.id]: e.target.value }))}
+                      title={t('merge_into_hint')}
+                    >
+                      <option value="">{t('merge_into_choose')}</option>
+                      {mergeTargets.map(target => (
+                        <option key={target.id} value={target.id}>{target.label}</option>
+                      ))}
+                    </select>
+                    <button
+                      className="btn btn-secondary btn-sm"
+                      disabled={!mergeTargetMap[device.id] || mergingId === device.id}
+                      style={{ fontSize: 'var(--fs-xs)', whiteSpace: 'nowrap' }}
+                      onClick={() => {
+                        const targetId = parseInt(mergeTargetMap[device.id], 10);
+                        const target = mergeTargets.find(x => x.id === targetId);
+                        handleMergeClick(device.id, targetId, target ? target.label : '');
+                      }}
+                    >
+                      <Link size={13} />
+                      {mergingId === device.id ? '…' : t('merge_into_btn')}
+                    </button>
+                  </div>
+                )}
               </div>
             );
           })}

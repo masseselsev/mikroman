@@ -137,6 +137,33 @@ class AccountingHealth(BaseModel):
     status: str = "ok"
     message: Optional[str] = None
 
+    # --- coverage split -------------------------------------------------
+    # ``coverage_pct`` above is judged ONLY over the days per-device accounting
+    # was actually running for the whole day. Mixing in earlier days compares a
+    # full period of gateway volume against a partial period of device volume
+    # and produces an alarming number that describes bookkeeping history rather
+    # than any real loss, which is exactly what these fields exist to separate.
+    accounting_started: Optional[date] = None
+    # Gateway volume in this range recorded on or before ``accounting_started``.
+    # Unattributable by construction, not a fault.
+    pre_accounting_bytes: int = 0
+    # Gateway volume in this range from the days after accounting was running
+    # end to end - the only volume ``coverage_pct`` is measured against.
+    measured_bytes: int = 0
+    # Per-device volume attributed within that same measured window.
+    measured_accounted_bytes: int = 0
+    # Volume attributed on the pre-accounting days. Not zero: the switch-on day
+    # is counted as pre-accounting because it is a partial day, but the hours
+    # after the rules went up were attributed normally, and older installs also
+    # carry per-user volume from the queue-based accounting that preceded this.
+    #
+    # Defined as ``accounted_bytes - measured_accounted_bytes`` so the two
+    # always add back up to the range total the breakdown tables below show. An
+    # earlier version summed each window independently, and the banner's figure
+    # then failed to reconcile with the user table - which reads as a counting
+    # bug even though both numbers were right for their own window.
+    pre_accounting_accounted_bytes: int = 0
+
 
 class TrafficAnalyticsResponse(BaseModel):
     """Comprehensive historical traffic accounting across Gateway, Users, and Devices."""

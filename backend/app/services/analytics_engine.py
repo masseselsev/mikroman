@@ -3,7 +3,7 @@ import logging
 from datetime import date, timedelta
 from typing import Any, List, Optional, Tuple
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.db.models import (
@@ -22,6 +22,7 @@ from backend.app.schemas.analytics import (
     TrafficAnalyticsResponse,
     UserTrafficSummary,
 )
+from backend.app.services import rollups
 from backend.app.services.router_time import router_local_date
 
 logger = logging.getLogger("mikroman.analytics_engine")
@@ -172,94 +173,25 @@ class AnalyticsEngine:
         dev_res = await session.execute(devices_query)
         all_devices = dev_res.scalars().all()
 
-        # 2. Query User Traffic Rollups in Date Window
-        user_rollups_q = (
-            select(
-                TrafficRollup.user_id,
-                func.sum(TrafficRollup.bytes_in).label("total_in"),
-                func.sum(TrafficRollup.bytes_out).label("total_out")
-            )
-            .where(TrafficRollup.record_date >= start_date)
-            .where(TrafficRollup.record_date <= end_date)
-            .group_by(TrafficRollup.user_id)
+        # 2/3. Totals per owner, and 4. the same tables broken down per day.
+        # All six go through rollups.sum_by so the date window and the router
+        # filter cannot differ between them - they used to, silently.
+        user_totals = await rollups.sum_by(
+            session, TrafficRollup, TrafficRollup.user_id, start_date, end_date
         )
-        user_rollups_res = await session.execute(user_rollups_q)
-        user_totals = {row.user_id: (int(row.total_in or 0), int(row.total_out or 0)) for row in user_rollups_res}
+        dev_totals = await rollups.sum_by(
+            session, DeviceTrafficRollup, DeviceTrafficRollup.device_id, start_date, end_date
+        )
 
-        # 3. Query Device Traffic Rollups in Date Window
-        dev_rollups_q = (
-            select(
-                DeviceTrafficRollup.device_id,
-                func.sum(DeviceTrafficRollup.bytes_in).label("total_in"),
-                func.sum(DeviceTrafficRollup.bytes_out).label("total_out")
-            )
-            .where(DeviceTrafficRollup.record_date >= start_date)
-            .where(DeviceTrafficRollup.record_date <= end_date)
-            .group_by(DeviceTrafficRollup.device_id)
-        )
-        dev_rollups_res = await session.execute(dev_rollups_q)
-        dev_totals = {row.device_id: (int(row.total_in or 0), int(row.total_out or 0)) for row in dev_rollups_res}
+        daily = await rollups.daily_totals(session, start_date, end_date, router_id=router_id)
+        r_daily_map = daily["router"]
+        u_daily_map = daily["user"]
+        d_daily_map = daily["device"]
 
-        # 3b. Query Router Gateway Traffic Rollups in Date Window
-        router_rollups_q = (
-            select(
-                func.sum(RouterTrafficRollup.bytes_in).label("total_in"),
-                func.sum(RouterTrafficRollup.bytes_out).label("total_out")
-            )
-            .where(RouterTrafficRollup.record_date >= start_date)
-            .where(RouterTrafficRollup.record_date <= end_date)
-        )
-        if router_id:
-            router_rollups_q = router_rollups_q.where(RouterTrafficRollup.router_id == router_id)
-        r_roll_res = await session.execute(router_rollups_q)
-        r_row = r_roll_res.first()
-        r_gw_in = int(r_row[0] or 0) if r_row else 0
-        r_gw_out = int(r_row[1] or 0) if r_row else 0
-
-        # 4. Query Daily Timeline Data across Router WAN Interfaces, Users, and Devices
-        # a. Router daily rollups
-        r_daily_q = (
-            select(
-                RouterTrafficRollup.record_date,
-                func.sum(RouterTrafficRollup.bytes_in).label("day_in"),
-                func.sum(RouterTrafficRollup.bytes_out).label("day_out")
-            )
-            .where(RouterTrafficRollup.record_date >= start_date)
-            .where(RouterTrafficRollup.record_date <= end_date)
-        )
-        if router_id:
-            r_daily_q = r_daily_q.where(RouterTrafficRollup.router_id == router_id)
-        r_daily_q = r_daily_q.group_by(RouterTrafficRollup.record_date)
-        r_daily_res = await session.execute(r_daily_q)
-        r_daily_map = {row.record_date: (int(row.day_in or 0), int(row.day_out or 0)) for row in r_daily_res}
-
-        # b. User daily rollups
-        u_daily_q = (
-            select(
-                TrafficRollup.record_date,
-                func.sum(TrafficRollup.bytes_in).label("day_in"),
-                func.sum(TrafficRollup.bytes_out).label("day_out")
-            )
-            .where(TrafficRollup.record_date >= start_date)
-            .where(TrafficRollup.record_date <= end_date)
-            .group_by(TrafficRollup.record_date)
-        )
-        u_daily_res = await session.execute(u_daily_q)
-        u_daily_map = {row.record_date: (int(row.day_in or 0), int(row.day_out or 0)) for row in u_daily_res}
-
-        # c. Device daily rollups
-        d_daily_q = (
-            select(
-                DeviceTrafficRollup.record_date,
-                func.sum(DeviceTrafficRollup.bytes_in).label("day_in"),
-                func.sum(DeviceTrafficRollup.bytes_out).label("day_out")
-            )
-            .where(DeviceTrafficRollup.record_date >= start_date)
-            .where(DeviceTrafficRollup.record_date <= end_date)
-            .group_by(DeviceTrafficRollup.record_date)
-        )
-        d_daily_res = await session.execute(d_daily_q)
-        d_daily_map = {row.record_date: (int(row.day_in or 0), int(row.day_out or 0)) for row in d_daily_res}
+        # The gateway total is the timeline summed, so the headline figure and
+        # the chart under it are the same number by construction.
+        r_gw_in = sum(v[0] for v in r_daily_map.values())
+        r_gw_out = sum(v[1] for v in r_daily_map.values())
 
         # Build full date timeline (fill missing dates with 0, taking daily maximum across interfaces/users/devices)
         timeline: List[DailyTrafficPoint] = []
@@ -301,12 +233,43 @@ class AnalyticsEngine:
         gateway_total = gateway_in + gateway_out
 
         from backend.app.services.traffic_accounting import TrafficAccountingService
+        started = await TrafficAccountingService.get_accounting_started(session)
+
+        # Volume recorded before per-device accounting could possibly have seen
+        # it. The start day itself counts as pre-accounting: gateway counters
+        # ran all day, device counters only from the moment the mangle rules
+        # were installed, so it is a partial day and would drag the ratio down
+        # for a reason that has nothing to do with a fault.
+        accounted_total = accounted_in + accounted_out
+        pre_bytes = 0
+        measured_gateway = 0
+        measured_accounted = 0
+        pre_accounted = 0
+        if started is not None and has_gateway_sample:
+            measured_gateway = rollups.sum_window(r_daily_map, after=started)
+            pre_bytes = rollups.sum_window(r_daily_map) - measured_gateway
+            # Users can hold volume devices no longer do (a deleted device keeps
+            # its owner's totals), so take whichever level saw more, exactly as
+            # the range totals above do.
+            measured_accounted = max(
+                rollups.sum_window(d_daily_map, after=started),
+                rollups.sum_window(u_daily_map, after=started),
+            )
+            # The remainder of the range total, rather than an independent sum
+            # of the earlier days. The two figures then always add back up to
+            # the number the user and device tables show, which is what lets a
+            # reader check the banner against the breakdown underneath it.
+            pre_accounted = max(0, accounted_total - measured_accounted)
+
         accounting_health = cls._assess_accounting_health(
             gateway_bytes=gateway_total,
-            accounted_bytes=accounted_in + accounted_out,
+            accounted_bytes=accounted_total,
             has_gateway_sample=has_gateway_sample,
-            window_start=start_date,
-            accounting_started=await TrafficAccountingService.get_accounting_started(session),
+            accounting_started=started,
+            pre_accounting_bytes=pre_bytes,
+            measured_bytes=measured_gateway,
+            measured_accounted_bytes=measured_accounted,
+            pre_accounting_accounted_bytes=pre_accounted,
         )
 
         # 6. Build User Traffic Summaries
@@ -395,14 +358,26 @@ class AnalyticsEngine:
         gateway_bytes: int,
         accounted_bytes: int,
         has_gateway_sample: bool,
-        window_start: Optional[date] = None,
-        accounting_started: Optional[date] = None
+        accounting_started: Optional[date] = None,
+        pre_accounting_bytes: int = 0,
+        measured_bytes: int = 0,
+        measured_accounted_bytes: int = 0,
+        pre_accounting_accounted_bytes: int = 0,
     ) -> AccountingHealth:
         """Compare per-device accounted volume against measured gateway volume.
 
         Surfaces a broken accounting path instead of hiding it behind a plausible
         looking total. Thresholds are deliberately loose: LAN-to-LAN traffic and
         router-local traffic legitimately never appear in per-device counters.
+
+        Coverage is judged over the *measured window* only - the days on which
+        per-device accounting ran from midnight to midnight. An earlier version
+        divided the whole range's accounted bytes by the whole range's gateway
+        bytes, so a range reaching one day back past the day accounting was
+        switched on reported ~50% coverage and read as "half your traffic was
+        lost". Nothing was lost: those bytes were simply never attributable.
+        The pre-accounting volume is now reported as its own figure instead of
+        being smeared into the ratio.
         """
         if not has_gateway_sample and accounted_bytes == 0:
             return AccountingHealth(
@@ -410,54 +385,56 @@ class AnalyticsEngine:
                 accounted_bytes=accounted_bytes,
                 coverage_pct=0.0,
                 status="no_data",
-                message="No traffic samples recorded yet for this period."
+                message="No traffic samples recorded yet for this period.",
+                accounting_started=accounting_started,
             )
 
-        coverage = round((accounted_bytes / gateway_bytes * 100), 2) if gateway_bytes > 0 else 0.0
+        has_split = accounting_started is not None and (pre_accounting_bytes or measured_bytes)
+        # Ratio denominator: the measured window when the split is known, else
+        # the whole range (a fresh install with no marker yet).
+        ratio_gateway = measured_bytes if has_split else gateway_bytes
+        ratio_accounted = measured_accounted_bytes if has_split else accounted_bytes
+        coverage = round((ratio_accounted / ratio_gateway * 100), 2) if ratio_gateway > 0 else 0.0
 
-        # Gateway counters predate per-device accounting. Judging coverage over a
-        # window that starts earlier compares a full period of gateway volume
-        # against a partial period of device volume, which is not a fault.
-        if (
-            accounting_started is not None
-            and window_start is not None
-            # '<=' because the start day itself is only partially covered: gateway
-            # counters ran all day, device counters only from the moment the
-            # accounting rules were installed.
-            and window_start <= accounting_started
-        ):
-            return AccountingHealth(
-                gateway_bytes=gateway_bytes,
-                accounted_bytes=accounted_bytes,
-                coverage_pct=coverage,
-                status="partial",
-                message=(
-                    f"Per-device accounting started on {accounting_started.isoformat()}. "
-                    f"Gateway totals include earlier traffic that predates it, so the "
-                    f"per-user and per-device breakdown covers only part of this range."
-                )
-            )
+        common = dict(
+            gateway_bytes=gateway_bytes,
+            accounted_bytes=accounted_bytes,
+            coverage_pct=coverage,
+            accounting_started=accounting_started,
+            pre_accounting_bytes=pre_accounting_bytes,
+            measured_bytes=measured_bytes,
+            measured_accounted_bytes=measured_accounted_bytes,
+            pre_accounting_accounted_bytes=pre_accounting_accounted_bytes,
+        )
 
-        if gateway_bytes > 0 and coverage < 50.0:
+        # An active accounting path attributing almost nothing is a real fault,
+        # and takes precedence over the informational pre-accounting notice.
+        if ratio_gateway > 0 and coverage < 50.0:
             return AccountingHealth(
-                gateway_bytes=gateway_bytes,
-                accounted_bytes=accounted_bytes,
-                coverage_pct=coverage,
+                **common,
                 status="degraded",
                 message=(
                     f"Only {coverage:.1f}% of gateway traffic could be attributed to "
                     f"a device. The per-device accounting rules on RouterOS are "
                     f"likely missing or not matching; per-user and per-device "
                     f"figures below are incomplete."
-                )
+                ),
             )
 
-        return AccountingHealth(
-            gateway_bytes=gateway_bytes,
-            accounted_bytes=accounted_bytes,
-            coverage_pct=coverage,
-            status="ok"
-        )
+        if pre_accounting_bytes > 0 and accounting_started is not None:
+            return AccountingHealth(
+                **common,
+                status="partial",
+                message=(
+                    f"Per-device accounting started on {accounting_started.isoformat()}, "
+                    f"so coverage is measured from the day after: {coverage:.1f}% of "
+                    f"gateway traffic there is attributed to a device. The earlier part "
+                    f"of this range mostly predates per-device counters, which is why "
+                    f"the breakdown below totals more than the measured figure."
+                ),
+            )
+
+        return AccountingHealth(**common, status="ok")
 
     @classmethod
     async def _get_baselines(cls, session: AsyncSession) -> dict:

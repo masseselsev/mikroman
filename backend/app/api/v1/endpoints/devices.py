@@ -165,7 +165,14 @@ async def merge_device(
     db: AsyncSession = Depends(get_db),
     traffic_ctrl: TrafficController = Depends(get_traffic_controller)
 ):
-    """Merge an unassigned rotated MAC device into an existing user device."""
+    """Merge this device record into another one, chosen automatically or by hand.
+
+    ``device_id`` is the source: its MAC and IP become the surviving record's
+    current coordinates, while the target keeps its name, owner, limits and
+    accumulated history. Both an accepted rotation suggestion and an operator
+    picking the target from a list land here, which is deliberate - a manual
+    merge is the same operation with a human supplying the judgement.
+    """
     dev_mgr = DeviceManager(await router_manager.require_client(session=db))
     try:
         merged_device = await dev_mgr.merge_devices(
@@ -175,7 +182,9 @@ async def merge_device(
             note=payload.note
         )
     except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        # A missing record is a 404; merging a device into itself is a bad request.
+        status = 404 if "not found" in str(e).lower() else 400
+        raise HTTPException(status_code=status, detail=str(e))
 
     # Resync user queue if target device is assigned to a user
     if merged_device.user_id:

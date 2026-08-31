@@ -10,6 +10,7 @@ from backend.app.db.models import AlertLog, AppSetting
 from backend.app.db.session import get_db
 from backend.app.schemas.common import AlertLogDTO, APIResponse
 from backend.app.schemas.routeros import InterfaceDTO, RouterSystemHealth, RouterSystemResource
+from backend.app.services.hardware import resolve_cpu_identity
 from backend.app.services.ip_lookup import (
     BUILTIN_SERVICES,
     IpLookupConfig,
@@ -66,14 +67,26 @@ async def get_system_status(router_client: RouterOSClient = Depends(get_router_c
     # leaving them to wonder why a panel is empty.
     compat = check_version(resource.version)
 
+    # RouterOS only ever reports the SoC *family* on RouterBOARD hardware, so the
+    # exact part number is looked up from the product code where it is published.
+    cpu = resolve_cpu_identity(
+        product_code=board.model,
+        board_name=resource.board_name,
+        firmware_type=board.firmware_type,
+        resource_cpu=resource.cpu,
+        architecture=resource.architecture_name,
+    )
+
     return APIResponse(
         data={
             "connected": True,
             "resource": resource.model_dump(),
             "routerboard": board.model_dump(),
-            # The processor to show: the SoC on RouterBOARD, the real part on
-            # x86/CHR (where `resource.cpu` carries it), else the architecture.
-            "cpu_model": board.firmware_type or resource.cpu or resource.architecture_name,
+            "cpu_model": cpu.model,
+            # False means the value above is the bootloader platform family, not
+            # a part number; the UI says so rather than implying precision.
+            "cpu_model_exact": cpu.exact,
+            "cpu_platform": cpu.platform,
             "health": health.model_dump(),
             "app_version": settings.APP_VERSION,
             "routeros_compat": {

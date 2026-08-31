@@ -49,6 +49,12 @@ logger = logging.getLogger("mikroman.traffic_accounting")
 ACCT_COMMENT = "mikroman:acct:dev_{device_id}:{direction}"
 ACCT_PREFIX = "mikroman:acct:"
 BASELINE_SETTING_KEY = "acct_counter_baselines"
+# ``{"<dead device id>": <successor device id>}``. A device row can disappear
+# (a rotated MAC consolidated into another record) while its mangle rules are
+# still on the router counting bytes, because rules are only pruned on the next
+# sync tick. Without this map those final bytes are read, matched to a device id
+# that no longer resolves, and silently dropped.
+SUCCESSOR_SETTING_KEY = "acct_device_successors"
 # Date on which per-device accounting first became active. Gateway counters
 # predate it, so coverage must not be judged over earlier periods.
 STARTED_SETTING_KEY = "accounting_started_at"
@@ -283,6 +289,15 @@ class TrafficAccountingService:
             if final_deltas:
                 await self._flush_deltas(session, await router_local_date(session), final_deltas)
             await self._save_baselines(session, baselines)
+
+            # The pruned rules were the last thing that could still produce
+            # bytes for these device ids, so their redirects have done their job.
+            successors = await self._load_successors(session)
+            pruned_ids = {str(device_id) for device_id, _ in to_prune}
+            if successors.keys() & pruned_ids:
+                await self._save_successors(
+                    session, {k: v for k, v in successors.items() if k not in pruned_ids}
+                )
             await session.commit()
 
         for key, rule in to_prune.items():
@@ -332,6 +347,52 @@ class TrafficAccountingService:
             return date.fromisoformat(setting.value)
         except ValueError:
             return None
+
+    # --- successors -------------------------------------------------------
+
+    @staticmethod
+    async def _load_successors(session: AsyncSession) -> Dict[str, int]:
+        setting = await session.get(AppSetting, SUCCESSOR_SETTING_KEY)
+        if setting and setting.value:
+            try:
+                return {str(k): int(v) for k, v in json.loads(setting.value).items()}
+            except (json.JSONDecodeError, TypeError, ValueError):
+                logger.warning("Accounting successor map corrupted; reinitialising")
+        return {}
+
+    @staticmethod
+    async def _save_successors(session: AsyncSession, successors: Dict[str, int]) -> None:
+        raw = json.dumps(successors)
+        setting = await session.get(AppSetting, SUCCESSOR_SETTING_KEY)
+        if setting:
+            setting.value = raw
+        else:
+            session.add(AppSetting(
+                key=SUCCESSOR_SETTING_KEY,
+                value=raw,
+                description="Where to credit counters of device rows that were merged away",
+            ))
+
+    @classmethod
+    async def record_device_successor(
+        cls, session: AsyncSession, dead_device_id: int, successor_device_id: int
+    ) -> None:
+        """Note that ``dead_device_id`` was absorbed into ``successor_device_id``.
+
+        Call this whenever a device row is removed but its traffic legitimately
+        continues under another record - a consolidated MAC rotation, or a
+        manual merge. Bytes that its still-live mangle rules accrue before the
+        next prune are then credited to the successor instead of vanishing.
+
+        Existing entries pointing at the now-dead id are repointed, so a chain of
+        merges never needs to be walked at read time.
+        """
+        successors = await cls._load_successors(session)
+        successors[str(dead_device_id)] = successor_device_id
+        for victim, target in list(successors.items()):
+            if target == dead_device_id:
+                successors[victim] = successor_device_id
+        await cls._save_successors(session, successors)
 
     # --- baselines --------------------------------------------------------
 
@@ -476,16 +537,31 @@ class TrafficAccountingService:
         Device volume is authoritative; each user's rollup is the sum of that
         user's devices, computed here, so the two levels can never disagree.
         Returns the ``(total_in, total_out)`` actually written.
+
+        A reading for a device row that no longer exists is redirected to its
+        successor when one was recorded (a consolidated rotation or a manual
+        merge). Only a device that was genuinely deleted has nowhere to go, and
+        its last few seconds of counter are then correctly discarded.
         """
         total_in = total_out = 0
         user_totals: Dict[int, Tuple[int, int]] = {}
+        successors: Optional[Dict[str, int]] = None
 
         for device_id, (down, up) in per_device.items():
             if not (down or up):
                 continue
             device = await session.get(Device, device_id)
             if device is None:
-                continue
+                if successors is None:
+                    successors = await self._load_successors(session)
+                heir_id = successors.get(str(device_id))
+                device = await session.get(Device, heir_id) if heir_id else None
+                if device is None:
+                    logger.debug(
+                        f"Dropping {down + up} accounted bytes for removed device {device_id}"
+                    )
+                    continue
+                device_id = device.id
 
             await self._add_rollup(
                 session, DeviceTrafficRollup, "device_id", device_id, today, down, up

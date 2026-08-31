@@ -295,3 +295,82 @@ merge. Three different truths:
   pretending to divide it.
 Lesson: "remove a device" is two operations with opposite effects on the
 totals; pick the semantics deliberately and make the UI name them.
+
+**[2026-09-01] Problem:** The analytics banner read `Partial coverage —
+attributed to devices: 51.6%`, which reads as "half the traffic was lost".
+Nothing was lost. **Solution:** `_assess_accounting_health` divided the *whole
+range's* attributed bytes by the *whole range's* gateway bytes. Reconstructed
+from the live database, day by day:
+
+| day | gateway | attributed | note |
+|---|---|---|---|
+| 08-29 | 24.9 GB | 2.2 GB | no per-device counters existed yet |
+| 08-30 | 41.8 GB | 20.7 GB | the day accounting was switched on — partial |
+| 08-31 | 23.8 GB | 20.7 GB | LAN renumbered 88.x → 123.x, router rebooted |
+| 09-01 | 8.5 GB | 8.3 GB | ordinary day |
+
+44 of the 47 "missing" GB are the first two rows: volume that was never
+attributable, not volume that went astray. Coverage is now judged over the
+**measured window** only — days after `accounting_started`, excluding the
+switch-on day, which is inherently partial — and the pre-accounting volume is
+reported as its own figure. Same data: 52% → 90% for the range, 98% for a clean
+day. The residual ~2% is Ethernet framing overhead on the WAN interface plus the
+router's own DNS/NTP/REST traffic, which forward-chain per-device counters can
+never see. Lesson: a ratio whose numerator and denominator cover different time
+spans is not a measurement, it is an accusation. Split the window before
+dividing, and print both volumes so the reader can check the arithmetic.
+
+**[2026-09-01] Problem:** Merging a device away silently dropped its last
+counter readings. **Solution:** `merge_devices` / `_absorb_device` delete the
+source row, but its `mikroman:acct:dev_<id>:*` mangle rules stay on the router
+until the next `sync_counter_rules` prunes them — so the next `collect()` reads
+real bytes for a device id that no longer resolves, and `_flush_deltas` did
+`session.get(Device, id) -> None -> continue`. An `acct_device_successors`
+AppSetting now maps dead id → surviving id (repointing existing entries on write
+so A→B→C resolves to C in one hop), `_flush_deltas` follows it, and the prune
+branch clears entries once the rules that fed them are gone. A genuinely deleted
+device has no successor and its bytes are correctly discarded. The magnitude is
+one poll interval, but the same map is what makes a *manual* merge safe to offer
+at any moment. Lesson: deleting a row does not stop the thing on the other side
+of the network from counting; whenever a record disappears, decide explicitly
+where its in-flight data goes.
+
+**[2026-09-01] Problem:** The CPU tile showed `ipq5300` for a board whose
+manufacturer publishes IPQ-5322. **Solution:** RouterOS has no CPU part number
+on RouterBOARD hardware at all — `/system/routerboard` `firmware-type` is the
+*bootloader platform family* (several SoCs share one) and `/system/resource`
+`cpu` is the instruction set ("ARM64"). The family was being rendered in the
+part-number slot, so it looked precise and was wrong. `services/hardware.py`
+now resolves the exact part from the product code (`model`, unique per product)
+against the published specification, and anything unlisted degrades to the
+family *labelled as a family* in the tooltip. Lesson: when a field can only be
+approximate, the failure mode to avoid is not imprecision — it is imprecision
+that presents itself as precision.
+
+**[2026-09-01] Problem:** The rewritten coverage banner read "30.2 GB
+attributed" while the user table directly beneath it totalled 52.6 GB, which
+looks like double counting. **Solution:** Neither figure was wrong; they covered
+different windows. Coverage is measured over the days after per-device
+accounting was switched on, while the breakdown tables cover the whole selected
+range - and the switch-on day itself carries real attribution (the hours after
+the mangle rules went up), plus older installs carry per-user volume from the
+queue-based accounting that preceded them. So the banner now reports
+`pre_accounting_accounted_bytes` too, defined as
+`accounted_bytes - measured_accounted_bytes` rather than as an independent sum,
+which makes the two halves add back up to the tables' total *exactly* (verified
+on the live database: 30.24 + 22.38 = 52.62). Lesson: when a figure describes a
+sub-window of what is displayed around it, showing it alone is worse than not
+showing it - name the window and show the remainder, so the reader can do the
+arithmetic instead of assuming a bug.
+
+**[2026-09-01] Problem:** Splitting large React components moved JSX into new
+files whose icon imports were guessed rather than derived. `vite build` passed
+with a dozen undefined components. **Solution:** an undefined component is a
+runtime `ReferenceError`, not a build error - the bundle is valid and the page
+renders blank, which is the worst way to find out. `vitest` did not catch it
+either, because nothing rendered those components. Two guards now exist:
+`SplitComponents.smoke.test.jsx` renders every extracted component, and
+`frontend/scripts/check-identifiers.cjs` diffs JSX component usage against what
+each file imports or defines. Lesson: "it builds" proves nothing about a
+component move; only rendering does. Write the render test before the move, not
+after.

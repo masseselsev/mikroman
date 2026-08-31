@@ -39,6 +39,7 @@ govern adding new router calls.
   * **Firewall-Counter Accounting Engine**: Per-device volume is measured with dedicated RouterOS `/ip/firewall/mangle action=passthrough` counter rules (one for upload, one for download per device), tagged `mikroman:acct:dev_{id}:{up|down}`. `passthrough` only increments a counter and forwards the packet — it never drops, alters or reroutes traffic, and MikroMan never touches mangle rules it did not create.
   * **Why not Simple Queue counters**: On RouterOS 7.x the `bytes` counter of a Simple Queue can silently stay frozen at zero while traffic flows (verified on a hAP be^3 / RouterOS 7.25: a freshly created queue placed first in the queue order, targeting the busiest client, counted 0 bytes through a 4.9 MB burst). Simple Queues are therefore used for **bandwidth shaping only**; all accounting comes from firewall counters, which tracked 243.8 MB against 246 MB of real WAN throughput (99.1%) in the same measurement.
   * **Accounting Health Cross-Check**: Every analytics response carries an `accounting_health` block comparing gateway volume (WAN interface counters) against the sum of per-device counters — reported as `ok`, `partial` (range predates the accounting rules, or a router outage left only the gateway total for part of it), `degraded` (accounting active but attributing almost nothing) or `no_data`. A broken accounting path is surfaced as a dashboard banner instead of being hidden behind a plausible-looking total. The **Partial coverage** notice is dismissible per browser; it comes back on its own once the gap widens (a worse coverage figure or a change of status), since the missing per-device split for those windows cannot be reconstructed.
+  * **Coverage is measured over the window it can honestly describe**: `coverage_pct` counts only the days per-device accounting ran from midnight to midnight. Volume recorded before that — including the switch-on day itself, which is inherently partial — is reported separately as `pre_accounting_bytes` alongside `measured_bytes` / `measured_accounted_bytes`, and the banner prints all three. Dividing the whole range by the whole range instead made a range reaching one day past the switch-on read **51.6%**, which looks exactly like half the traffic being lost and was not: on the same data the measured window was **90%**, and a full day with no reconfiguration is **98%** (the residual is Ethernet framing overhead plus the router's own DNS/NTP/API traffic, which per-device firewall counters can never attribute).
   * **Survives a network outage; recognises a router reboot**: volume is accumulated as deltas against a *persisted* baseline, and a failed poll does not advance the baseline. While the connection is down the router keeps counting, so the first successful poll after it returns picks up the entire gap by ordinary differencing (a gap spanning midnight files its bytes on the recovery day — the total is kept, the per-day split for that window is not). A device that goes inactive *during* an outage has its rule's final counter flushed before the rule is pruned, so its share of the gap is not dropped either. A **reboot** is different — every RouterOS byte counter resets to zero, and a busy interface can climb past its stale pre-reboot baseline within one poll, which would read as a tiny delta and lose everything since the reboot. So `/system/resource` uptime is checked each tick; uptime running backwards is treated as an explicit counter reset and the bytes since the reboot are credited in full. (RouterOS has no persistent counter anywhere — `/ip/accounting` resets on reboot too — so the ~10 s between the last poll and a clean reboot is unrecoverable by design; a factory reset additionally clears the accounting rules, so per-device history restarts.)
   * **ISP Billing Cycle Anchor**: Set the exact day of the month (1–31) when your provider quota resets.
   * **Flexible Date Filtering**: Presets for *Today*, *Yesterday*, *Last 7 Days*, *Last 30 Days*, *Current Billing Cycle*, *Previous Billing Cycle*, and *Custom Date Ranges*.
@@ -51,7 +52,7 @@ govern adding new router calls.
 
 * **📈 Hardware & Multi-Interface Performance Graphs:**
   * Interactive time-series charts for CPU load %, RAM usage %, Board Temperature (°C), and Board Voltage (V).
-  * **Real processor identity on the CPU tile**: the SoC / platform name (`ipq5300`, `al21400`, …) from `/system/routerboard` `firmware-type` — the closest RouterOS gives to a CPU part number on MikroTik hardware, since `/system/resource` only reports the instruction set there — with the architecture, core count and clock beneath it (`arm64 · 4 cores · 1500 MHz`). Falls back to the real `cpu` string on x86 / CHR. Fetched once per connection and cached; also on `GET /api/v1/system/status` as `routerboard` and `cpu_model`.
+  * **Exact processor identity on the CPU tile**: RouterOS never reports a CPU part number on RouterBOARD hardware — `/system/routerboard` `firmware-type` names the *bootloader platform family* (`ipq5300`, `al21400`, …) and `/system/resource` `cpu` only holds the instruction set (`ARM64`). An hAP be³ Media answers `ipq5300` while the processor MikroTik publishes for it is an **IPQ-5322**, so the family was being shown as though it were the part. The exact part is now looked up from the product code (`/system/routerboard` `model`, unique per product) against the published specification, in `backend/app/services/hardware.py`; an unlisted board falls back to the family and the tile's tooltip says which of the two it is showing. Architecture, core count and clock sit beneath (`arm64 · 4 cores · 1500 MHz`); x86 / CHR keep using the real `cpu` string. Exposed on `GET /api/v1/system/status` and the telemetry stream as `cpu_model`, `cpu_model_exact` and `cpu_platform`. *Adding a board: read the CPU row of its page on mikrotik.com and add one entry keyed on its product code.*
   * **Dynamic Temperature Scaling**: Automatically scales the Y-axis to zoom in on actual router operating temperatures (e.g. 68°C–76°C) rather than squishing values on a fixed 20°C–75°C range.
   * **Configurable Temperature Warning Threshold**: Custom thermal alert threshold (e.g. 75°C, 80°C, 85°C) with dashed visual threshold markers and telemetry warnings.
   * Multi-interface aggregate bandwidth monitoring (e.g. WAN `ether1` + `sfp-plus1`) with selectable interface checkboxes and live throughput sum.
@@ -63,7 +64,7 @@ govern adding new router calls.
 
 * **🔍 Device Discovery, Auto-Scan Toggle & Hidden Devices:**
   * **Background Auto-Scan Toggle**: Control automatic network polling with a single switch; can be paused directly from the Unassigned Devices inbox or Settings modal.
-  * **Hidden Devices for Technical / IoT Infrastructure**: Mark infrastructure hardware (modems, smart home gateways, IoT sensors) as hidden so they don't clutter default views, with an unselected-by-default "Show Hidden Devices" filter.
+  * **Hidden Devices for Technical / IoT Infrastructure**: Mark infrastructure hardware (modems, smart home gateways, IoT sensors) as hidden so they don't clutter default views, with an unselected-by-default "Show Hidden Devices" filter. The *Unassigned Devices* tab badge counts them **separately** — an amber count for devices actually waiting to be sorted, and a quiet `👁` count for hidden ones — because a permanent "2" that turns out to be two deliberately parked records trains the eye to stop reading the badge at all.
   * Automatic network scanner pulling ARP, DHCP leases, and Wireless registration tables.
   * **WAN-Side Filtering**: ARP entries seen on the monitored uplink interface (typically the ISP gateway on `ether1`) are excluded from discovery, so upstream hardware is never ingested as a LAN client or given a quarantine queue.
   * **Stale ARP Rejection**: RouterOS keeps unresolved (`complete=false`) ARP entries after a host leaves. These no longer count as proof of presence, so departed devices are correctly shown as offline instead of lingering as *Active* with a stale signal reading.
@@ -78,6 +79,8 @@ govern adding new router calls.
   * **Per-device volume readout**: each device row carries a compact `today / all-time / share` figure beside its name, in whole gigabytes (rounded), where *share* is that device's all-time traffic as a percentage of every assigned device's all-time traffic. Hovering shows the field legend and the exact byte figures. All-time totals are summed from the daily per-device rollups.
   * Complete lifecycle event log: Discovery, Hostname changes, IP shifts, and Private / Randomized MAC rotations.
   * One-click **Smart Merge** suggestions to link rotated MACs back into original device profiles.
+  * **Manual merge into a specific device**: assigning an unassigned device to a person creates a record of its own, which is the wrong outcome when it is the same phone back on a fresh randomised MAC and the heuristics were not confident enough to say so. Each card in *Unassigned Devices* therefore also offers **Merge into device…** — a picker of every known device labelled with its owner, running the same `POST /api/v1/devices/{id}/merge` the automatic suggestion uses. The source supplies the current MAC and IP; the target keeps its name, owner, limits and history, and the two devices' daily rollups are summed. A merge by hand also **deletes any `device_coexistence` record** for the pair, since the operator has overruled the co-presence evidence and the next discovery sweep would otherwise pull them apart again. It is irreversible and the confirmation says so.
+  * **Bytes are not lost when a record is merged away**: the merged-away device's mangle rules keep counting on the router until the next sync prunes them, and readings for a device id that no longer resolves used to be discarded. An `acct_device_successors` map now redirects them onto the surviving record, collapsing chains (A→B→C credits C), and is cleared when the rules are pruned. A device that was genuinely *deleted* has no successor and its last seconds of counter are correctly dropped.
   * **Device maintenance from inside a profile**: each assigned device in the profile editor expands to three actions the checkbox list cannot express.
     * **Clear a stale IP** — sends an explicit null; the accounting rule and any queue for the old address are pruned on the next sync.
     * **Split a wrongly-merged MAC** — pick any address from the device's history and it becomes its own **unassigned** device, with the pair written to `device_coexistence` so the consolidation pass never folds them together again. Traffic recorded *before* the split stays with the original device: once daily rollups were coalesced by a merge, the individual share is gone and cannot be divided back out. Only future traffic on the split-off address is tracked separately.
@@ -102,6 +105,7 @@ govern adding new router calls.
   * **Three-Column Device Rows**: Each device row is a text column (name and badges, IP and vendor, radio links and signal), a fixed-width figures column (live download/upload and today's volume) and fixed actions. Only the text column shrinks, so a device jumping from `0 bps` to `12.4 Mbps` can neither reflow the name nor push the numbers past the card edge. Radio bands (`5G·BE`, `5G·AX`) are tagged in a dedicated accent colour, deliberately outside the status palette — a band is not good or bad news, but it should be readable at a glance.
   * **Per-Device Live Metrics**: Live rate and daily volume are exposed per device, not only per user profile, so the specific device saturating the link is named directly.
   * **Compact Telemetry Strip**: Download, Upload, CPU, RAM and Temperature carry inline **sparklines** built from the live telemetry stream (no extra requests, no charting dependency), alongside the **WAN IP**, **active client count** and uptime. Temperature is coloured against your configured warning threshold.
+  * **Compact range totals**: the four figures at the top of *Traffic Analytics* (combined / download / upload / active profiles) render through a shared `StatTile` at roughly half their former footprint — 140px minimum instead of 220px, a 30px icon instead of 44px. At full card size that strip alone filled the first screen on a laptop and pushed the breakdown, the part of the page anyone came for, below the fold.
   * **WAN Identity Tile**: shows the interface address, the address the internet actually sees (they differ under carrier-grade NAT), and the **provider name** — resolved together in one cached lookup, since an AS number and operator name are the only way to tell two links apart when both hand out CGNAT addresses. Failure is silent: the router may legitimately have no internet.
   * **External IP Lookup**: the public address is a link. Click it to open the address on 2ip.io, IPinfo, WhatIsMyIPAddress, AbuseIPDB, Shodan or the BGP Toolkit; with several enabled, the click opens a menu instead of guessing. Settings chooses which are offered and which one a plain click follows, and accepts **your own URL template** — anything containing `{ip}`, which is the only token substituted. Templates are validated on both sides of the wire (`http`/`https` only, no embedded credentials), because a stored template ends up as the `href` of a link you click, and a `javascript:` URL there would execute in the page's origin.
   * **Single Design System**: sizes, widths and corner radii come from one set of CSS tokens — an eight-step type scale, a five-step radius scale and two control heights — instead of the 29 font sizes, 8 raw pixel radii and 40 ad-hoc paddings the components had each invented for themselves. Segmented selectors, panels, list rows, setting rows, dropdowns and toolbar controls are shared classes, so a control cannot look different in two places.
@@ -137,6 +141,28 @@ govern adding new router calls.
 * **🪶 Ultra-Lightweight Footprint:**
   * Consumes **< 45MB RAM** and negligible CPU.
   * Multi-stage Docker build with container image size **< 80MB**.
+
+---
+
+## 🧱 Code layout
+
+Five files had grown past the point where anyone could hold them in their head,
+and every new feature had to open them. They were split along the seams that
+already existed, with public surfaces left untouched — every prior import still
+resolves, and the test suite was green after each step.
+
+| Module | Was | Now | Split along |
+|---|---|---|---|
+| `services/routeros/` | 1064 | 43 (+7 modules) | one mixin per RouterOS menu — `transport` (pooling + circuit breaker), `certificates`, `system`, `clients`, `queues`, `firewall`, `containers` — composed into `RouterOSClient` in `client.py`. The connection is genuinely shared; the menus have nothing to do with each other. |
+| `services/device_manager.py` | 986 | 560 (+521) | discovery stays; merging and rotation cleanup move to `device_consolidation.py` as a mixin. Discovery asks what is on the network *now*; consolidation asks which of yesterday's rows were the same device, and answers with evidence gathered over days. |
+| `components/SetupWizard.jsx` | 1041 | 258 (+3 steps) | one component per step. The ~20 pieces of connection-test and certificate state were used by step 1 and nowhere else, so they moved into it — the shell now holds only `step`, the two forms, and `saving`. |
+| `components/TrafficAnalytics.jsx` | 897 | 529 (+4) | one component per breakdown tab, plus `analytics/tableParts.jsx` for the sort header, share bar and comparator the user and device tables share. |
+| `services/rollups.py` | — | new | six near-identical hand-written rollup aggregations became one `sum_by`. They had already drifted: the router filter was applied to two of the three router queries. |
+
+Two things guard the frontend split, because a bundler cannot: the
+`SplitComponents.smoke.test.jsx` suite renders every extracted component, and
+`frontend/scripts/check-identifiers.cjs` reports JSX referencing a component
+that was never imported — which builds cleanly and renders a blank page.
 
 ---
 
@@ -327,6 +353,15 @@ Build the frontend React bundle:
 ```bash
 cd frontend && npm run build
 ```
+
+Check that every JSX component is actually imported where it is used:
+```bash
+node frontend/scripts/check-identifiers.cjs
+```
+`<Foo />` where `Foo` was never imported is a runtime `ReferenceError`, not a
+build error — Vite bundles it happily and the page renders blank. That is
+precisely the failure mode of moving markup between files, so this runs over
+`frontend/src` and reports any component a file references but never brings in.
 
 ### The suite never touches the network
 

@@ -2,7 +2,10 @@ import React, { useState, useEffect } from 'react';
 import { useI18n } from '../context/I18nContext';
 import { api } from '../api/client';
 import { formatBytes } from '../utils/formatters';
-import { DonutChart, DONUT_PALETTE, DONUT_OTHER_COLOR } from './DonutChart';
+import { StatTile } from './StatTile';
+import { OverviewTab } from './analytics/OverviewTab';
+import { UsersTab } from './analytics/UsersTab';
+import { DevicesTab } from './analytics/DevicesTab';
 import {
   Calendar,
   Clock,
@@ -12,119 +15,11 @@ import {
   Users,
   Smartphone,
   Layers,
-  Search,
-  Settings,
   X,
   Check,
-  Zap,
   Activity,
-  Filter,
-  EyeOff,
   AlertTriangle
 } from 'lucide-react';
-
-/**
- * Turn per-row totals into donut segments: the biggest `topN` by volume get
- * their own colour, everything else is folded into a single muted "Other" slice
- * so the chart never sprouts a dozen hairline wedges.
- */
-function toDonutSegments(rows, labelOf, otherLabel, topN = 6) {
-  const sorted = rows
-    .map(r => ({ label: labelOf(r), value: r.total_bytes || 0 }))
-    .filter(s => s.value > 0)
-    .sort((a, b) => b.value - a.value);
-  const head = sorted.slice(0, topN).map((s, i) => ({
-    ...s,
-    color: DONUT_PALETTE[i % DONUT_PALETTE.length],
-  }));
-  const tail = sorted.slice(topN);
-  if (tail.length) {
-    head.push({
-      label: `${otherLabel} (${tail.length})`,
-      value: tail.reduce((sum, s) => sum + s.value, 0),
-      color: DONUT_OTHER_COLOR,
-    });
-  }
-  return head;
-}
-
-/**
- * Share of total traffic as a bar plus its number. A bare percentage forces the
- * reader to compare figures mentally; the bar makes the ranking pre-attentive.
- */
-function ShareBar({ pct }) {
-  const value = Number(pct) || 0;
-  return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
-      <div style={{
-        flex: 1,
-        height: 5,
-        minWidth: 40,
-        background: 'var(--bg-secondary)',
-        borderRadius: 'var(--radius-xs)',
-        overflow: 'hidden'
-      }}>
-        <div style={{
-          width: `${Math.min(Math.max(value, 0), 100)}%`,
-          height: '100%',
-          background: 'var(--color-primary)',
-          borderRadius: 'var(--radius-xs)'
-        }} />
-      </div>
-      <span className="font-mono" style={{
-        fontSize: 'var(--fs-xs)',
-        fontWeight: 700,
-        color: value > 0 ? 'var(--color-primary)' : 'var(--text-muted)',
-        minWidth: 42,
-        textAlign: 'right'
-      }}>
-        {value.toFixed(1)}%
-      </span>
-    </div>
-  );
-}
-
-/**
- * Clickable table header that reports and toggles the active sort.
- */
-function SortHeader({ label, field, sort, onSort, align = 'left' }) {
-  const active = sort.field === field;
-  return (
-    <th
-      onClick={() => onSort(field)}
-      style={{
-        padding: '8px 12px',
-        cursor: 'pointer',
-        userSelect: 'none',
-        textAlign: align,
-        color: active ? 'var(--color-primary)' : undefined,
-        whiteSpace: 'nowrap'
-      }}
-      title={label}
-    >
-      {label}
-      <span style={{ opacity: active ? 1 : 0.25, marginLeft: 4 }}>
-        {active && sort.dir === 'asc' ? '▲' : '▼'}
-      </span>
-    </th>
-  );
-}
-
-/** Sort a copy of `rows` by the active field, numbers and strings alike. */
-function sortRows(rows, sort) {
-  const sorted = [...rows];
-  sorted.sort((a, b) => {
-    const av = a[sort.field];
-    const bv = b[sort.field];
-    if (typeof av === 'string' || typeof bv === 'string') {
-      const cmp = String(av ?? '').localeCompare(String(bv ?? ''));
-      return sort.dir === 'asc' ? cmp : -cmp;
-    }
-    const cmp = (Number(av) || 0) - (Number(bv) || 0);
-    return sort.dir === 'asc' ? cmp : -cmp;
-  });
-  return sorted;
-}
 
 const PRESETS = [
   { id: 'today', labelKey: 'range_today' },
@@ -252,13 +147,6 @@ export function TrafficAnalytics({ activeRouter }) {
   const devices = data?.devices || [];
   const timeline = data?.timeline || [];
 
-  // Pie segments for the current range - biggest few by volume, the rest in one
-  // "Other" slice.
-  const userSegments = toDonutSegments(users, u => u.user_name, t('donut_other'));
-  const deviceSegments = toDonutSegments(
-    devices, d => d.custom_name || d.hostname || d.mac_address, t('donut_other')
-  );
-
   // Filter devices
   const filteredDevices = devices.filter(d => {
     const matchSearch = searchTerm === '' ||
@@ -272,10 +160,11 @@ export function TrafficAnalytics({ activeRouter }) {
       (userFilter === 'unassigned' && !d.user_id) ||
       (String(d.user_id) === String(userFilter));
 
-    return matchSearch && matchUser;
-  });
+    // Parked infrastructure stays out unless asked for, as everywhere else.
+    const matchHidden = showHidden || !d.is_hidden;
 
-  const maxDailyBytes = Math.max(...timeline.map(p => p.total_bytes), 1024 * 1024);
+    return matchSearch && matchUser && matchHidden;
+  });
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
@@ -400,6 +289,37 @@ export function TrafficAnalytics({ activeRouter }) {
             <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-muted)', marginTop: 2 }}>
               {health.message}
             </div>
+            {/* The full arithmetic, spelled out. Two things depend on this.
+                One: a reader has no way to tell "half the traffic went missing"
+                from "half this range is older than the feature" without seeing
+                both volumes. Two: the percentage describes a *sub-window* of the
+                range, so its attributed figure is necessarily smaller than the
+                user and device tables further down — and unless the split is
+                shown adding back up to that total, the difference reads as a
+                counting bug. measured + earlier === the breakdown's total. */}
+            {health.pre_accounting_bytes > 0 && (
+              <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginTop: 4, lineHeight: 1.5 }}>
+                <div>
+                  {t('acct_measured_from', { date: dayAfter(health.accounting_started) })}:{' '}
+                  <span className="font-mono">{formatBytes(health.measured_accounted_bytes)}</span>
+                  {' / '}
+                  <span className="font-mono">{formatBytes(health.measured_bytes)}</span>
+                </div>
+                <div>
+                  {t('acct_before_start')}:{' '}
+                  <span className="font-mono">{formatBytes(health.pre_accounting_accounted_bytes)}</span>
+                  {' / '}
+                  <span className="font-mono">{formatBytes(health.pre_accounting_bytes)}</span>
+                </div>
+                <div>
+                  {t('acct_range_total')}:{' '}
+                  <span className="font-mono">{formatBytes(health.accounted_bytes)}</span>
+                  {' / '}
+                  <span className="font-mono">{formatBytes(health.gateway_bytes)}</span>
+                  {' — '}{t('acct_matches_tables')}
+                </div>
+              </div>
+            )}
             {health.status === 'partial' && (
               <div style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', marginTop: 4 }}>
                 {t('acct_partial_help')}
@@ -418,110 +338,47 @@ export function TrafficAnalytics({ activeRouter }) {
         </div>
       )}
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 14 }}>
-        {/* Total Consumed */}
-        <div className="card" style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-          <div style={{
-            background: 'rgba(11, 114, 201, 0.15)',
-            color: 'var(--color-primary)',
-            width: 44,
-            height: 44,
-            borderRadius: 'var(--radius-md)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            flexShrink: 0
-          }}>
-            <Layers size={22} />
-          </div>
-          <div>
-            <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', fontWeight: 600 }}>{t('total_combined')}</div>
-            <div className="font-mono" style={{ fontSize: 'var(--fs-2xl)', fontWeight: 800, color: 'var(--text-primary)' }}>
-              {formatBytes(gateway.total_bytes)}
-            </div>
-            <div style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)' }}>
-              {gateway.monitored_interfaces.length > 0 ? `${t('interfaces_label')}: ${gateway.monitored_interfaces.join(', ')}` : t('all_interfaces')}
-            </div>
-          </div>
-        </div>
+      {/* Range totals. Deliberately compact: these are a reference strip, not
+          the content of the page, and at full card size they pushed the actual
+          breakdown below the fold on a laptop. */}
+      <div className="stat-strip">
+        <StatTile
+          icon={<Layers size={16} />}
+          tone="var(--color-primary)"
+          tint="rgba(11, 114, 201, 0.15)"
+          label={t("total_combined")}
+          value={formatBytes(gateway.total_bytes)}
+          sub={gateway.monitored_interfaces.length > 0 ? `${t("interfaces_label")}: ${gateway.monitored_interfaces.join(", ")}` : t("all_interfaces")}
+        />
 
-        {/* Total Download (RX) */}
-        <div className="card" style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-          <div style={{
-            background: 'rgba(46, 204, 113, 0.15)',
-            color: 'var(--color-success)',
-            width: 44,
-            height: 44,
-            borderRadius: 'var(--radius-md)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            flexShrink: 0
-          }}>
-            <ArrowDown size={22} />
-          </div>
-          <div>
-            <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', fontWeight: 600 }}>{t('total_download')}</div>
-            <div className="font-mono" style={{ fontSize: 'var(--fs-2xl)', fontWeight: 800, color: 'var(--color-success)' }}>
-              {formatBytes(gateway.total_bytes_in)}
-            </div>
-            <div style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)' }}>
-              {gateway.total_bytes > 0 ? `${roundPct(gateway.total_bytes_in / gateway.total_bytes * 100)}% ${t('of_total')}` : '0%'}
-            </div>
-          </div>
-        </div>
+        <StatTile
+          icon={<ArrowDown size={16} />}
+          tone="var(--color-success)"
+          tint="rgba(46, 204, 113, 0.15)"
+          label={t("total_download")}
+          value={formatBytes(gateway.total_bytes_in)}
+          valueColor="var(--color-success)"
+          sub={gateway.total_bytes > 0 ? `${roundPct(gateway.total_bytes_in / gateway.total_bytes * 100)}% ${t("of_total")}` : "0%"}
+        />
 
-        {/* Total Upload (TX) */}
-        <div className="card" style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-          <div style={{
-            background: 'rgba(52, 152, 219, 0.15)',
-            color: '#3498db',
-            width: 44,
-            height: 44,
-            borderRadius: 'var(--radius-md)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            flexShrink: 0
-          }}>
-            <ArrowUp size={22} />
-          </div>
-          <div>
-            <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', fontWeight: 600 }}>{t('total_upload')}</div>
-            <div className="font-mono" style={{ fontSize: 'var(--fs-2xl)', fontWeight: 800, color: '#3498db' }}>
-              {formatBytes(gateway.total_bytes_out)}
-            </div>
-            <div style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)' }}>
-              {gateway.total_bytes > 0 ? `${roundPct(gateway.total_bytes_out / gateway.total_bytes * 100)}% ${t('of_total')}` : '0%'}
-            </div>
-          </div>
-        </div>
+        <StatTile
+          icon={<ArrowUp size={16} />}
+          tone="#3498db"
+          tint="rgba(52, 152, 219, 0.15)"
+          label={t("total_upload")}
+          value={formatBytes(gateway.total_bytes_out)}
+          valueColor="#3498db"
+          sub={gateway.total_bytes > 0 ? `${roundPct(gateway.total_bytes_out / gateway.total_bytes * 100)}% ${t("of_total")}` : "0%"}
+        />
 
-        {/* Active Profiles & Devices */}
-        <div className="card" style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-          <div style={{
-            background: 'rgba(155, 89, 182, 0.15)',
-            color: '#9b59b6',
-            width: 44,
-            height: 44,
-            borderRadius: 'var(--radius-md)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            flexShrink: 0
-          }}>
-            <Users size={22} />
-          </div>
-          <div>
-            <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', fontWeight: 600 }}>{t('active_profiles_devices')}</div>
-            <div className="font-mono" style={{ fontSize: 'var(--fs-xl)', fontWeight: 800 }}>
-              {users.length} <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-muted)', fontWeight: 500 }}>{t('users_short')}</span> • {devices.length} <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-muted)', fontWeight: 500 }}>{t('devs_short')}</span>
-            </div>
-            <div style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)' }}>
-              {t('shaped_via_ros')}
-            </div>
-          </div>
-        </div>
+        <StatTile
+          icon={<Users size={16} />}
+          tone="#9b59b6"
+          tint="rgba(155, 89, 182, 0.15)"
+          label={t("active_profiles_devices")}
+          value={<>{users.length}<span className="stat-tile-unit">{t("users_short")}</span>{" · "}{devices.length}<span className="stat-tile-unit">{t("devs_short")}</span></>}
+          sub={t("shaped_via_ros")}
+        />
       </div>
 
       {/* Breakdown View Tabs */}
@@ -561,274 +418,33 @@ export function TrafficAnalytics({ activeRouter }) {
         <div style={{ padding: 20 }}>
           {/* TAB 1: OVERVIEW */}
           {breakdownTab === 'overview' && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
-              {/* Consumption share for the selected range, as pie charts. */}
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 20 }}>
-                <div>
-                  <h4 style={{ fontSize: 'var(--fs-md)', fontWeight: 700, marginBottom: 12, display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <Users size={16} style={{ color: 'var(--color-primary)' }} />
-                    {t('share_by_user')}
-                  </h4>
-                  <DonutChart
-                    segments={userSegments}
-                    centerLabel={formatBytes(gateway.total_bytes)}
-                    centerSub={t('range_total_short')}
-                    formatValue={formatBytes}
-                  />
-                </div>
-                <div>
-                  <h4 style={{ fontSize: 'var(--fs-md)', fontWeight: 700, marginBottom: 12, display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <Smartphone size={16} style={{ color: 'var(--color-primary)' }} />
-                    {t('share_by_device')}
-                  </h4>
-                  <DonutChart
-                    segments={deviceSegments}
-                    centerLabel={String(devices.length)}
-                    centerSub={t('devs_short')}
-                    formatValue={formatBytes}
-                  />
-                </div>
-              </div>
-
-              {/* Daily Timeline Visual */}
-              <div>
-                <h4 style={{ fontSize: 'var(--fs-md)', fontWeight: 700, marginBottom: 12, display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <Calendar size={16} style={{ color: 'var(--color-primary)' }} />
-                  {t('traffic_timeline')} ({t('days_count', { count: timeline.length })})
-                </h4>
-
-                <div style={{
-                  display: 'flex',
-                  alignItems: 'flex-end',
-                  gap: 6,
-                  height: 140,
-                  padding: '12px 10px',
-                  background: 'var(--bg-secondary)',
-                  borderRadius: 'var(--radius-md)',
-                  border: '1px solid var(--border-color)',
-                  overflowX: 'auto'
-                }}>
-                  {timeline.map(pt => {
-                    const heightPct = Math.max((pt.total_bytes / maxDailyBytes) * 100, 4);
-                    const rxPct = pt.total_bytes > 0 ? (pt.bytes_in / pt.total_bytes) * 100 : 50;
-                    return (
-                      <div
-                        key={pt.record_date}
-                        style={{
-                          flex: 1,
-                          minWidth: 28,
-                          maxWidth: 60,
-                          height: '100%',
-                          display: 'flex',
-                          flexDirection: 'column',
-                          justifyContent: 'flex-end',
-                          alignItems: 'center',
-                          gap: 4
-                        }}
-                        title={`${pt.record_date}\n${t('table_total')}: ${formatBytes(pt.total_bytes)}\nDown: ${formatBytes(pt.bytes_in)}\nUp: ${formatBytes(pt.bytes_out)}`}
-                      >
-                        <div style={{
-                          width: '100%',
-                          height: `${heightPct}%`,
-                          borderRadius: 'var(--radius-xs)',
-                          overflow: 'hidden',
-                          display: 'flex',
-                          flexDirection: 'column',
-                          background: 'var(--bg-input)'
-                        }}>
-                          <div style={{ height: `${rxPct}%`, background: 'var(--color-success)' }} />
-                          <div style={{ flex: 1, background: '#3498db' }} />
-                        </div>
-                        <span style={{ fontSize: 'var(--fs-3xs)', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
-                          {String(pt.record_date).slice(-5)}
-                        </span>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-
-              {/* User Consumption Share Bars */}
-              <div>
-                <h4 style={{ fontSize: 'var(--fs-md)', fontWeight: 700, marginBottom: 12, display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <Users size={16} style={{ color: 'var(--color-primary)' }} />
-                  {t('distribution_title')}
-                </h4>
-
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                  {users.map(u => (
-                    <div key={u.user_id} style={{
-                      padding: '10px 14px',
-                      background: 'var(--bg-secondary)',
-                      borderRadius: 'var(--radius-sm)',
-                      border: '1px solid var(--border-color)'
-                    }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                          <span style={{ fontWeight: 700, fontSize: 'var(--fs-md)' }}>{u.user_name}</span>
-                          <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>({u.device_count} {t('devs_short')})</span>
-                        </div>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                          <span className="font-mono" style={{ fontSize: 'var(--fs-sm)', fontWeight: 700 }}>
-                            {formatBytes(u.total_bytes)}
-                          </span>
-                          <span style={{ fontSize: 'var(--fs-xs)', fontWeight: 700, color: 'var(--color-primary)', minWidth: 40, textAlign: 'right' }}>
-                            {u.pct_of_total}%
-                          </span>
-                        </div>
-                      </div>
-                      <div style={{ height: 6, background: 'var(--bg-input)', borderRadius: 'var(--radius-xs)', overflow: 'hidden' }}>
-                        <div style={{
-                          width: `${Math.min(u.pct_of_total, 100)}%`,
-                          height: '100%',
-                          background: 'var(--color-primary)',
-                          borderRadius: 'var(--radius-xs)',
-                          transition: 'width 0.4s ease'
-                        }} />
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
+            <OverviewTab
+              gateway={gateway}
+              timeline={timeline}
+              users={users}
+              devices={devices}
+            />
           )}
 
           {/* TAB 2: BY USERS */}
           {breakdownTab === 'users' && (
-            <div style={{ overflowX: 'auto' }}>
-              <table className="table" style={{ width: '100%', borderCollapse: 'collapse' }}>
-                <thead>
-                  <tr style={{ borderBottom: '1px solid var(--border-color)', textAlign: 'left', fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
-                    <SortHeader label={t('table_user')} field="user_name" sort={userSort} onSort={toggleUserSort} />
-                    {/* device count for this user - not the "Unassigned Devices" tab label */}
-                    <SortHeader label={t('table_devices')} field="device_count" sort={userSort} onSort={toggleUserSort} />
-                    <SortHeader label={`${t('total_download')} (RX)`} field="bytes_in" sort={userSort} onSort={toggleUserSort} />
-                    <SortHeader label={`${t('total_upload')} (TX)`} field="bytes_out" sort={userSort} onSort={toggleUserSort} />
-                    <SortHeader label={t('total_combined')} field="total_bytes" sort={userSort} onSort={toggleUserSort} />
-                    <SortHeader label={t('share_of_traffic')} field="pct_of_total" sort={userSort} onSort={toggleUserSort} />
-                  </tr>
-                </thead>
-                <tbody>
-                  {sortRows(users, userSort).map(u => (
-                    <tr key={u.user_id} style={{ borderBottom: '1px solid var(--border-color)', fontSize: 'var(--fs-sm)' }}>
-                      <td style={{ padding: '10px 12px', fontWeight: 700 }}>{u.user_name}</td>
-                      <td style={{ padding: '10px 12px', color: 'var(--text-muted)' }}>{u.device_count}</td>
-                      <td style={{ padding: '10px 12px', color: 'var(--color-success)', fontWeight: 600 }} className="font-mono">
-                        {formatBytes(u.bytes_in)}
-                      </td>
-                      <td style={{ padding: '10px 12px', color: '#3498db', fontWeight: 600 }} className="font-mono">
-                        {formatBytes(u.bytes_out)}
-                      </td>
-                      <td style={{ padding: '10px 12px', fontWeight: 800 }} className="font-mono">
-                        {formatBytes(u.total_bytes)}
-                      </td>
-                      <td style={{ padding: '10px 12px', minWidth: 130 }}>
-                        <ShareBar pct={u.pct_of_total} />
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            <UsersTab users={users} userSort={userSort} toggleUserSort={toggleUserSort} />
           )}
 
           {/* TAB 3: BY DEVICES */}
           {breakdownTab === 'devices' && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-              {/* Search & User Filters */}
-              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-                <div style={{ flex: 1, minWidth: 220, position: 'relative' }}>
-                  <Search size={14} style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
-                  <input
-                    type="text"
-                    className="form-input"
-                    placeholder={t('search_devices_placeholder')}
-                    value={searchTerm}
-                    onChange={e => setSearchTerm(e.target.value)}
-                    style={{ paddingLeft: 32, paddingTop: 6, paddingBottom: 6, fontSize: 'var(--fs-sm)' }}
-                  />
-                </div>
-
-                <select
-                  className="form-select"
-                  value={userFilter}
-                  onChange={e => setUserFilter(e.target.value)}
-                  style={{ width: 180, paddingTop: 6, paddingBottom: 6, fontSize: 'var(--fs-sm)' }}
-                >
-                  <option value="all">{t('all_users_filter')}</option>
-                  <option value="unassigned">{t('unassigned_traffic')}</option>
-                  {users.map(u => (
-                    <option key={u.user_id} value={u.user_id}>{u.user_name}</option>
-                  ))}
-                </select>
-              </div>
-
-              {/* Devices Table */}
-              <div style={{ overflowX: 'auto' }}>
-                <table className="table" style={{ width: '100%', borderCollapse: 'collapse' }}>
-                  <thead>
-                    <tr style={{ borderBottom: '1px solid var(--border-color)', textAlign: 'left', fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
-                      <SortHeader label={t('table_device')} field="custom_name" sort={deviceSort} onSort={toggleDeviceSort} />
-                      <SortHeader label={t('table_ip_mac')} field="ip_address" sort={deviceSort} onSort={toggleDeviceSort} />
-                      <SortHeader label={t('table_user')} field="user_name" sort={deviceSort} onSort={toggleDeviceSort} />
-                      <SortHeader label={t('download_rx')} field="bytes_in" sort={deviceSort} onSort={toggleDeviceSort} />
-                      <SortHeader label={t('upload_tx')} field="bytes_out" sort={deviceSort} onSort={toggleDeviceSort} />
-                      <SortHeader label={t('table_total')} field="total_bytes" sort={deviceSort} onSort={toggleDeviceSort} />
-                      <SortHeader label={t('table_share')} field="pct_of_total" sort={deviceSort} onSort={toggleDeviceSort} />
-                      <SortHeader label={t('table_speed_limit')} field="speed_limit" sort={deviceSort} onSort={toggleDeviceSort} />
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {filteredDevices.length === 0 ? (
-                      <tr>
-                        <td colSpan={8} style={{ padding: 20, textAlign: 'center', color: 'var(--text-muted)', fontSize: 'var(--fs-sm)' }}>
-                          {t('no_devices_matching')}
-                        </td>
-                      </tr>
-                    ) : (
-                      sortRows(filteredDevices, deviceSort).map(d => (
-                        <tr key={d.device_id} style={{ borderBottom: '1px solid var(--border-color)', fontSize: 'var(--fs-sm)' }}>
-                          <td style={{ padding: '10px 12px' }}>
-                            <div style={{ fontWeight: 700 }}>{d.custom_name || d.hostname || `${t('table_device')} ${d.device_id}`}</div>
-                            <div style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)' }}>{d.vendor || t('unknown_vendor')}</div>
-                          </td>
-                          <td style={{ padding: '10px 12px', fontSize: 'var(--fs-xs)' }} className="font-mono">
-                            <div>{d.ip_address || '—'}</div>
-                            <div style={{ color: 'var(--text-muted)' }}>{d.mac_address}</div>
-                          </td>
-                          <td style={{ padding: '10px 12px' }}>
-                            {d.user_name ? (
-                              <span style={{ padding: '2px 6px', borderRadius: 'var(--radius-xs)', background: 'var(--bg-secondary)', fontSize: 'var(--fs-xs)', fontWeight: 600 }}>
-                                {d.user_name}
-                              </span>
-                            ) : (
-                              <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>{t('unassigned_label')}</span>
-                            )}
-                          </td>
-                          <td style={{ padding: '10px 12px', color: 'var(--color-success)', fontWeight: 600 }} className="font-mono">
-                            {formatBytes(d.bytes_in)}
-                          </td>
-                          <td style={{ padding: '10px 12px', color: '#3498db', fontWeight: 600 }} className="font-mono">
-                            {formatBytes(d.bytes_out)}
-                          </td>
-                          <td style={{ padding: '10px 12px', fontWeight: 800 }} className="font-mono">
-                            {formatBytes(d.total_bytes)}
-                          </td>
-                          <td style={{ padding: '10px 12px', minWidth: 130 }}>
-                            <ShareBar pct={d.pct_of_total} />
-                          </td>
-                          <td style={{ padding: '10px 12px' }}>
-                            <span style={{ fontSize: 'var(--fs-xs)', color: d.speed_limit !== 'default' ? 'var(--color-warning)' : 'var(--text-muted)' }}>
-                              {d.speed_limit === 'default' ? t('inherit_user') : d.speed_limit}
-                            </span>
-                          </td>
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
+            <DevicesTab
+              users={users}
+              filteredDevices={filteredDevices}
+              deviceSort={deviceSort}
+              toggleDeviceSort={toggleDeviceSort}
+              searchTerm={searchTerm}
+              setSearchTerm={setSearchTerm}
+              userFilter={userFilter}
+              setUserFilter={setUserFilter}
+              showHidden={showHidden}
+              setShowHidden={setShowHidden}
+            />
           )}
         </div>
       </div>
@@ -894,4 +510,20 @@ function minVal(v, max) {
 
 function roundPct(val) {
   return isNaN(val) ? '0' : val.toFixed(1);
+}
+
+/**
+ * The first fully-measured day, given the day accounting was switched on.
+ *
+ * The switch-on day itself is partial — gateway counters ran from midnight,
+ * device counters only from the moment the rules went up — so coverage is
+ * measured from the day after it. Labelling the banner with the switch-on date
+ * would point at a day the figure deliberately excludes.
+ */
+function dayAfter(isoDate) {
+  if (!isoDate) return '';
+  const d = new Date(`${isoDate}T00:00:00Z`);
+  if (isNaN(d.getTime())) return isoDate;
+  d.setUTCDate(d.getUTCDate() + 1);
+  return d.toISOString().slice(0, 10);
 }

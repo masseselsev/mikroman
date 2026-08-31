@@ -138,6 +138,12 @@ export function App() {
     0
   );
 
+  // Unassigned devices split by whether they are actually asking for attention.
+  // A hidden device was explicitly parked and should not inflate the "needs
+  // sorting" badge; it gets its own quiet counter instead.
+  const hiddenUnassignedCount = unassignedDevices.filter((d) => d.is_hidden).length;
+  const visibleUnassignedCount = unassignedDevices.length - hiddenUnassignedCount;
+
   // Merge live WebSocket telemetry into users state for smooth animation.
   // The merge itself lives in utils/telemetryMerge so its identity rules - which
   // decide how often the dashboard repaints - can be tested directly.
@@ -265,9 +271,23 @@ export function App() {
           >
             <Laptop size={18} />
             {t('tab_devices')}
-            {unassignedDevices.length > 0 && (
+            {/* Hidden devices are deliberately parked, so they must not sit in
+                the same badge as devices actually waiting to be assigned - a
+                permanent "2" that turns out to be two ignored records trains
+                the eye to stop reading the badge at all. */}
+            {visibleUnassignedCount > 0 && (
               <span className="badge badge-warning" style={{ padding: '1px 6px', fontSize: 'var(--fs-2xs)' }}>
-                {unassignedDevices.length}
+                {visibleUnassignedCount}
+              </span>
+            )}
+            {hiddenUnassignedCount > 0 && (
+              <span
+                className="badge badge-neutral"
+                style={{ padding: '1px 5px', fontSize: 'var(--fs-2xs)', display: 'inline-flex', alignItems: 'center', gap: 3, opacity: 0.75 }}
+                title={t('hidden_devices_badge_hint', { count: hiddenUnassignedCount })}
+              >
+                <EyeOff size={10} />
+                {hiddenUnassignedCount}
               </span>
             )}
           </button>
