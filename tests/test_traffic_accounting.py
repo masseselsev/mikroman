@@ -29,8 +29,13 @@ class FakeRouter:
         self.created = []
         self.updated = []
         self.deleted = []
+        # Flip on to simulate the router being unreachable: every counter read
+        # raises, exactly as httpx does on a connect failure.
+        self.fail_reads = False
 
     async def get_mangle_rules(self):
+        if self.fail_reads:
+            raise ConnectionError("router unreachable")
         return [dict(r) for r in self.rules]
 
     async def create_mangle_rule(self, payload):
@@ -458,3 +463,87 @@ class TestRebootAwareCollection:
         )).scalar_one()
         # 2M < 8M is caught by the backwards-counter heuristic with no uptime.
         assert roll.bytes_in == 2_000_000
+
+
+class TestOutageWithoutReboot:
+    """The case flagged in review: the router is unreachable for a while but
+    never restarts. No bytes may be lost and none double-counted."""
+
+    @pytest.mark.asyncio
+    async def test_a_failed_poll_is_a_no_op_and_the_gap_is_captured_on_return(self, session):
+        _, device = await _seed(session)
+        router = FakeRouter()
+        svc = TrafficAccountingService(router, router_id=1)
+        await svc.sync_counter_rules(session)
+
+        router.set_bytes(device.id, "down", 1_000_000)
+        await svc.collect(session, router_uptime_seconds=3600)  # baseline
+
+        # Router unreachable: the poll raises. collect() must touch nothing.
+        router.fail_reads = True
+        out = await svc.collect(session, router_uptime_seconds=None)
+        assert out == {"devices": 0, "bytes_in": 0, "bytes_out": 0}
+        baselines = await TrafficAccountingService._load_baselines(session)
+        assert baselines[f"{device.id}:down"] == 1_000_000, "baseline unchanged by a failed poll"
+
+        # Twenty minutes later it is back; the counter ran the whole time.
+        router.fail_reads = False
+        router.set_bytes(device.id, "down", 80_000_000)
+        await svc.collect(session, router_uptime_seconds=4800)
+
+        roll = (await session.execute(
+            select(DeviceTrafficRollup).where(DeviceTrafficRollup.device_id == device.id)
+        )).scalar_one()
+        assert roll.bytes_in == 79_000_000  # the entire gap, credited exactly once
+
+    @pytest.mark.asyncio
+    async def test_repeated_failures_then_recovery_lose_nothing(self, session):
+        _, device = await _seed(session)
+        router = FakeRouter()
+        svc = TrafficAccountingService(router, router_id=1)
+        await svc.sync_counter_rules(session)
+
+        router.set_bytes(device.id, "up", 500_000)
+        await svc.collect(session, router_uptime_seconds=1000)
+
+        router.fail_reads = True
+        for _ in range(5):
+            await svc.collect(session)
+
+        router.fail_reads = False
+        router.set_bytes(device.id, "up", 4_500_000)
+        await svc.collect(session, router_uptime_seconds=1600)
+
+        roll = (await session.execute(
+            select(DeviceTrafficRollup).where(DeviceTrafficRollup.device_id == device.id)
+        )).scalar_one()
+        assert roll.bytes_out == 4_000_000
+
+    @pytest.mark.asyncio
+    async def test_a_device_pruned_while_going_inactive_flushes_its_last_bytes(self, session):
+        """The prune-before-collect hole: sync_counter_rules deletes the rule of
+        a device that has gone inactive, so its final interval must be flushed
+        first or it is lost - and across an outage that interval is not small."""
+        _, device = await _seed(session)
+        router = FakeRouter()
+        svc = TrafficAccountingService(router, router_id=1)
+        await svc.sync_counter_rules(session)
+
+        router.set_bytes(device.id, "down", 2_000_000)
+        await svc.collect(session)  # baseline
+
+        # 3 MB more, then the device drops off and discovery marks it inactive.
+        router.set_bytes(device.id, "down", 5_000_000)
+        device.is_active = False
+        await session.commit()
+
+        summary = await svc.sync_counter_rules(session)
+        assert summary["removed"] == 2  # both directions gone
+
+        roll = (await session.execute(
+            select(DeviceTrafficRollup).where(DeviceTrafficRollup.device_id == device.id)
+        )).scalar_one()
+        assert roll.bytes_in == 3_000_000  # credited before the rule was deleted
+
+        baselines = await TrafficAccountingService._load_baselines(session)
+        assert f"{device.id}:down" not in baselines  # series closed cleanly

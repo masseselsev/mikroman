@@ -110,6 +110,26 @@ form. Native `/ip/accounting` was considered and rejected - it is equally
 in-memory and resets on reboot too, so it offers no durability advantage over
 the mangle-counter approach.
 
+**[2026-09-01] Problem (re-audit of the no-reboot outage path):** the outage
+total is preserved, but `sync_counter_rules()` ran *before* `collect()` every
+tick and **deletes** the mangle rule of any device that has gone inactive.
+`collect()` then never read that rule's final counter, so the bytes the device
+moved between the last successful `collect` and going idle were lost. Usually a
+rounding error (a device about to idle is already idle); across a router outage
+that also spanned the device dropping off, it is minutes of real volume, and it
+only ever *under*-counts.
+**→ Solution:** two changes. (1) `main.py` now calls `collect()` **before**
+`sync_counter_rules()`, so the going-inactive device's rule is still present when
+its final interval is read. (2) The prune branch of `sync_counter_rules()` reads
+each counter one last time, flushes the delta via the shared `_flush_deltas`
+helper, and drops the baseline key - a backstop that holds regardless of call
+order. Tests: `TestOutageWithoutReboot` covers a failing poll leaving the
+baseline untouched, repeated failures then recovery, and the prune-flush.
+Remaining known limitation (documented, not a bug): all gap bytes are credited
+to the router-local date of the first poll after reconnect, so an outage that
+straddles midnight mis-splits those two days. The total is exact; a monotonic
+counter carries no per-day breakdown to do better.
+
 ## Hardware identity
 
 **[2026-08-31] Problem:** the CPU tile showed the *board* name ("hAP be³

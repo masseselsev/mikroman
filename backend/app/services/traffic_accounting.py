@@ -250,14 +250,47 @@ class TrafficAccountingService:
                 except Exception as e:
                     logger.warning(f"Failed to repoint accounting rule for device {device_id}: {e}")
 
-        # Prune rules for devices that are gone or no longer accountable
-        for key, rule in existing.items():
-            if key not in desired:
+        # Prune rules for devices that are gone or no longer accountable.
+        #
+        # Read each counter one last time and flush the bytes accrued since the
+        # previous baseline BEFORE deleting the rule, otherwise every active ->
+        # inactive transition drops up to one interval of that device's traffic.
+        # That is normally negligible (a device about to go idle is already
+        # idle), but across a router outage that also spanned the device
+        # dropping off, it is minutes of real volume. main.py additionally runs
+        # collect() before this method so the common path never reaches here
+        # with unflushed bytes; this is the backstop.
+        to_prune = {key: rule for key, rule in existing.items() if key not in desired}
+        if to_prune:
+            baselines = await self._load_baselines(session)
+            final_deltas: Dict[int, Tuple[int, int]] = {}
+            for (device_id, direction), rule in to_prune.items():
                 try:
-                    await self.router_client.delete_mangle_rule(rule[".id"])
-                    removed += 1
-                except Exception as e:
-                    logger.warning(f"Failed to remove stale accounting rule {rule.get('.id')}: {e}")
+                    current = int(rule.get("bytes", 0) or 0)
+                except (TypeError, ValueError):
+                    current = 0
+                bkey = f"{device_id}:{direction}"
+                delta = self.compute_delta(current, baselines.get(bkey))
+                baselines.pop(bkey, None)
+                if delta <= 0:
+                    continue
+                down, up = final_deltas.get(device_id, (0, 0))
+                if direction == "down":
+                    final_deltas[device_id] = (down + delta, up)
+                else:
+                    final_deltas[device_id] = (down, up + delta)
+
+            if final_deltas:
+                await self._flush_deltas(session, await router_local_date(session), final_deltas)
+            await self._save_baselines(session, baselines)
+            await session.commit()
+
+        for key, rule in to_prune.items():
+            try:
+                await self.router_client.delete_mangle_rule(rule[".id"])
+                removed += 1
+            except Exception as e:
+                logger.warning(f"Failed to remove stale accounting rule {rule.get('.id')}: {e}")
 
         if created or updated or removed:
             logger.info(
@@ -425,10 +458,31 @@ class TrafficAccountingService:
         if router_uptime_seconds is not None:
             baselines[UPTIME_BASELINE_KEY] = router_uptime_seconds
 
+        total_in, total_out = await self._flush_deltas(session, today, per_device)
+
+        await self._save_baselines(session, baselines)
+        await session.commit()
+
+        return {"devices": len(per_device), "bytes_in": total_in, "bytes_out": total_out}
+
+    async def _flush_deltas(
+        self,
+        session: AsyncSession,
+        today: date,
+        per_device: Dict[int, Tuple[int, int]],
+    ) -> Tuple[int, int]:
+        """Credit accumulated ``{device_id: (down, up)}`` deltas to the rollups.
+
+        Device volume is authoritative; each user's rollup is the sum of that
+        user's devices, computed here, so the two levels can never disagree.
+        Returns the ``(total_in, total_out)`` actually written.
+        """
         total_in = total_out = 0
         user_totals: Dict[int, Tuple[int, int]] = {}
 
         for device_id, (down, up) in per_device.items():
+            if not (down or up):
+                continue
             device = await session.get(Device, device_id)
             if device is None:
                 continue
@@ -448,10 +502,7 @@ class TrafficAccountingService:
                 session, TrafficRollup, "user_id", user_id, today, down, up
             )
 
-        await self._save_baselines(session, baselines)
-        await session.commit()
-
-        return {"devices": len(per_device), "bytes_in": total_in, "bytes_out": total_out}
+        return total_in, total_out
 
     @staticmethod
     async def _add_rollup(

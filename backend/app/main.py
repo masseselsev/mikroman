@@ -187,8 +187,12 @@ async def background_sync_worker():
                             try:
                                 from backend.app.services.traffic_accounting import TrafficAccountingService
                                 acct = TrafficAccountingService(client, router_id=r.id)
-                                await acct.sync_counter_rules(session)
+                                # collect() first: it reads the final counter of
+                                # any device that has just gone inactive before
+                                # sync_counter_rules() prunes that device's rule,
+                                # so the last interval of its traffic is not lost.
                                 await acct.collect(session, router_uptime_seconds=router_uptime_s)
+                                await acct.sync_counter_rules(session)
                             except Exception as ae:
                                 logger.warning(f"Traffic accounting tick error for router {r.id}: {ae}")
 
