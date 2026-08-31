@@ -30,49 +30,26 @@ export function RouterSelector({ routers = [], activeRouter, onSelectRouter, onA
         type="button"
         className="btn btn-ghost"
         style={{
-          display: 'flex',
-          alignItems: 'center',
           gap: 8,
           padding: '6px 12px',
           background: 'var(--bg-secondary)',
           border: '1px solid var(--border-color)',
-          borderRadius: 8,
-          fontSize: '0.85rem',
-          fontWeight: 600
+          borderRadius: 'var(--radius-sm)',
+          fontSize: 'var(--fs-sm)'
         }}
         onClick={() => setIsOpen(!isOpen)}
       >
         <Server size={16} style={{ color: 'var(--color-primary)' }} />
-        <span style={{ maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        <span className="truncate" style={{ maxWidth: 140 }}>
           {current?.name || 'Router'}
         </span>
-        <span
-          className="badge-dot"
-          style={{
-            background: current?.is_online ? 'var(--color-success)' : 'var(--text-muted)',
-            width: 8,
-            height: 8,
-            borderRadius: '50%'
-          }}
-        />
+        <span className={`status-dot${current?.is_online ? ' is-online' : ''}`} />
         <ChevronDown size={14} style={{ opacity: 0.7 }} />
       </button>
 
       {isOpen && (
-        <div
-          className="card shadow-lg"
-          style={{
-            position: 'absolute',
-            top: 'calc(100% + 6px)',
-            left: 0,
-            width: 240,
-            zIndex: 1000,
-            padding: '6px 0',
-            background: 'var(--bg-card)',
-            border: '1px solid var(--border-color)'
-          }}
-        >
-          <div style={{ padding: '6px 12px', fontSize: '0.75rem', fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase' }}>
+        <div className="popover" style={{ top: 'calc(100% + 6px)', left: 0, width: 240 }}>
+          <div className="popover-head">
             {t('switch_router')}
           </div>
 
@@ -83,40 +60,20 @@ export function RouterSelector({ routers = [], activeRouter, onSelectRouter, onA
                 <button
                   key={r.id}
                   type="button"
+                  className={`popover-item${isSelected ? ' is-selected' : ''}`}
                   onClick={() => {
                     onSelectRouter(r.id);
                     setIsOpen(false);
                   }}
-                  style={{
-                    width: '100%',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    padding: '8px 12px',
-                    background: isSelected ? 'var(--bg-secondary)' : 'transparent',
-                    border: 'none',
-                    textAlign: 'left',
-                    color: 'var(--text-primary)',
-                    cursor: 'pointer',
-                    fontSize: '0.85rem',
-                    gap: 8
-                  }}
                 >
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 2, overflow: 'hidden', flex: 1 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                      <span
-                        style={{
-                          width: 7,
-                          height: 7,
-                          borderRadius: '50%',
-                          background: r.is_online ? 'var(--color-success)' : 'var(--text-muted)'
-                        }}
-                      />
-                      <span style={{ fontWeight: isSelected ? 700 : 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      <span className={`status-dot${r.is_online ? ' is-online' : ''}`} />
+                      <span className="truncate" style={{ fontWeight: isSelected ? 700 : 600 }}>
                         {r.name}
                       </span>
                     </div>
-                    <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', paddingLeft: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    <div className="truncate" style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', paddingLeft: 14 }}>
                       {r.board_name || r.model || 'MikroTik'} {r.ros_version ? `• ROS ${r.ros_version}` : ''}
                     </div>
                   </div>
@@ -126,26 +83,15 @@ export function RouterSelector({ routers = [], activeRouter, onSelectRouter, onA
             })}
           </div>
 
-          <div style={{ borderTop: '1px solid var(--border-color)', marginTop: 4, paddingTop: 4 }}>
+          <div className="popover-foot">
             <button
               type="button"
+              className="popover-item"
               onClick={() => {
                 setIsOpen(false);
                 if (onAddRouter) onAddRouter();
               }}
-              style={{
-                width: '100%',
-                display: 'flex',
-                alignItems: 'center',
-                gap: 8,
-                padding: '8px 12px',
-                background: 'transparent',
-                border: 'none',
-                color: 'var(--color-primary)',
-                cursor: 'pointer',
-                fontSize: '0.825rem',
-                fontWeight: 600
-              }}
+              style={{ justifyContent: 'flex-start', color: 'var(--color-primary)', fontWeight: 600 }}
             >
               <Plus size={14} />
               {t('add_router_btn')}

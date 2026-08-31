@@ -6,18 +6,12 @@ import {
   Laptop,
   Tv,
   Globe,
-  HelpCircle,
   X,
-  ArrowDown,
-  ArrowUp,
-  Sliders,
   Pause,
   Play,
-  Check,
-  Shield,
-  Zap,
   EyeOff
 } from 'lucide-react';
+import { RateLimitInputs, LimitModeToggle } from './RateLimitInputs';
 
 const SPEED_PRESETS = [
   { label: 'Inherit User Limit (Default)', value: 'default' },
@@ -91,29 +85,20 @@ export function DeviceModal({ device, user, onClose, onUpdated }) {
 
   return (
     <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal-card" onClick={e => e.stopPropagation()} style={{ maxWidth: 520 }}>
+      <div className="modal-card" onClick={e => e.stopPropagation()}>
         <div className="modal-header">
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <div style={{
-              background: 'rgba(11, 114, 201, 0.15)',
-              color: 'var(--color-primary)',
-              width: 38,
-              height: 38,
-              borderRadius: 'var(--radius-md)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center'
-            }}>
+          <div className="modal-title-group">
+            <div className="modal-icon">
               {getDeviceIcon(device.vendor, device.hostname)}
             </div>
-            <div>
-              <h3 style={{ fontSize: '1.05rem', fontWeight: 700 }}>{t('edit_device')}</h3>
-              <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+            <div style={{ minWidth: 0 }}>
+              <h3>{t('edit_device')}</h3>
+              <div className="modal-subtitle truncate">
                 {device.mac_address} • {device.ip_address || 'No IP'}
               </div>
             </div>
           </div>
-          <button className="btn-icon" onClick={onClose} style={{ width: 28, height: 28 }}>
+          <button className="btn-icon" onClick={onClose}>
             <X size={16} />
           </button>
         </div>
@@ -121,9 +106,7 @@ export function DeviceModal({ device, user, onClose, onUpdated }) {
         <form onSubmit={handleSubmit}>
           <div className="modal-body" style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
             {error && (
-              <div style={{ padding: '8px 12px', background: 'rgba(231, 76, 60, 0.15)', color: 'var(--color-danger)', borderRadius: 'var(--radius-sm)', fontSize: '0.8rem' }}>
-                {error}
-              </div>
+              <div className="alert alert-danger">{error}</div>
             )}
 
             {/* Device Name */}
@@ -143,58 +126,20 @@ export function DeviceModal({ device, user, onClose, onUpdated }) {
             <div className="form-group">
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
                 <label className="form-label" style={{ marginBottom: 0, fontWeight: 600 }}>{t('speed_limit')}</label>
-                <div style={{
-                  display: 'inline-flex',
-                  background: 'var(--bg-input)',
-                  padding: 2,
-                  borderRadius: 6,
-                  border: '1px solid var(--border-color)',
-                  gap: 2
-                }}>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setIsCustomMode(false);
-                      setSpeedLimit('default');
-                    }}
-                    style={{
-                      padding: '3px 10px',
-                      fontSize: '0.725rem',
-                      fontWeight: 600,
-                      borderRadius: 4,
-                      border: 'none',
-                      background: !isCustomMode ? 'var(--color-primary)' : 'transparent',
-                      color: !isCustomMode ? '#ffffff' : 'var(--text-muted)',
-                      cursor: 'pointer',
-                      transition: 'all 0.15s ease'
-                    }}
-                  >
-                    ⚡ {t('presets')}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setIsCustomMode(true);
-                      if (!customDown && !customUp) {
-                        setCustomDown('15M');
-                        setCustomUp('5M');
-                      }
-                    }}
-                    style={{
-                      padding: '3px 10px',
-                      fontSize: '0.725rem',
-                      fontWeight: 600,
-                      borderRadius: 4,
-                      border: 'none',
-                      background: isCustomMode ? 'var(--color-primary)' : 'transparent',
-                      color: isCustomMode ? '#ffffff' : 'var(--text-muted)',
-                      cursor: 'pointer',
-                      transition: 'all 0.15s ease'
-                    }}
-                  >
-                    ✏️ {t('custom')}
-                  </button>
-                </div>
+                <LimitModeToggle
+                  isCustom={isCustomMode}
+                  onPresets={() => {
+                    setIsCustomMode(false);
+                    setSpeedLimit('default');
+                  }}
+                  onCustom={() => {
+                    setIsCustomMode(true);
+                    if (!customDown && !customUp) {
+                      setCustomDown('15M');
+                      setCustomUp('5M');
+                    }
+                  }}
+                />
               </div>
 
               {!isCustomMode ? (
@@ -202,103 +147,53 @@ export function DeviceModal({ device, user, onClose, onUpdated }) {
                   className="form-select"
                   value={speedLimit}
                   onChange={e => handleSpeedSelect(e.target.value)}
-                  style={{ height: 38 }}
                 >
                   {SPEED_PRESETS.map(p => (
                     <option key={p.value} value={p.value}>{p.label}</option>
                   ))}
                 </select>
               ) : (
-                <div style={{
-                  background: 'var(--bg-secondary)',
-                  padding: '12px 14px',
-                  borderRadius: 'var(--radius-md)',
-                  border: '1px solid var(--border-color)',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: 10
-                }}>
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-                    <div>
-                      <label style={{ fontSize: '0.725rem', color: 'var(--color-success)', fontWeight: 700, display: 'flex', alignItems: 'center', gap: 4, marginBottom: 5 }}>
-                        <ArrowDown size={13} /> {t('download_limit')}
-                      </label>
-                      <input
-                        type="text"
-                        className="form-input font-mono"
-                        placeholder="e.g. 15M or 50M"
-                        value={customDown}
-                        onChange={e => setCustomDown(e.target.value)}
-                        style={{ height: 34, fontSize: '0.85rem' }}
-                      />
-                    </div>
-                    <div>
-                      <label style={{ fontSize: '0.725rem', color: 'var(--color-primary)', fontWeight: 700, display: 'flex', alignItems: 'center', gap: 4, marginBottom: 5 }}>
-                        <ArrowUp size={13} /> {t('upload_limit')}
-                      </label>
-                      <input
-                        type="text"
-                        className="form-input font-mono"
-                        placeholder="e.g. 5M or 20M"
-                        value={customUp}
-                        onChange={e => setCustomUp(e.target.value)}
-                        style={{ height: 34, fontSize: '0.85rem' }}
-                      />
-                    </div>
-                  </div>
-                  <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
-                    💡 Rate limit is shaped as a child queue under user parent queue <code>mikroman-{user?.name || 'group'}</code>.
-                  </div>
-                </div>
+                <RateLimitInputs
+                  down={customDown}
+                  up={customUp}
+                  onChangeDown={setCustomDown}
+                  onChangeUp={setCustomUp}
+                  downPlaceholder="e.g. 15M or 50M"
+                  upPlaceholder="e.g. 5M or 20M"
+                  hint={t('device_queue_hint', { user: user?.name || 'group' })}
+                />
               )}
             </div>
 
             {/* Quick Pause & Status Toggle */}
-            <div style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              padding: '10px 14px',
-              borderRadius: 'var(--radius-md)',
-              background: isPaused ? 'rgba(231, 76, 60, 0.12)' : 'var(--bg-secondary)',
-              border: `1px solid ${isPaused ? 'var(--color-danger)' : 'var(--border-color)'}`
-            }}>
-              <div>
-                <div style={{ fontWeight: 600, fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: 6 }}>
+            <div className={`setting-row${isPaused ? ' is-danger' : ''}`}>
+              <div style={{ minWidth: 0 }}>
+                <div className="setting-row-title">
                   {isPaused ? <Pause size={15} style={{ color: 'var(--color-danger)' }} /> : <Play size={15} style={{ color: 'var(--color-success)' }} />}
                   {isPaused ? t('device_paused') : t('device_active')}
                 </div>
-                <div style={{ fontSize: '0.725rem', color: 'var(--text-muted)' }}>
-                  {isPaused ? 'Internet traffic for this device is completely blocked' : 'Internet access is enabled'}
+                <div className="setting-row-desc">
+                  {isPaused ? t('device_paused_desc') : t('device_active_desc')}
                 </div>
               </div>
 
               <button
                 type="button"
-                className={`btn btn-sm ${isPaused ? 'btn-success' : 'btn-danger'}`}
+                className={`btn btn-sm ${isPaused ? 'btn-secondary' : 'btn-danger'}`}
                 onClick={() => setIsPaused(!isPaused)}
-                style={{ fontSize: '0.75rem', padding: '4px 10px' }}
               >
                 {isPaused ? t('resume_device') : t('pause_device')}
               </button>
             </div>
 
             {/* Hide Device Toggle */}
-            <div style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              padding: '10px 14px',
-              borderRadius: 'var(--radius-md)',
-              background: isHidden ? 'rgba(255, 170, 0, 0.08)' : 'var(--bg-secondary)',
-              border: `1px solid ${isHidden ? 'rgba(255, 170, 0, 0.35)' : 'var(--border-color)'}`
-            }}>
-              <div>
-                <div style={{ fontWeight: 600, fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <EyeOff size={15} style={{ color: isHidden ? 'var(--color-warning, #f59e0b)' : 'var(--text-muted)' }} />
+            <div className={`setting-row${isHidden ? ' is-warning' : ''}`}>
+              <div style={{ minWidth: 0 }}>
+                <div className="setting-row-title">
+                  <EyeOff size={15} style={{ color: isHidden ? 'var(--color-warning)' : 'var(--text-muted)' }} />
                   {t('hide_device')}
                 </div>
-                <div style={{ fontSize: '0.725rem', color: 'var(--text-muted)' }}>
+                <div className="setting-row-desc">
                   {t('hide_device_desc')}
                 </div>
               </div>

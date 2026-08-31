@@ -240,7 +240,7 @@ export function App() {
           >
             <Users size={18} />
             {t('tab_users')}
-            <span className="badge badge-neutral" style={{ padding: '1px 6px', fontSize: '0.7rem' }}>
+            <span className="badge badge-neutral" style={{ padding: '1px 6px', fontSize: 'var(--fs-2xs)' }}>
               {users.length}
             </span>
           </button>
@@ -260,7 +260,7 @@ export function App() {
             <Laptop size={18} />
             {t('tab_devices')}
             {unassignedDevices.length > 0 && (
-              <span className="badge badge-warning" style={{ padding: '1px 6px', fontSize: '0.7rem' }}>
+              <span className="badge badge-warning" style={{ padding: '1px 6px', fontSize: 'var(--fs-2xs)' }}>
                 {unassignedDevices.length}
               </span>
             )}
@@ -280,32 +280,18 @@ export function App() {
           <div>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20, flexWrap: 'wrap', gap: 10 }}>
               <div>
-                <h2 style={{ fontSize: '1.25rem', fontWeight: 700 }}>{t('tab_users')}</h2>
-                <p style={{ fontSize: '0.825rem', color: 'var(--text-muted)' }}>
+                <h2 style={{ fontSize: 'var(--fs-xl)', fontWeight: 700 }}>{t('tab_users')}</h2>
+                <p style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-muted)' }}>
                   Organize network clients into users with per-user bandwidth limiting and instant pause controls.
                 </p>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                 {/* Show Hidden Devices Checkbox */}
-                <label style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 6,
-                  fontSize: '0.775rem',
-                  color: 'var(--text-muted)',
-                  cursor: 'pointer',
-                  userSelect: 'none',
-                  background: 'var(--bg-card)',
-                  padding: '6px 12px',
-                  borderRadius: 'var(--radius-md)',
-                  border: '1px solid var(--border-color)',
-                  height: 34
-                }}>
+                <label className="toggle-pill">
                   <input
                     type="checkbox"
                     checked={showHiddenDevices}
                     onChange={e => setShowHiddenDevices(e.target.checked)}
-                    style={{ width: 14, height: 14, cursor: 'pointer', accentColor: 'var(--color-primary)' }}
                   />
                   <EyeOff size={13} style={{ color: showHiddenDevices ? 'var(--color-primary)' : 'var(--text-muted)' }} />
                   {t('show_hidden_devices')}
@@ -325,9 +311,9 @@ export function App() {
             </div>
 
             {users.length === 0 ? (
-              <div className="card" style={{ textAlign: 'center', padding: '50px 20px', color: 'var(--text-muted)' }}>
+              <div className="card empty-state">
                 <Users size={40} style={{ margin: '0 auto 12px auto', opacity: 0.5 }} />
-                <div style={{ fontSize: '1.1rem', fontWeight: 600, marginBottom: 6 }}>{t('no_users_found')}</div>
+                <div className="empty-state-title">{t('no_users_found')}</div>
                 <button
                   className="btn btn-primary btn-sm"
                   style={{ marginTop: 14 }}
@@ -421,8 +407,8 @@ export function App() {
                 }}
               >
                 {interfacesOpen ? <ChevronDown size={18} /> : <ChevronRight size={18} />}
-                <h2 style={{ fontSize: '1.25rem', fontWeight: 700 }}>{t('network_interfaces')}</h2>
-                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                <h2 style={{ fontSize: 'var(--fs-xl)', fontWeight: 700 }}>{t('network_interfaces')}</h2>
+                <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
                   {interfaceSummary.running}/{interfaces.length} {t('status_running').toLowerCase()}
                 </span>
                 <span style={{ flex: 1 }} />
@@ -443,13 +429,13 @@ export function App() {
                       </span>
                     ))}
                     {interfaceSummary.faulty.length > 4 && (
-                      <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                      <span style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)' }}>
                         +{interfaceSummary.faulty.length - 4}
                       </span>
                     )}
                   </span>
                 ) : (
-                  <span className="badge badge-success" style={{ fontSize: '0.65rem' }}>
+                  <span className="badge badge-success" style={{ fontSize: 'var(--fs-3xs)' }}>
                     {t('no_link_faults')}
                   </span>
                 )}
@@ -465,7 +451,7 @@ export function App() {
                   return (
                     <div key={iface.id || iface.name} className="card" style={{ padding: '11px 13px' }}>
                       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 7 }}>
-                        <span style={{ fontWeight: 700, fontSize: '0.9rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        <span style={{ fontWeight: 700, fontSize: 'var(--fs-md)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                           {iface.name}
                         </span>
                         <span className={`badge ${iface.running ? 'badge-success' : 'badge-neutral'}`}>
@@ -475,14 +461,14 @@ export function App() {
 
                       <div style={{ display: 'flex', gap: 14, marginBottom: 6 }}>
                         <div>
-                          <div style={{ fontSize: '0.62rem', color: 'var(--text-muted)', fontWeight: 600 }}>RX</div>
-                          <div className="font-mono" style={{ fontSize: '0.85rem', fontWeight: 700, color: 'var(--color-success)' }}>
+                          <div style={{ fontSize: 'var(--fs-3xs)', color: 'var(--text-muted)', fontWeight: 600 }}>RX</div>
+                          <div className="font-mono" style={{ fontSize: 'var(--fs-sm)', fontWeight: 700, color: 'var(--color-success)' }}>
                             {formatBytes(iface.rx_byte || 0)}
                           </div>
                         </div>
                         <div>
-                          <div style={{ fontSize: '0.62rem', color: 'var(--text-muted)', fontWeight: 600 }}>TX</div>
-                          <div className="font-mono" style={{ fontSize: '0.85rem', fontWeight: 700, color: 'var(--color-primary)' }}>
+                          <div style={{ fontSize: 'var(--fs-3xs)', color: 'var(--text-muted)', fontWeight: 600 }}>TX</div>
+                          <div className="font-mono" style={{ fontSize: 'var(--fs-sm)', fontWeight: 700, color: 'var(--color-primary)' }}>
                             {formatBytes(iface.tx_byte || 0)}
                           </div>
                         </div>
@@ -492,7 +478,7 @@ export function App() {
                         display: 'flex',
                         alignItems: 'center',
                         gap: 8,
-                        fontSize: '0.66rem',
+                        fontSize: 'var(--fs-2xs)',
                         color: 'var(--text-muted)',
                         borderTop: '1px solid var(--border-color)',
                         paddingTop: 6,
@@ -517,8 +503,8 @@ export function App() {
 
             {/* Alert Event Stream */}
             <div>
-              <h2 style={{ fontSize: '1.25rem', fontWeight: 700, marginBottom: 14 }}>{t('system_events_alerts')}</h2>
-              <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
+              <h2 style={{ fontSize: 'var(--fs-xl)', fontWeight: 700, marginBottom: 14 }}>{t('system_events_alerts')}</h2>
+              <div className="card panel-flush">
                 {alerts.length === 0 ? (
                   <div style={{ padding: 24, textAlign: 'center', color: 'var(--text-muted)' }}>
                     {t('no_events_recorded')}
@@ -534,13 +520,13 @@ export function App() {
                           display: 'flex',
                           alignItems: 'center',
                           gap: 12,
-                          fontSize: '0.85rem'
+                          fontSize: 'var(--fs-sm)'
                         }}
                       >
                         <AlertCircle size={16} style={{ color: 'var(--color-primary)' }} />
                         <div style={{ flex: 1 }}>
                           <div>{a.message}</div>
-                          <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                          <div style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)' }}>
                             {new Date(a.created_at).toLocaleString()}
                           </div>
                         </div>

@@ -37,8 +37,11 @@ function RouterClock({ clock }) {
         display: 'flex',
         alignItems: 'center',
         gap: 6,
-        padding: '4px 9px',
-        borderRadius: 'var(--radius-md)',
+        padding: '0 10px',
+        // Same height and radius as the buttons beside it, so the toolbar reads
+        // as one row of controls rather than three unrelated widgets.
+        height: 'var(--control-h-sm)',
+        borderRadius: 'var(--radius-sm)',
         background: 'var(--bg-secondary)',
         border: '1px solid var(--border-color)',
         color: 'var(--text-secondary)',
@@ -46,11 +49,11 @@ function RouterClock({ clock }) {
       }}
     >
       <Clock size={13} style={{ color: 'var(--color-primary)', flexShrink: 0 }} />
-      <span className="font-mono" style={{ fontSize: '0.8rem', fontWeight: 700, color: 'var(--text-primary)' }}>
+      <span className="font-mono" style={{ fontSize: 'var(--fs-sm)', fontWeight: 700, color: 'var(--text-primary)' }}>
         {hh}:{mm}:{ss}
       </span>
       {clock.timezone && (
-        <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>
+        <span style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)' }}>
           {clock.timezone.split('/').pop().replace(/_/g, ' ')}
         </span>
       )}
@@ -101,10 +104,10 @@ export function Navbar({ isConnected, routerInfo, routers = [], activeRouter, on
               <Activity size={20} />
             </div>
             <div>
-              <div style={{ fontWeight: 800, fontSize: '1.15rem', letterSpacing: '-0.02em', color: 'var(--text-primary)' }}>
+              <div style={{ fontWeight: 800, fontSize: 'var(--fs-xl)', letterSpacing: '-0.02em', color: 'var(--text-primary)' }}>
                 {t('app_title')}
               </div>
-              <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: -2 }}>
+              <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginTop: -2 }}>
                 {routerInfo?.board_name ? `${routerInfo.board_name} (${routerInfo.version || 'ROS 7.x'})` : t('app_subtitle')}
               </div>
             </div>
@@ -119,7 +122,7 @@ export function Navbar({ isConnected, routerInfo, routers = [], activeRouter, on
           />
 
           <div className={`badge ${isConnected ? 'badge-success' : 'badge-danger'}`} style={{ marginLeft: 4 }}>
-            <span className={isConnected ? "live-indicator" : ""} style={{ width: 6, height: 6, borderRadius: '50%', background: isConnected ? 'var(--color-success)' : 'var(--color-danger)' }}></span>
+            <span className={isConnected ? "live-indicator" : ""} style={{ width: 6, height: 6, borderRadius: 'var(--radius-full)', background: isConnected ? 'var(--color-success)' : 'var(--color-danger)' }}></span>
             {isConnected ? t('connected') : t('disconnected')}
           </div>
         </div>
@@ -145,7 +148,6 @@ export function Navbar({ isConnected, routerInfo, routers = [], activeRouter, on
             className="btn-icon"
             onClick={toggleTheme}
             title={theme === 'dark' ? 'Switch to Light Theme' : 'Switch to Dark Theme'}
-            style={{ width: 36, height: 36 }}
           >
             {theme === 'dark' ? <Sun size={17} /> : <Moon size={17} />}
           </button>

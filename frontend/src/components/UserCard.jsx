@@ -146,12 +146,13 @@ function bandLabel(band) {
 }
 
 /**
- * A single device, rendered on two lines.
+ * A single device, rendered as three columns of three lines.
  *
- * Line 1 answers "is this device using bandwidth right now"; line 2 answers
- * "what and where is it, and how much has it used today". Splitting them means
- * the name no longer has to compete with the metadata for width, so it stops
- * being truncated to "Nama...".
+ * The text column (identity, address, radio link) is the only part allowed to
+ * shrink; the figures and the buttons have fixed widths. An earlier version put
+ * the live rate on the same line as the name, which meant two elements that both
+ * refuse to shrink competed for one line: on a narrow card the name collapsed to
+ * "Pixe..." and the rate still overflowed the card edge.
  */
 function DeviceRow({ group, t, lang, onOpen, onUpdate }) {
   const [busy, setBusy] = useState(false);
@@ -181,32 +182,21 @@ function DeviceRow({ group, t, lang, onOpen, onUpdate }) {
 
   return (
     <div
+      className="device-row"
       onClick={onOpen}
       title={t('device_row_hint')}
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: 8,
-        padding: '6px 9px',
-        background: 'var(--bg-secondary)',
-        borderRadius: 'var(--radius-sm)',
-        border: '1px solid var(--border-color)',
-        opacity: group.isPaused ? 0.6 : (offline ? 0.78 : 1),
-        cursor: 'pointer',
-        transition: 'border-color 0.15s ease'
-      }}
+      style={{ opacity: group.isPaused ? 0.6 : (offline ? 0.78 : 1) }}
     >
       {/* Text column. minWidth:0 lets it shrink below its content width, which
-          is what stops the action buttons being pushed outside the card. */}
-      <div style={{ flex: '1 1 auto', minWidth: 0 }}>
-        {/* Line 1 — identity and live throughput */}
+          is what stops the figures and buttons being pushed outside the card. */}
+      <div className="device-row-text">
+        {/* Line 1 - identity */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
           <span
+            className="status-dot"
             style={{
               width: 7,
               height: 7,
-              borderRadius: '50%',
-              flexShrink: 0,
               background: group.isPaused ? 'var(--color-danger)' : (group.isActive ? 'var(--color-success)' : 'var(--text-muted)'),
               boxShadow: group.isActive && !group.isPaused ? '0 0 6px rgba(16, 185, 129, 0.5)' : 'none'
             }}
@@ -215,14 +205,10 @@ function DeviceRow({ group, t, lang, onOpen, onUpdate }) {
           <span style={{ flexShrink: 0, display: 'flex', color: 'var(--text-secondary)' }}>
             {getDeviceIcon(d.vendor, d.hostname)}
           </span>
-          <span style={{
+          <span className="truncate" style={{
             fontWeight: 600,
-            fontSize: '0.8125rem',
-            color: 'var(--text-primary)',
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap',
-            minWidth: 0
+            fontSize: 'var(--fs-sm)',
+            color: 'var(--text-primary)'
           }}>
             {d.custom_name || d.hostname || d.vendor || 'Device'}
           </span>
@@ -245,47 +231,13 @@ function DeviceRow({ group, t, lang, onOpen, onUpdate }) {
               {t('private_badge')}
             </span>
           )}
-
-          <span style={{ flex: 1, minWidth: 4 }} />
-
-          {/* Live rate. Dimmed when idle so a quiet device reads as quiet. */}
-          <span className="font-mono" style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 8,
-            fontSize: '0.75rem',
-            flexShrink: 0,
-            fontWeight: 700
-          }}>
-            <span style={{ color: isMoving && rateIn ? 'var(--color-success)' : 'var(--text-muted)' }}>
-              ↓ {formatSpeed(rateIn)}
-            </span>
-            <span style={{ color: isMoving && rateOut ? 'var(--color-primary)' : 'var(--text-muted)' }}>
-              ↑ {formatSpeed(rateOut)}
-            </span>
-          </span>
         </div>
 
         {/* Line 2 - identity. Kept apart from connectivity so neither has to
             compete for width; the vendor is the only element allowed to give way. */}
-        <div style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 5,
-          marginTop: 2,
-          paddingLeft: 14,
-          fontSize: '0.6875rem',
-          color: 'var(--text-muted)',
-          minWidth: 0,
-          overflow: 'hidden'
-        }}>
+        <div className="device-row-meta">
           <span className="font-mono" style={{ flexShrink: 0 }}>{d.ip_address || d.mac_address}</span>
-          {d.vendor && <>{META_SEP}<span style={{
-            minWidth: 0,
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap'
-          }}>{d.vendor}</span></>}
+          {d.vendor && <>{META_SEP}<span className="truncate">{d.vendor}</span></>}
           {offline && d.last_seen && (
             <>{META_SEP}<span style={{ flexShrink: 0 }}>
               {t('last_seen_ago', { time: formatRelativeTime(d.last_seen, lang) })}
@@ -293,57 +245,49 @@ function DeviceRow({ group, t, lang, onOpen, onUpdate }) {
           )}
         </div>
 
-        {/* Line 3 - how it is connected, and what it has consumed today */}
-        <div style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 6,
-          marginTop: 2,
-          paddingLeft: 14,
-          fontSize: '0.6875rem',
-          color: 'var(--text-muted)',
-          minWidth: 0
-        }}>
-          <div style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 6,
-            minWidth: 0,
-            overflow: 'hidden',
-            flex: '1 1 auto'
-          }}>
-            {/* One entry per live connection. A dual-homed machine shows both
-                its adapters; a WiFi 7 multi-link client shows each radio it is
-                bonded over, since 'mld1' names no actual radio. */}
-            {group.adapters.filter(a => a.is_active).flatMap(adapter =>
-              connectionLinks(adapter).map((link, i) => (
-                <span
-                  key={`${adapter.id}-${link.interface}-${i}`}
-                  style={{ display: 'flex', alignItems: 'center', gap: 3, flexShrink: 0 }}
-                  title={link.band ? `${link.interface} - ${link.band}` : link.interface}
-                >
-                  {link.wireless ? <Wifi size={10} /> : <Cable size={10} />}
-                  {link.interface}
-                  {link.band && <span style={{ opacity: 0.65 }}>{bandLabel(link.band)}</span>}
-                  {link.signal != null && (
-                    <span className="font-mono" style={{ color: signalColor(link.signal) }}>
-                      {link.signal}
-                    </span>
-                  )}
-                </span>
-              ))
-            )}
-          </div>
-
-          <span className="font-mono" style={{ display: 'flex', gap: 7, flexShrink: 0 }}>
-            <span title={t('today_download')}>↓ {formatBytes(group.bytesIn)}</span>
-            <span title={t('today_upload')}>↑ {formatBytes(group.bytesOut)}</span>
-          </span>
+        {/* Line 3 - how it is connected. One entry per live connection: a
+            dual-homed machine shows both adapters, and a WiFi 7 multi-link
+            client shows each radio it is bonded over, since 'mld1' names no
+            actual radio. */}
+        <div className="device-row-meta" style={{ gap: 6 }}>
+          {group.adapters.filter(a => a.is_active).flatMap(adapter =>
+            connectionLinks(adapter).map((link, i) => (
+              <span
+                key={`${adapter.id}-${link.interface}-${i}`}
+                style={{ display: 'flex', alignItems: 'center', gap: 3, flexShrink: 0 }}
+                title={link.band ? `${link.interface} - ${link.band}` : link.interface}
+              >
+                {link.wireless ? <Wifi size={10} /> : <Cable size={10} />}
+                {link.interface}
+                {link.band && <span className="band-tag">{bandLabel(link.band)}</span>}
+                {link.signal != null && (
+                  <span className="font-mono" style={{ color: signalColor(link.signal) }}>
+                    {link.signal}
+                  </span>
+                )}
+              </span>
+            ))
+          )}
         </div>
       </div>
 
+      {/* Figures column: live rate on top, today's volume beneath. Fixed width,
+          so a device going from "0 bps" to "12.4 Mbps" cannot reflow the name. */}
+      <div className="device-row-metrics">
+        <span style={{ color: isMoving && rateIn ? 'var(--color-success)' : 'var(--text-muted)', fontWeight: 700 }}>
+          ↓ {formatSpeed(rateIn)}
+        </span>
+        <span style={{ color: isMoving && rateOut ? 'var(--color-primary)' : 'var(--text-muted)', fontWeight: 700 }}>
+          ↑ {formatSpeed(rateOut)}
+        </span>
+        <span style={{ color: 'var(--text-muted)', opacity: 0.8 }}
+              title={`${t('today_download')} / ${t('today_upload')}`}>
+          {formatBytes(group.bytesIn)} · {formatBytes(group.bytesOut)}
+        </span>
+      </div>
+
       {/* Action column, outside the text flow so it can never be clipped. */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }}>
+      <div className="device-row-actions">
         <button
           type="button"
           onClick={togglePause}
@@ -353,8 +297,7 @@ function DeviceRow({ group, t, lang, onOpen, onUpdate }) {
             width: 26,
             height: 26,
             background: group.isPaused ? 'var(--color-danger)' : 'var(--bg-card)',
-            color: group.isPaused ? '#fff' : 'var(--text-secondary)',
-            border: '1px solid var(--border-color)'
+            color: group.isPaused ? '#fff' : 'var(--text-secondary)'
           }}
           title={group.isPaused ? t('resume_device') : t('pause_device')}
         >
@@ -365,13 +308,7 @@ function DeviceRow({ group, t, lang, onOpen, onUpdate }) {
           type="button"
           onClick={(e) => { e.stopPropagation(); onOpen(); }}
           className="btn-icon"
-          style={{
-            width: 26,
-            height: 26,
-            background: 'var(--bg-card)',
-            color: 'var(--text-secondary)',
-            border: '1px solid var(--border-color)'
-          }}
+          style={{ width: 26, height: 26, background: 'var(--bg-card)' }}
           title={t('edit_device')}
         >
           <Sliders size={12} />
@@ -464,7 +401,7 @@ export function UserCard({ user, onEdit, onDelete, onLimitChange, onPauseToggle,
       flexDirection: 'column',
       justifyContent: 'space-between',
       gap: 12,
-      padding: 14,
+      padding: '14px 16px',
       borderLeft: `4px solid ${isPaused ? 'var(--color-danger)' : (isOnline ? 'var(--color-primary)' : 'var(--border-color)')}`
     }}>
       <div>
@@ -492,17 +429,14 @@ export function UserCard({ user, onEdit, onDelete, onLimitChange, onPauseToggle,
               <UserIcon size={16} />
             </div>
             <div style={{ minWidth: 0 }}>
-              <div style={{
+              <div className="truncate" style={{
                 fontWeight: 700,
-                fontSize: '1rem',
-                color: 'var(--text-primary)',
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap'
+                fontSize: 'var(--fs-lg)',
+                color: 'var(--text-primary)'
               }}>
                 {user.name}
               </div>
-              <div style={{ fontSize: '0.6875rem', color: 'var(--text-muted)' }}>
+              <div style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)' }}>
                 {activeDevices.length}/{deviceGroups.length} {t('online_of_devices')}
               </div>
             </div>
@@ -535,10 +469,10 @@ export function UserCard({ user, onEdit, onDelete, onLimitChange, onPauseToggle,
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
             <ArrowDown size={15} style={{ color: isOnline ? 'var(--color-success)' : 'var(--text-muted)', flexShrink: 0 }} />
             <div style={{ minWidth: 0 }}>
-              <div className="font-mono" style={{ fontSize: '0.9rem', fontWeight: 800, color: isOnline ? 'var(--color-success)' : 'var(--text-muted)', lineHeight: 1.15 }}>
+              <div className="font-mono" style={{ fontSize: 'var(--fs-md)', fontWeight: 800, color: isOnline ? 'var(--color-success)' : 'var(--text-muted)', lineHeight: 1.15 }}>
                 {formatSpeed(user.current_rate_in || 0)}
               </div>
-              <div className="font-mono" style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>
+              <div className="font-mono" style={{ fontSize: 'var(--fs-3xs)', color: 'var(--text-muted)' }}>
                 {formatBytes(user.bytes_today_in || 0)}
               </div>
             </div>
@@ -549,10 +483,10 @@ export function UserCard({ user, onEdit, onDelete, onLimitChange, onPauseToggle,
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
             <ArrowUp size={15} style={{ color: isOnline ? 'var(--color-primary)' : 'var(--text-muted)', flexShrink: 0 }} />
             <div style={{ minWidth: 0 }}>
-              <div className="font-mono" style={{ fontSize: '0.9rem', fontWeight: 800, color: isOnline ? 'var(--color-primary)' : 'var(--text-muted)', lineHeight: 1.15 }}>
+              <div className="font-mono" style={{ fontSize: 'var(--fs-md)', fontWeight: 800, color: isOnline ? 'var(--color-primary)' : 'var(--text-muted)', lineHeight: 1.15 }}>
                 {formatSpeed(user.current_rate_out || 0)}
               </div>
-              <div className="font-mono" style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>
+              <div className="font-mono" style={{ fontSize: 'var(--fs-3xs)', color: 'var(--text-muted)' }}>
                 {formatBytes(user.bytes_today_out || 0)}
               </div>
             </div>
@@ -562,10 +496,10 @@ export function UserCard({ user, onEdit, onDelete, onLimitChange, onPauseToggle,
 
           {/* Share of today's gateway traffic */}
           <div style={{ textAlign: 'right', flexShrink: 0 }}>
-            <div className="font-mono" style={{ fontSize: '0.9rem', fontWeight: 800, color: 'var(--text-primary)', lineHeight: 1.15 }}>
+            <div className="font-mono" style={{ fontSize: 'var(--fs-md)', fontWeight: 800, color: 'var(--text-primary)', lineHeight: 1.15 }}>
               {formatBytes(todayTotal)}
             </div>
-            <div className="font-mono" style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>
+            <div className="font-mono" style={{ fontSize: 'var(--fs-3xs)', color: 'var(--text-muted)' }}>
               {gatewayTotal > 0 ? `${t('today_scope')} · ${sharePct.toFixed(1)}%` : t('today_scope')}
             </div>
           </div>
@@ -585,7 +519,7 @@ export function UserCard({ user, onEdit, onDelete, onLimitChange, onPauseToggle,
           ))}
           {deviceGroups.length === 0 && (
             <div style={{
-              fontSize: '0.75rem',
+              fontSize: 'var(--fs-xs)',
               color: 'var(--text-muted)',
               textAlign: 'center',
               padding: '10px 0',
@@ -607,11 +541,11 @@ export function UserCard({ user, onEdit, onDelete, onLimitChange, onPauseToggle,
             gap: 8,
             background: 'var(--bg-secondary)',
             padding: 10,
-            borderRadius: 6,
+            borderRadius: 'var(--radius-sm)',
             border: '1px solid var(--border-color)'
           }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: 4 }}>
+              <span style={{ fontSize: 'var(--fs-xs)', fontWeight: 700, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: 4 }}>
                 <Sliders size={13} style={{ color: 'var(--color-primary)' }} />
                 {t('custom_limit_title')}
               </span>
@@ -628,13 +562,13 @@ export function UserCard({ user, onEdit, onDelete, onLimitChange, onPauseToggle,
 
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
               <div>
-                <label style={{ fontSize: '0.675rem', color: 'var(--color-success)', fontWeight: 700, display: 'flex', alignItems: 'center', gap: 3, marginBottom: 3 }}>
+                <label style={{ fontSize: 'var(--fs-2xs)', color: 'var(--color-success)', fontWeight: 700, display: 'flex', alignItems: 'center', gap: 3, marginBottom: 3 }}>
                   <ArrowDown size={11} /> {t('download_limit')}
                 </label>
                 <input
                   type="text"
                   className="form-input font-mono"
-                  style={{ padding: '4px 6px', fontSize: '0.8rem', height: 30 }}
+                  style={{ padding: '4px 6px', fontSize: 'var(--fs-sm)', height: 30 }}
                   placeholder="50M or 100M"
                   value={customDown}
                   onChange={e => setCustomDown(e.target.value)}
@@ -642,13 +576,13 @@ export function UserCard({ user, onEdit, onDelete, onLimitChange, onPauseToggle,
                 />
               </div>
               <div>
-                <label style={{ fontSize: '0.675rem', color: 'var(--color-primary)', fontWeight: 700, display: 'flex', alignItems: 'center', gap: 3, marginBottom: 3 }}>
+                <label style={{ fontSize: 'var(--fs-2xs)', color: 'var(--color-primary)', fontWeight: 700, display: 'flex', alignItems: 'center', gap: 3, marginBottom: 3 }}>
                   <ArrowUp size={11} /> {t('upload_limit')}
                 </label>
                 <input
                   type="text"
                   className="form-input font-mono"
-                  style={{ padding: '4px 6px', fontSize: '0.8rem', height: 30 }}
+                  style={{ padding: '4px 6px', fontSize: 'var(--fs-sm)', height: 30 }}
                   placeholder="20M or 50M"
                   value={customUp}
                   onChange={e => setCustomUp(e.target.value)}
@@ -661,7 +595,7 @@ export function UserCard({ user, onEdit, onDelete, onLimitChange, onPauseToggle,
                 type="button"
                 className="btn btn-ghost btn-sm"
                 onClick={() => setShowCustomInput(false)}
-                style={{ fontSize: '0.75rem', height: 26, padding: '2px 8px' }}
+                style={{ fontSize: 'var(--fs-xs)', height: 26, padding: '2px 8px' }}
               >
                 {t('cancel')}
               </button>
@@ -670,7 +604,7 @@ export function UserCard({ user, onEdit, onDelete, onLimitChange, onPauseToggle,
                 className="btn btn-primary btn-sm"
                 onClick={handleApplyCustom}
                 disabled={isUpdating || (!customDown.trim() && !customUp.trim())}
-                style={{ fontSize: '0.75rem', height: 26, padding: '2px 10px', display: 'flex', alignItems: 'center', gap: 4 }}
+                style={{ fontSize: 'var(--fs-xs)', height: 26, padding: '2px 10px', display: 'flex', alignItems: 'center', gap: 4 }}
               >
                 <Check size={12} />
                 {t('apply_limit')}
@@ -682,7 +616,7 @@ export function UserCard({ user, onEdit, onDelete, onLimitChange, onPauseToggle,
             <div style={{ flex: 1, minWidth: 0 }}>
               <select
                 className="form-select"
-                style={{ width: '100%', padding: '5px 8px', fontSize: '0.78rem' }}
+                style={{ width: '100%', padding: '5px 8px', fontSize: 'var(--fs-sm)' }}
                 value={isKnownPreset ? currentLimit : 'custom'}
                 onChange={handleLimitSelect}
                 disabled={isUpdating}

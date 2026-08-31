@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useI18n } from '../context/I18nContext';
-import { X, User as UserIcon, ArrowDown, ArrowUp, Sliders } from 'lucide-react';
+import { X, User as UserIcon } from 'lucide-react';
+import { RateLimitInputs, LimitModeToggle } from './RateLimitInputs';
 
 const SPEED_PRESETS = [
   { label: '⚡ Unlimited (Max speed)', value: 'unlimited' },
@@ -129,11 +130,11 @@ export function UserModal({ user, unassignedDevices = [], isOpen, onClose, onSav
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal-card" onClick={e => e.stopPropagation()}>
         <div className="modal-header">
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontWeight: 700 }}>
-            <UserIcon size={18} style={{ color: 'var(--color-primary)' }} />
+          <div className="panel-title">
+            <UserIcon size={18} />
             {user ? t('edit_user') : t('add_user')}
           </div>
-          <button className="btn-icon" onClick={onClose} style={{ width: 28, height: 28 }}>
+          <button className="btn-icon" onClick={onClose}>
             <X size={16} />
           </button>
         </div>
@@ -154,7 +155,7 @@ export function UserModal({ user, unassignedDevices = [], isOpen, onClose, onSav
                 autoFocus
               />
               {nameError && (
-                <div style={{ fontSize: '0.75rem', color: 'var(--color-danger)', marginTop: 4 }}>
+                <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--color-danger)', marginTop: 4 }}>
                   {nameError}
                 </div>
               )}
@@ -163,55 +164,17 @@ export function UserModal({ user, unassignedDevices = [], isOpen, onClose, onSav
             <div className="form-group">
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
                 <label className="form-label" style={{ marginBottom: 0, fontWeight: 600 }}>{t('speed_limit')}</label>
-                <div style={{
-                  display: 'inline-flex',
-                  background: 'var(--bg-input)',
-                  padding: 2,
-                  borderRadius: 6,
-                  border: '1px solid var(--border-color)',
-                  gap: 2
-                }}>
-                  <button
-                    type="button"
-                    onClick={() => setIsCustomMode(false)}
-                    style={{
-                      padding: '3px 10px',
-                      fontSize: '0.725rem',
-                      fontWeight: 600,
-                      borderRadius: 4,
-                      border: 'none',
-                      background: !isCustomMode ? 'var(--color-primary)' : 'transparent',
-                      color: !isCustomMode ? '#ffffff' : 'var(--text-muted)',
-                      cursor: 'pointer',
-                      transition: 'all 0.15s ease'
-                    }}
-                  >
-                    ⚡ Presets
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setIsCustomMode(true);
-                      if (!customDown && !customUp) {
-                        setCustomDown('50M');
-                        setCustomUp('20M');
-                      }
-                    }}
-                    style={{
-                      padding: '3px 10px',
-                      fontSize: '0.725rem',
-                      fontWeight: 600,
-                      borderRadius: 4,
-                      border: 'none',
-                      background: isCustomMode ? 'var(--color-primary)' : 'transparent',
-                      color: isCustomMode ? '#ffffff' : 'var(--text-muted)',
-                      cursor: 'pointer',
-                      transition: 'all 0.15s ease'
-                    }}
-                  >
-                    ✏️ Custom
-                  </button>
-                </div>
+                <LimitModeToggle
+                  isCustom={isCustomMode}
+                  onPresets={() => setIsCustomMode(false)}
+                  onCustom={() => {
+                    setIsCustomMode(true);
+                    if (!customDown && !customUp) {
+                      setCustomDown('50M');
+                      setCustomUp('20M');
+                    }
+                  }}
+                />
               </div>
 
               {!isCustomMode ? (
@@ -219,98 +182,46 @@ export function UserModal({ user, unassignedDevices = [], isOpen, onClose, onSav
                   className="form-select"
                   value={speedLimit}
                   onChange={e => handleSpeedSelect(e.target.value)}
-                  style={{ height: 38 }}
                 >
                   {SPEED_PRESETS.map(p => (
                     <option key={p.value} value={p.value}>{p.label}</option>
                   ))}
                 </select>
               ) : (
-                <div style={{
-                  background: 'var(--bg-secondary)',
-                  padding: '12px 14px',
-                  borderRadius: 'var(--radius-md)',
-                  border: '1px solid var(--border-color)',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: 10
-                }}>
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-                    <div>
-                      <label style={{ fontSize: '0.725rem', color: 'var(--color-success)', fontWeight: 700, display: 'flex', alignItems: 'center', gap: 4, marginBottom: 5 }}>
-                        <ArrowDown size={13} /> {t('download_limit')}
-                      </label>
-                      <input
-                        type="text"
-                        className="form-input font-mono"
-                        placeholder="e.g. 50M or 100M"
-                        value={customDown}
-                        onChange={e => setCustomDown(e.target.value)}
-                        style={{ height: 34, fontSize: '0.85rem' }}
-                      />
-                    </div>
-                    <div>
-                      <label style={{ fontSize: '0.725rem', color: 'var(--color-primary)', fontWeight: 700, display: 'flex', alignItems: 'center', gap: 4, marginBottom: 5 }}>
-                        <ArrowUp size={13} /> {t('upload_limit')}
-                      </label>
-                      <input
-                        type="text"
-                        className="form-input font-mono"
-                        placeholder="e.g. 20M or 50M"
-                        value={customUp}
-                        onChange={e => setCustomUp(e.target.value)}
-                        style={{ height: 34, fontSize: '0.85rem' }}
-                      />
-                    </div>
-                  </div>
-                  <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
-                    💡 Enter rates with units (e.g. <code>50M</code> for 50 Mbps, <code>500k</code> for 500 Kbps)
-                  </div>
-                </div>
+                <RateLimitInputs
+                  down={customDown}
+                  up={customUp}
+                  onChangeDown={setCustomDown}
+                  onChangeUp={setCustomUp}
+                  downPlaceholder="e.g. 50M or 100M"
+                  upPlaceholder="e.g. 20M or 50M"
+                  hint={t('rate_units_hint')}
+                />
               )}
             </div>
 
             <div className="form-group">
-              <label className="form-label">Assigned Devices</label>
-              <div style={{
-                maxHeight: 180,
-                overflowY: 'auto',
-                border: '1px solid var(--border-color)',
-                borderRadius: 'var(--radius-md)',
-                padding: 8,
-                display: 'flex',
-                flexDirection: 'column',
-                gap: 6
-              }}>
+              <label className="form-label">{t('assigned_devices')}</label>
+              <div className="list-box" style={{ maxHeight: 180 }}>
                 {availableDevices.length === 0 ? (
-                  <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', textAlign: 'center', padding: 12 }}>
-                    No devices detected on network yet.
-                  </div>
+                  <div className="empty-note">{t('no_devices_detected')}</div>
                 ) : (
                   availableDevices.map(dev => {
                     const isChecked = selectedMacs.includes(dev.mac_address);
                     return (
                       <label
                         key={dev.mac_address}
-                        style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: 10,
-                          padding: '6px 8px',
-                          borderRadius: 'var(--radius-sm)',
-                          background: isChecked ? 'var(--bg-input)' : 'transparent',
-                          cursor: 'pointer',
-                          fontSize: '0.825rem'
-                        }}
+                        className={`list-row${isChecked ? ' is-selected' : ''}`}
+                        style={{ justifyContent: 'flex-start' }}
                       >
                         <input
                           type="checkbox"
                           checked={isChecked}
                           onChange={() => handleToggleMac(dev.mac_address)}
                         />
-                        <div style={{ flex: 1 }}>
+                        <div className="truncate" style={{ flex: 1, minWidth: 0 }}>
                           <span style={{ fontWeight: 600 }}>{dev.custom_name || dev.hostname || dev.vendor || 'Device'}</span>
-                          <span className="font-mono" style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginLeft: 8 }}>
+                          <span className="font-mono" style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginLeft: 8 }}>
                             {dev.ip_address || dev.mac_address}
                           </span>
                         </div>

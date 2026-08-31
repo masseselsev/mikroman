@@ -1,6 +1,24 @@
 # ⚡ MikroMan — MikroTik RouterOS Companion
 
-An ultra-lightweight, high-performance companion app and Telegram bot for **MikroTik RouterOS 7.24+**, designed to run smoothly in RouterOS native containers or standard Docker hosts.
+An ultra-lightweight, high-performance companion app and Telegram bot for **MikroTik RouterOS 7.1+**, designed to run smoothly in RouterOS native containers or standard Docker hosts.
+
+### RouterOS compatibility
+
+| | Version | Why |
+|---|---|---|
+| **Minimum** | **7.1** | The release that first shipped the REST API this app speaks. Every other menu it uses predates RouterOS v7. |
+| **Recommended** | **7.13+** | The `wifiwave2` menu was renamed to `wifi` in 7.13. Below it the app falls back to the legacy `/interface/wireless` menu, which works but reports less. |
+| **RouterOS container deployment** | **7.4** | The `container` package. Not needed when running on a Docker host. |
+| **Verified against** | **7.25** | hAP be³ Media. Newer releases are expected to work but are unverified — the app says so in the connection result. |
+
+The floor is **derived from the code**, not asserted here:
+[`backend/app/services/routeros_compat.py`](backend/app/services/routeros_compat.py)
+declares every RouterOS menu the app touches and the release that introduced it,
+and `MINIMUM_VERSION` is computed from that table. A router below the floor, or
+above the highest verified version, is reported in the connection response and
+in `GET /api/v1/system/status` — as a warning, never as a refusal. See
+[`docs/ROUTEROS_API_POLICY.md`](docs/ROUTEROS_API_POLICY.md) for the rules that
+govern adding new router calls.
 
 ---
 
@@ -61,9 +79,11 @@ An ultra-lightweight, high-performance companion app and Telegram bot for **Mikr
   * Proactive alerts for newly discovered devices, high CPU load, temperature warnings, and WAN IP changes.
 
 * **🎨 Modern Responsive Web Dashboard:**
-  * **Two-Line Device Rows**: Each device shows identity, badges and *live* download/upload on the first line, and IP, vendor, interface, signal, last-seen and today's consumed volume on the second — so names are never truncated and every row answers both "what is using bandwidth now" and "how much has it used".
+  * **Three-Column Device Rows**: Each device row is a text column (name and badges, IP and vendor, radio links and signal), a fixed-width figures column (live download/upload and today's volume) and fixed actions. Only the text column shrinks, so a device jumping from `0 bps` to `12.4 Mbps` can neither reflow the name nor push the numbers past the card edge. Radio bands (`5G·BE`, `5G·AX`) are tagged in a dedicated accent colour, deliberately outside the status palette — a band is not good or bad news, but it should be readable at a glance.
   * **Per-Device Live Metrics**: Live rate and daily volume are exposed per device, not only per user profile, so the specific device saturating the link is named directly.
   * **Compact Telemetry Strip**: Download, Upload, CPU, RAM and Temperature carry inline **sparklines** built from the live telemetry stream (no extra requests, no charting dependency), alongside the **WAN IP**, **active client count** and uptime. Temperature is coloured against your configured warning threshold.
+  * **WAN Identity Tile**: shows the interface address, the address the internet actually sees (they differ under carrier-grade NAT), and the **provider name** — resolved together in one cached lookup, since an AS number and operator name are the only way to tell two links apart when both hand out CGNAT addresses. Failure is silent: the router may legitimately have no internet.
+  * **Single Design System**: sizes, widths and corner radii come from one set of CSS tokens — an eight-step type scale, a five-step radius scale and two control heights — instead of the 29 font sizes, 8 raw pixel radii and 40 ad-hoc paddings the components had each invented for themselves. Segmented selectors, panels, list rows, setting rows, dropdowns and toolbar controls are shared classes, so a control cannot look different in two places.
   * **Sortable Analytics Tables** with share-of-traffic bars, defaulting to the heaviest consumer first.
   * **Interface Link Health**: per-interface RX/TX volume plus error and drop counters — the earliest warning of a failing cable or saturated link.
   * **Discovery Context**: unassigned devices show first-seen time and today's consumed volume, so an unknown client that moved gigabytes stands out from one that moved nothing.
@@ -108,15 +128,69 @@ Open **`http://localhost:1928`** in your web browser.
 
 ---
 
-## 📦 Running in MikroTik RouterOS 7.24+ Container
+## 📦 Running in MikroTik RouterOS 7.4+ Container
+
+> ### ⚠️ Put the container on external storage
+>
+> **Store the container and its data on a USB flash drive or, preferably, a USB
+> SSD — not on the router's internal storage.** This is a strong
+> recommendation, not a preference.
+>
+> RouterOS's internal storage is NAND flash with a finite number of write
+> cycles and no wear levelling worth relying on. MikroMan writes continuously
+> by design: telemetry samples, interface metrics, daily traffic rollups and
+> device history all land in SQLite, and the container image itself consumes a
+> large share of the free space on most boards. Running that workload against
+> internal flash wears it out and can eventually take the router's own
+> configuration storage with it.
+>
+> A USB SSD is preferred over flash for the same reason: it has real wear
+> levelling and far higher endurance under the sustained small writes a
+> database produces.
+>
+> ```routeros
+> # Verify the external disk is mounted, then point containers at it
+> /disk print
+> /container/config/set registry-url=https://registry-1.docker.io \
+>     tmpdir=usb1/pull ram-high=256M
+> # ...and give the container's root-dir and any mount a path on usb1
+> ```
 
 1. **Enable Container Mode on RouterOS:**
    ```routeros
    /system/device-mode/update container=yes
    ```
-2. **Execute Setup Script:**
-   Import or run the commands from [`scripts/setup_ros_container.rsc`](file:///home/masse/projects/mikroman/scripts/setup_ros_container.rsc).
-3. Access the dashboard via your router LAN IP at port `1928` (e.g. `http://192.168.88.1:1928`).
+2. **Attach external storage** and confirm it appears under `/disk print`.
+3. **Execute Setup Script:**
+   Import or run the commands from [`scripts/setup_ros_container.rsc`](scripts/setup_ros_container.rsc),
+   adjusting `root-dir` and the data mount to your USB disk.
+4. Access the dashboard via your router LAN IP at port `1928` (e.g. `http://192.168.88.1:1928`).
+
+### HTTP or HTTPS?
+
+**Running inside the router's own container: use plain HTTP.** The REST session
+never leaves the device, so TLS protects nothing and only adds a certificate to
+manage and renew.
+
+**Running on a separate host: use HTTPS.** The session crosses your network,
+and RouterOS REST authenticates with HTTP Basic — credentials in every request.
+
+TLS is *not* a performance argument either way. Measured on a hAP be³ /
+RouterOS 7.25, 8 req/s of `GET /interface` over 40 s per phase, sampled by an
+identical low-rate sampler in every phase:
+
+| Transport | Median CPU | p90 | Max | Requests completed |
+|---|---|---|---|---|
+| Idle baseline | 2% | 3% | 3% | — |
+| HTTP, keep-alive | 5% | 7% | 10% | 268 |
+| **HTTPS, keep-alive** | **5%** | **6%** | **7%** | **268** |
+| HTTPS, new connection per request | 12% | 24% | 27% | 193 |
+
+Encrypting the *stream* is free; the expensive part is the TLS *handshake*.
+Because MikroMan pools connections, it performs one handshake and reuses it —
+so HTTPS and HTTP cost the router the same. Without pooling the same workload
+costs **2.4× the CPU and completes 28% fewer requests**, which is what the
+connection-reuse work fixed.
 
 ---
 

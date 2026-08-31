@@ -284,7 +284,7 @@ export function SetupWizard({ onComplete }) {
           overflowY: 'auto',
           background: 'var(--bg-card)',
           border: '1px solid var(--border-color)',
-          borderRadius: 20,
+          borderRadius: 'var(--radius-xl)',
           padding: '32px 28px',
           position: 'relative',
           boxShadow: '0 24px 64px rgba(0, 0, 0, 0.55)'
@@ -321,7 +321,7 @@ export function SetupWizard({ onComplete }) {
             style={{
               width: 52,
               height: 52,
-              borderRadius: 16,
+              borderRadius: 'var(--radius-lg)',
               background: 'linear-gradient(135deg, rgba(11, 114, 201, 0.25) 0%, rgba(30, 135, 227, 0.1) 100%)',
               border: '1px solid rgba(11, 114, 201, 0.3)',
               color: 'var(--color-primary)',
@@ -334,10 +334,10 @@ export function SetupWizard({ onComplete }) {
           >
             <Server size={28} />
           </div>
-          <h2 style={{ fontSize: '1.45rem', fontWeight: 800, letterSpacing: '-0.02em' }}>
+          <h2 style={{ fontSize: 'var(--fs-2xl)', fontWeight: 800, letterSpacing: '-0.02em' }}>
             {t('wizard_title')}
           </h2>
-          <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginTop: 4, lineHeight: 1.4 }}>
+          <p style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-secondary)', marginTop: 4, lineHeight: 1.4 }}>
             {t('wizard_subtitle')}
           </p>
         </div>
@@ -353,7 +353,7 @@ export function SetupWizard({ onComplete }) {
               <div
                 style={{
                   height: 4,
-                  borderRadius: 2,
+                  borderRadius: 'var(--radius-xs)',
                   background: step >= s.num ? 'var(--color-primary)' : 'var(--bg-secondary)',
                   transition: 'background 0.3s ease',
                   marginBottom: 6
@@ -361,7 +361,7 @@ export function SetupWizard({ onComplete }) {
               />
               <div
                 style={{
-                  fontSize: '0.725rem',
+                  fontSize: 'var(--fs-xs)',
                   fontWeight: 600,
                   color: step === s.num ? 'var(--color-primary)' : 'var(--text-muted)',
                   whiteSpace: 'nowrap',
@@ -379,11 +379,11 @@ export function SetupWizard({ onComplete }) {
           <div
             style={{
               padding: '12px 16px',
-              borderRadius: 10,
+              borderRadius: 'var(--radius-md)',
               background: 'rgba(239, 68, 68, 0.12)',
               border: '1px solid var(--color-danger)',
               color: 'var(--color-danger)',
-              fontSize: '0.85rem',
+              fontSize: 'var(--fs-sm)',
               marginBottom: 16,
               display: 'flex',
               alignItems: 'center',
@@ -399,11 +399,11 @@ export function SetupWizard({ onComplete }) {
         {step === 1 && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
             <div>
-              <h3 style={{ fontSize: '1.025rem', fontWeight: 700, display: 'flex', alignItems: 'center', gap: 8 }}>
+              <h3 style={{ fontSize: 'var(--fs-lg)', fontWeight: 700, display: 'flex', alignItems: 'center', gap: 8 }}>
                 <Server size={18} style={{ color: 'var(--color-primary)' }} />
                 {t('wizard_step1')}
               </h3>
-              <p style={{ fontSize: '0.775rem', color: 'var(--text-muted)', marginTop: 2 }}>
+              <p style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginTop: 2 }}>
                 {t('wizard_step1_desc')}
               </p>
             </div>
@@ -489,10 +489,10 @@ export function SetupWizard({ onComplete }) {
               <div
                 style={{
                   padding: '7px 10px',
-                  borderRadius: 8,
+                  borderRadius: 'var(--radius-sm)',
                   background: 'var(--bg-secondary)',
                   border: '1px solid var(--border-color)',
-                  fontSize: '0.75rem',
+                  fontSize: 'var(--fs-xs)',
                   color: 'var(--text-muted)',
                   display: 'flex',
                   alignItems: 'center',
@@ -512,14 +512,23 @@ export function SetupWizard({ onComplete }) {
                   onChange={e => handleSslToggle(e.target.checked)}
                 />
                 <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-primary)' }}>
+                  <div style={{ fontSize: 'var(--fs-sm)', fontWeight: 600, color: 'var(--text-primary)' }}>
                     {t('wizard_use_ssl')}
                   </div>
-                  <div style={{ fontSize: '0.725rem', color: 'var(--text-muted)', marginTop: 2 }}>
+                  <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginTop: 2 }}>
                     {t('wizard_ssl_desc')}
                   </div>
                 </div>
               </label>
+
+              {/* Where the app runs decides whether TLS buys anything. Measured
+                  on a hAP be^3 / RouterOS 7.25, HTTPS costs the router nothing
+                  extra over HTTP once connections are pooled - which they are -
+                  so this is about exposure, not load. */}
+              <div className="alert alert-info" style={{ display: 'flex', gap: 8 }}>
+                <ShieldCheck size={15} style={{ flexShrink: 0, marginTop: 1 }} />
+                <span style={{ color: 'var(--text-secondary)' }}>{t('ssl_placement_hint')}</span>
+              </div>
 
               {/* Live Connection Tester Card & Auto-SSL Provisioning */}
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -555,8 +564,8 @@ export function SetupWizard({ onComplete }) {
                   <div
                     style={{
                       padding: '8px 12px',
-                      borderRadius: 8,
-                      fontSize: '0.8rem',
+                      borderRadius: 'var(--radius-sm)',
+                      fontSize: 'var(--fs-sm)',
                       background: 'rgba(16, 185, 129, 0.12)',
                       color: 'var(--color-success)',
                       border: '1px solid rgba(16, 185, 129, 0.3)',
@@ -574,8 +583,8 @@ export function SetupWizard({ onComplete }) {
                   <div
                     style={{
                       padding: '9px 12px',
-                      borderRadius: 10,
-                      fontSize: '0.825rem',
+                      borderRadius: 'var(--radius-md)',
+                      fontSize: 'var(--fs-sm)',
                       background: testResult.success ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)',
                       color: testResult.success ? 'var(--color-success)' : 'var(--color-danger)',
                       border: `1px solid ${testResult.success ? 'rgba(16, 185, 129, 0.3)' : 'rgba(239, 68, 68, 0.3)'}`,
@@ -599,7 +608,7 @@ export function SetupWizard({ onComplete }) {
                           type="button"
                           className="btn btn-secondary btn-sm"
                           onClick={() => handleApplySuggested(testResult.suggested_port, testResult.suggested_ssl)}
-                          style={{ fontSize: '0.725rem', padding: '3px 8px', display: 'flex', alignItems: 'center', gap: 5 }}
+                          style={{ fontSize: 'var(--fs-xs)', padding: '3px 8px', display: 'flex', alignItems: 'center', gap: 5 }}
                         >
                           <Zap size={12} style={{ color: 'var(--color-warning)' }} />
                           <span>Switch to port {testResult.suggested_port} ({testResult.suggested_ssl ? 'HTTPS' : 'HTTP'})</span>
@@ -614,7 +623,7 @@ export function SetupWizard({ onComplete }) {
                   style={{
                     marginTop: 4,
                     border: '1px solid var(--border-color)',
-                    borderRadius: 10,
+                    borderRadius: 'var(--radius-md)',
                     overflow: 'hidden',
                     background: 'var(--bg-secondary)'
                   }}
@@ -638,7 +647,7 @@ export function SetupWizard({ onComplete }) {
                       cursor: 'pointer',
                       color: 'var(--text-primary)',
                       fontWeight: 600,
-                      fontSize: '0.825rem'
+                      fontSize: 'var(--fs-sm)'
                     }}
                   >
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -650,7 +659,7 @@ export function SetupWizard({ onComplete }) {
 
                   {showManualSsl && (
                     <div style={{ padding: '12px 14px', borderTop: '1px solid var(--border-color)', background: 'var(--bg-card)' }}>
-                      <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: 10 }}>
+                      <p style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginBottom: 10 }}>
                         {t('manual_ssl_desc')}
                       </p>
 
@@ -663,7 +672,7 @@ export function SetupWizard({ onComplete }) {
                             setManualTab('existing');
                             handleFetchCertificates();
                           }}
-                          style={{ fontSize: '0.75rem', padding: '4px 10px' }}
+                          style={{ fontSize: 'var(--fs-xs)', padding: '4px 10px' }}
                         >
                           <Award size={13} style={{ marginRight: 4 }} />
                           {t('existing_certs')}
@@ -672,7 +681,7 @@ export function SetupWizard({ onComplete }) {
                           type="button"
                           className={`btn btn-sm ${manualTab === 'upload' ? 'btn-primary' : 'btn-ghost'}`}
                           onClick={() => setManualTab('upload')}
-                          style={{ fontSize: '0.75rem', padding: '4px 10px' }}
+                          style={{ fontSize: 'var(--fs-xs)', padding: '4px 10px' }}
                         >
                           <UploadCloud size={13} style={{ marginRight: 4 }} />
                           {t('upload_custom_cert')}
@@ -688,7 +697,7 @@ export function SetupWizard({ onComplete }) {
                               className="btn btn-ghost btn-sm"
                               onClick={handleFetchCertificates}
                               disabled={loadingCerts}
-                              style={{ fontSize: '0.725rem', padding: '2px 6px', display: 'flex', alignItems: 'center', gap: 4 }}
+                              style={{ fontSize: 'var(--fs-xs)', padding: '2px 6px', display: 'flex', alignItems: 'center', gap: 4 }}
                             >
                               <RefreshCw size={12} className={loadingCerts ? 'spin' : ''} />
                               <span>{t('refresh_certs')}</span>
@@ -699,11 +708,11 @@ export function SetupWizard({ onComplete }) {
                             <div
                               style={{
                                 padding: '8px 12px',
-                                borderRadius: 8,
+                                borderRadius: 'var(--radius-sm)',
                                 background: 'rgba(239, 68, 68, 0.1)',
                                 border: '1px solid rgba(239, 68, 68, 0.3)',
                                 color: 'var(--color-danger)',
-                                fontSize: '0.775rem',
+                                fontSize: 'var(--fs-xs)',
                                 marginBottom: 8,
                                 display: 'flex',
                                 alignItems: 'center',
@@ -716,14 +725,14 @@ export function SetupWizard({ onComplete }) {
                           )}
 
                           {loadingCerts && (
-                            <div style={{ textAlign: 'center', padding: '16px', color: 'var(--text-muted)', fontSize: '0.8rem' }}>
+                            <div style={{ textAlign: 'center', padding: '16px', color: 'var(--text-muted)', fontSize: 'var(--fs-sm)' }}>
                               <Loader2 size={16} className="spin" style={{ margin: '0 auto 6px auto' }} />
                               Loading router certificates...
                             </div>
                           )}
 
                           {!loadingCerts && !certError && routerCerts.length === 0 && (
-                            <div style={{ fontSize: '0.775rem', color: 'var(--text-muted)', padding: '8px 0' }}>
+                            <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', padding: '8px 0' }}>
                               {t('no_certs_on_router')}
                             </div>
                           )}
@@ -739,20 +748,20 @@ export function SetupWizard({ onComplete }) {
                                     justifyContent: 'space-between',
                                     padding: '8px 10px',
                                     background: 'var(--bg-secondary)',
-                                    borderRadius: 6,
+                                    borderRadius: 'var(--radius-sm)',
                                     border: `1px solid ${c.is_active_ssl ? 'var(--color-primary)' : 'var(--border-color)'}`
                                   }}
                                 >
                                   <div>
-                                    <div style={{ fontSize: '0.8rem', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 }}>
+                                    <div style={{ fontSize: 'var(--fs-sm)', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 }}>
                                       <span>{c.name}</span>
                                       {c.is_active_ssl && (
-                                        <span className="badge badge-primary" style={{ fontSize: '0.65rem', padding: '1px 5px' }}>
+                                        <span className="badge badge-primary" style={{ fontSize: 'var(--fs-3xs)', padding: '1px 5px' }}>
                                           Active www-ssl
                                         </span>
                                       )}
                                     </div>
-                                    <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }} className="font-mono">
+                                    <div style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)' }} className="font-mono">
                                       {c.common_name ? `CN: ${c.common_name} • ` : ''}Expires: {c.invalid_after || 'N/A'}
                                     </div>
                                   </div>
@@ -762,7 +771,7 @@ export function SetupWizard({ onComplete }) {
                                     className="btn btn-secondary btn-sm"
                                     onClick={() => handleBindCertificate(c.name)}
                                     disabled={bindingCert === c.name}
-                                    style={{ fontSize: '0.725rem', padding: '3px 8px' }}
+                                    style={{ fontSize: 'var(--fs-xs)', padding: '3px 8px' }}
                                   >
                                     {bindingCert === c.name ? <Loader2 size={12} className="spin" /> : 'Use for HTTPS'}
                                   </button>
@@ -777,7 +786,7 @@ export function SetupWizard({ onComplete }) {
                       {manualTab === 'upload' && (
                         <form onSubmit={handleUploadCertificate} style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                           <div className="form-group">
-                            <label className="form-label" style={{ fontSize: '0.75rem' }}>{t('cert_name_label')}</label>
+                            <label className="form-label" style={{ fontSize: 'var(--fs-xs)' }}>{t('cert_name_label')}</label>
                             <input
                               type="text"
                               className="form-input"
@@ -789,7 +798,7 @@ export function SetupWizard({ onComplete }) {
                           </div>
 
                           <div className="form-group">
-                            <label className="form-label" style={{ fontSize: '0.75rem' }}>{t('cert_pem_label')}</label>
+                            <label className="form-label" style={{ fontSize: 'var(--fs-xs)' }}>{t('cert_pem_label')}</label>
                             <textarea
                               className="form-input font-mono"
                               rows={3}
@@ -797,24 +806,24 @@ export function SetupWizard({ onComplete }) {
                               value={uploadForm.cert_content}
                               onChange={e => setUploadForm({ ...uploadForm, cert_content: e.target.value })}
                               required
-                              style={{ fontSize: '0.725rem', resize: 'vertical' }}
+                              style={{ fontSize: 'var(--fs-xs)', resize: 'vertical' }}
                             />
                           </div>
 
                           <div className="form-group">
-                            <label className="form-label" style={{ fontSize: '0.75rem' }}>{t('key_pem_label')}</label>
+                            <label className="form-label" style={{ fontSize: 'var(--fs-xs)' }}>{t('key_pem_label')}</label>
                             <textarea
                               className="form-input font-mono"
                               rows={2}
                               placeholder="-----BEGIN PRIVATE KEY-----&#10;...&#10;-----END PRIVATE KEY-----"
                               value={uploadForm.key_content}
                               onChange={e => setUploadForm({ ...uploadForm, key_content: e.target.value })}
-                              style={{ fontSize: '0.725rem', resize: 'vertical' }}
+                              style={{ fontSize: 'var(--fs-xs)', resize: 'vertical' }}
                             />
                           </div>
 
                           <div className="form-group">
-                            <label className="form-label" style={{ fontSize: '0.75rem' }}>{t('passphrase_label')}</label>
+                            <label className="form-label" style={{ fontSize: 'var(--fs-xs)' }}>{t('passphrase_label')}</label>
                             <input
                               type="password"
                               className="form-input"
@@ -860,11 +869,11 @@ export function SetupWizard({ onComplete }) {
         {step === 2 && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
             <div>
-              <h3 style={{ fontSize: '1.05rem', fontWeight: 700, display: 'flex', alignItems: 'center', gap: 8 }}>
+              <h3 style={{ fontSize: 'var(--fs-lg)', fontWeight: 700, display: 'flex', alignItems: 'center', gap: 8 }}>
                 <Send size={18} style={{ color: 'var(--color-primary)' }} />
                 {t('wizard_step2')}
               </h3>
-              <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: 2 }}>
+              <p style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-muted)', marginTop: 2 }}>
                 {t('wizard_step2_desc')}
               </p>
             </div>
@@ -943,11 +952,11 @@ export function SetupWizard({ onComplete }) {
         {step === 3 && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
             <div>
-              <h3 style={{ fontSize: '1.05rem', fontWeight: 700, display: 'flex', alignItems: 'center', gap: 8 }}>
+              <h3 style={{ fontSize: 'var(--fs-lg)', fontWeight: 700, display: 'flex', alignItems: 'center', gap: 8 }}>
                 <Sparkles size={18} style={{ color: 'var(--color-primary)' }} />
                 {t('wizard_step3')}
               </h3>
-              <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: 2 }}>
+              <p style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-muted)', marginTop: 2 }}>
                 {t('wizard_step3_desc')}
               </p>
             </div>
@@ -983,7 +992,7 @@ export function SetupWizard({ onComplete }) {
                   <button
                     type="button"
                     className={`btn ${lang === 'en' ? 'btn-primary' : 'btn-secondary'}`}
-                    style={{ padding: '14px 16px', fontSize: '0.95rem' }}
+                    style={{ padding: '14px 16px', fontSize: 'var(--fs-md)' }}
                     onClick={() => setLang('en')}
                   >
                     🇬🇧 English
@@ -991,7 +1000,7 @@ export function SetupWizard({ onComplete }) {
                   <button
                     type="button"
                     className={`btn ${lang === 'ru' ? 'btn-primary' : 'btn-secondary'}`}
-                    style={{ padding: '14px 16px', fontSize: '0.95rem' }}
+                    style={{ padding: '14px 16px', fontSize: 'var(--fs-md)' }}
                     onClick={() => setLang('ru')}
                   >
                     🇷🇺 Русский

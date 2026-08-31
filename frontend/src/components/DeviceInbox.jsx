@@ -129,9 +129,9 @@ export function DeviceInbox({ devices = [], users = [], onAssign, onScan, isScan
       {/* Header bar */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 18, flexWrap: 'wrap', gap: 10 }}>
         <div>
-          <h2 style={{ fontSize: '1.25rem', fontWeight: 700 }}>{t('tab_devices')}</h2>
+          <h2 style={{ fontSize: 'var(--fs-xl)', fontWeight: 700 }}>{t('tab_devices')}</h2>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 4, flexWrap: 'wrap' }}>
-            <p style={{ fontSize: '0.825rem', color: 'var(--text-muted)' }}>
+            <p style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-muted)' }}>
               {t('unassigned_count', { count: visibleDevices.length })}
             </p>
 
@@ -142,9 +142,9 @@ export function DeviceInbox({ devices = [], users = [], onAssign, onScan, isScan
               style={{
                 background: autoScanEnabled ? 'rgba(16, 185, 129, 0.12)' : 'rgba(100, 116, 139, 0.15)',
                 border: `1px solid ${autoScanEnabled ? 'rgba(16, 185, 129, 0.3)' : 'rgba(100, 116, 139, 0.3)'}`,
-                borderRadius: 20,
+                borderRadius: 'var(--radius-xl)',
                 padding: '2px 10px',
-                fontSize: '0.725rem',
+                fontSize: 'var(--fs-xs)',
                 fontWeight: 600,
                 cursor: 'pointer',
                 display: 'flex',
@@ -158,7 +158,7 @@ export function DeviceInbox({ devices = [], users = [], onAssign, onScan, isScan
               <span style={{
                 width: 6,
                 height: 6,
-                borderRadius: '50%',
+                borderRadius: 'var(--radius-full)',
                 background: autoScanEnabled ? 'var(--color-success)' : 'var(--text-muted)',
                 display: 'inline-block'
               }} />
@@ -169,25 +169,11 @@ export function DeviceInbox({ devices = [], users = [], onAssign, onScan, isScan
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           {/* Show Hidden Devices Checkbox */}
-          <label style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 6,
-            fontSize: '0.775rem',
-            color: 'var(--text-muted)',
-            cursor: 'pointer',
-            userSelect: 'none',
-            background: 'var(--bg-card)',
-            padding: '5px 10px',
-            borderRadius: 'var(--radius-md)',
-            border: '1px solid var(--border-color)',
-            height: 32
-          }}>
+          <label className="toggle-pill">
             <input
               type="checkbox"
               checked={showHidden}
               onChange={e => setShowHidden(e.target.checked)}
-              style={{ width: 14, height: 14, cursor: 'pointer', accentColor: 'var(--color-primary)' }}
             />
             <EyeOff size={13} style={{ color: showHidden ? 'var(--color-primary)' : 'var(--text-muted)' }} />
             {t('show_hidden_devices')}
@@ -205,9 +191,9 @@ export function DeviceInbox({ devices = [], users = [], onAssign, onScan, isScan
       </div>
 
       {visibleDevices.length === 0 ? (
-        <div className="card" style={{ textAlign: 'center', padding: '40px 20px', color: 'var(--text-muted)' }}>
-          <div style={{ fontSize: '1rem', fontWeight: 600, marginBottom: 6 }}>{t('no_unassigned')}</div>
-          <p style={{ fontSize: '0.85rem' }}>All devices currently active on your network are mapped to user accounts.</p>
+        <div className="card empty-state">
+          <div className="empty-state-title">{t('no_unassigned')}</div>
+          <p style={{ fontSize: 'var(--fs-sm)' }}>{t('all_devices_assigned')}</p>
         </div>
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(360px, 1fr))', gap: 16 }}>
@@ -231,18 +217,18 @@ export function DeviceInbox({ devices = [], users = [], onAssign, onScan, isScan
                       justifyContent: 'space-between',
                       gap: 8
                     }}>
-                      <div style={{ fontSize: '0.75rem', color: 'var(--text-primary)' }}>
+                      <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-primary)' }}>
                         <div style={{ fontWeight: 700, color: 'var(--color-primary)', display: 'flex', alignItems: 'center', gap: 4 }}>
                           <Link size={12} />
                           <span>{t('smart_link_title')}</span>
                         </div>
-                        <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                        <div style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)' }}>
                           {suggestion.reason}
                         </div>
                       </div>
                       <button
                         className="btn btn-primary btn-sm"
-                        style={{ fontSize: '0.725rem', padding: '4px 8px', whiteSpace: 'nowrap' }}
+                        style={{ fontSize: 'var(--fs-xs)', padding: '4px 8px', whiteSpace: 'nowrap' }}
                         disabled={mergingId === device.id}
                         onClick={() => handleMergeClick(device.id, suggestion.suggested_target_device_id, suggestion.target_device_name)}
                       >
@@ -267,17 +253,17 @@ export function DeviceInbox({ devices = [], users = [], onAssign, onScan, isScan
                       gap: 8
                     }}>
                       <div style={{ minWidth: 0 }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 700, fontSize: '0.775rem' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 700, fontSize: 'var(--fs-xs)' }}>
                           <Link size={13} style={{ color: 'var(--color-success)' }} />
                           <span>{t('link_as_adapter')}</span>
                         </div>
-                        <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                        <div style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)' }}>
                           {linkSuggestion.reason}
                         </div>
                       </div>
                       <button
                         className="btn btn-secondary btn-sm"
-                        style={{ fontSize: '0.725rem', padding: '4px 8px', whiteSpace: 'nowrap' }}
+                        style={{ fontSize: 'var(--fs-xs)', padding: '4px 8px', whiteSpace: 'nowrap' }}
                         disabled={linkingId === device.id}
                         onClick={() => handleLinkClick(device.id, linkSuggestion.primary_device_id)}
                       >
@@ -297,13 +283,13 @@ export function DeviceInbox({ devices = [], users = [], onAssign, onScan, isScan
                         <Laptop size={18} />
                       </div>
                       <div>
-                        <div style={{ fontWeight: 700, fontSize: '0.95rem', display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <div style={{ fontWeight: 700, fontSize: 'var(--fs-md)', display: 'flex', alignItems: 'center', gap: 6 }}>
                           <span>{device.custom_name || device.hostname || 'Unknown Device'}</span>
                           {device.is_hidden && (
                             <span
                               className="badge"
                               style={{
-                                fontSize: '0.625rem',
+                                fontSize: 'var(--fs-3xs)',
                                 padding: '0px 4px',
                                 background: 'rgba(100, 116, 139, 0.2)',
                                 color: 'var(--text-muted)',
@@ -314,7 +300,7 @@ export function DeviceInbox({ devices = [], users = [], onAssign, onScan, isScan
                             </span>
                           )}
                         </div>
-                        <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                        <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
                           {device.vendor || 'Generic Device'}
                         </div>
                       </div>
@@ -332,7 +318,7 @@ export function DeviceInbox({ devices = [], users = [], onAssign, onScan, isScan
                     display: 'flex',
                     flexDirection: 'column',
                     gap: 4,
-                    fontSize: '0.8rem'
+                    fontSize: 'var(--fs-sm)'
                   }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                       <span style={{ color: 'var(--text-muted)' }}>{t('ip_address')}:</span>
@@ -346,7 +332,7 @@ export function DeviceInbox({ devices = [], users = [], onAssign, onScan, isScan
                           <span
                             className="badge"
                             style={{
-                              fontSize: '0.625rem',
+                              fontSize: 'var(--fs-3xs)',
                               padding: '1px 5px',
                               background: 'rgba(234, 179, 8, 0.15)',
                               color: 'var(--color-warning)',
@@ -453,7 +439,7 @@ export function DeviceInbox({ devices = [], users = [], onAssign, onScan, isScan
                   <div style={{ flex: 1 }}>
                     <select
                       className="form-select"
-                      style={{ width: '100%', padding: '6px 8px', fontSize: '0.8rem' }}
+                      style={{ width: '100%', padding: '6px 8px', fontSize: 'var(--fs-sm)' }}
                       value={selectedUserMap[device.id] || ''}
                       onChange={(e) => handleUserSelect(device.id, e.target.value)}
                     >
@@ -467,7 +453,7 @@ export function DeviceInbox({ devices = [], users = [], onAssign, onScan, isScan
                     className="btn btn-primary btn-sm"
                     onClick={() => handleAssignClick(device.id)}
                     disabled={!selectedUserMap[device.id]}
-                    style={{ fontSize: '0.8rem', whiteSpace: 'nowrap' }}
+                    style={{ fontSize: 'var(--fs-sm)', whiteSpace: 'nowrap' }}
                   >
                     <UserPlus size={14} />
                     {t('assign_btn')}
@@ -496,7 +482,7 @@ export function DeviceInbox({ devices = [], users = [], onAssign, onScan, isScan
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                 <History size={18} style={{ color: 'var(--color-primary)' }} />
-                <h3 style={{ fontSize: '1.05rem', fontWeight: 700 }}>
+                <h3 style={{ fontSize: 'var(--fs-lg)', fontWeight: 700 }}>
                   {t('device_history')}
                 </h3>
               </div>
@@ -505,17 +491,17 @@ export function DeviceInbox({ devices = [], users = [], onAssign, onScan, isScan
               </button>
             </div>
 
-            <div style={{ marginBottom: 12, padding: '8px 10px', background: 'var(--bg-secondary)', borderRadius: 6, fontSize: '0.8rem' }}>
+            <div style={{ marginBottom: 12, padding: '8px 10px', background: 'var(--bg-secondary)', borderRadius: 'var(--radius-sm)', fontSize: 'var(--fs-sm)' }}>
               <div style={{ fontWeight: 600 }}>{historyDevice.custom_name || historyDevice.hostname || 'Device'}</div>
-              <div className="font-mono" style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>{historyDevice.mac_address}</div>
+              <div className="font-mono" style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-xs)' }}>{historyDevice.mac_address}</div>
             </div>
 
             {loadingHistory ? (
-              <div style={{ textAlign: 'center', padding: '24px', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+              <div style={{ textAlign: 'center', padding: '24px', color: 'var(--text-muted)', fontSize: 'var(--fs-sm)' }}>
                 Loading change history...
               </div>
             ) : deviceHistory.length === 0 ? (
-              <div style={{ textAlign: 'center', padding: '20px', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+              <div style={{ textAlign: 'center', padding: '20px', color: 'var(--text-muted)', fontSize: 'var(--fs-sm)' }}>
                 {t('no_history')}
               </div>
             ) : (
@@ -526,23 +512,23 @@ export function DeviceInbox({ devices = [], users = [], onAssign, onScan, isScan
                     style={{
                       padding: '8px 10px',
                       background: 'var(--bg-secondary)',
-                      borderRadius: 6,
+                      borderRadius: 'var(--radius-sm)',
                       borderLeft: '3px solid var(--color-primary)',
-                      fontSize: '0.775rem'
+                      fontSize: 'var(--fs-xs)'
                     }}
                   >
                     <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
                       <span style={{ fontWeight: 700, color: 'var(--text-primary)' }}>
                         {t(`event_${item.event_type}`) || item.event_type}
                       </span>
-                      <span style={{ color: 'var(--text-muted)', fontSize: '0.7rem' }}>
+                      <span style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-2xs)' }}>
                         {new Date(item.created_at).toLocaleString()}
                       </span>
                     </div>
                     {item.details && (
                       <div style={{ color: 'var(--text-secondary)', marginBottom: 2 }}>{item.details}</div>
                     )}
-                    <div style={{ display: 'flex', gap: 12, color: 'var(--text-muted)', fontSize: '0.7rem' }} className="font-mono">
+                    <div style={{ display: 'flex', gap: 12, color: 'var(--text-muted)', fontSize: 'var(--fs-2xs)' }} className="font-mono">
                       <span>MAC: {item.mac_address}</span>
                       {item.ip_address && <span>IP: {item.ip_address}</span>}
                     </div>

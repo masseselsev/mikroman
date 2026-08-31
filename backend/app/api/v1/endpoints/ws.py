@@ -9,6 +9,7 @@ from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 from backend.app.core.config import settings
 from backend.app.db.models import AppSetting
 from backend.app.db.session import AsyncSessionLocal
+from backend.app.services.public_network import public_network_resolver
 from backend.app.services.router_manager import router_manager
 from backend.app.services.router_time import store_router_offset
 from backend.app.services.traffic_controller import TrafficController
@@ -67,36 +68,6 @@ async def _get_router_clock(client, router_id: Optional[int]) -> dict:
     except Exception as e:
         logger.debug(f"Could not persist router UTC offset: {e}")
     return clock
-
-
-_PUBLIC_IP_TTL_SECONDS = 900
-_public_ip_cache: dict = {"ip": None, "at": 0.0}
-
-
-async def _get_public_ip() -> Optional[str]:
-    """Internet-facing address, for links behind CGNAT or a double NAT.
-
-    The WAN interface address is often a carrier-grade NAT address (10.x, 100.64/10)
-    which is not the address the outside world sees, so the real one is resolved
-    through an external echo service. Cached for 15 minutes and failing quietly:
-    it is a convenience, and the router may legitimately have no internet.
-    """
-    now = time.time()
-    if _public_ip_cache["ip"] and (now - _public_ip_cache["at"]) < _PUBLIC_IP_TTL_SECONDS:
-        return _public_ip_cache["ip"]
-    try:
-        import httpx
-        async with httpx.AsyncClient(timeout=4.0) as http:
-            resp = await http.get("https://api.ipify.org")
-            if resp.status_code == 200:
-                ip = resp.text.strip()
-                if ip and len(ip) <= 45:
-                    _public_ip_cache.update({"ip": ip, "at": now})
-                    return ip
-    except Exception as e:
-        logger.debug(f"Could not resolve public IP: {e}")
-    _public_ip_cache["at"] = now  # avoid retrying every frame while offline
-    return _public_ip_cache["ip"]
 
 
 async def _get_wan_ip(client, router_id: Optional[int], monitored: list) -> Optional[str]:
@@ -238,6 +209,10 @@ async def websocket_telemetry_endpoint(
                             total_rx = sum(u["current_rate_in"] for u in users_stats)
                             total_tx = sum(u["current_rate_out"] for u in users_stats)
 
+                # Resolved once here rather than inline three times below, so a
+                # single frame never triggers more than one lookup.
+                public_net = await public_network_resolver.resolve()
+
                 payload = {
                     "type": "telemetry_tick",
                     "timestamp": time.time(),
@@ -255,7 +230,12 @@ async def websocket_telemetry_endpoint(
                         "monitored_interfaces": monitored_ifaces,
                         "wan_ip": await _get_wan_ip(client, eff_router_id, monitored_ifaces),
                         "clock": await _get_router_clock(client, eff_router_id),
-                        "public_ip": await _get_public_ip(),
+                        "public_ip": public_net.ip,
+                        # Who the uplink belongs to on the internet. Useful on
+                        # its own, and the only way to tell two links apart when
+                        # both hand out carrier-grade NAT addresses.
+                        "isp": public_net.isp,
+                        "asn": public_net.asn,
                         # Devices currently online across all profiles - answers
                         # "how many clients is this router actually serving".
                         "active_clients": sum(u.get("active_device_count", 0) for u in users_stats),

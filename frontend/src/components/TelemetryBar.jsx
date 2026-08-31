@@ -59,47 +59,27 @@ function Sparkline({ values, color, max }) {
 /**
  * One compact telemetry tile: label, primary value, a secondary detail, and an
  * optional sparkline. Replaces eight near-identical blocks of inline markup.
+ *
+ * `sub` accepts either a single line or an array of them, so a tile can carry
+ * several related facts (the WAN tile shows the interface address, the public
+ * address and the operator) without each caller inventing its own layout.
+ * Falsy entries are dropped, which keeps the call sites free of conditionals.
  */
-function Tile({ icon, tone, label, value, sub, history, historyMax, onClick, title, valueSize = '1rem' }) {
+function Tile({ icon, tone, label, value, sub, history, historyMax, onClick, title, valueSize = 'var(--fs-lg)' }) {
+  const subLines = (Array.isArray(sub) ? sub : [sub]).filter(Boolean);
+
   return (
     <div
-      className="card"
+      className={`tile${onClick ? ' is-clickable' : ''}`}
       onClick={onClick}
       title={title}
-      style={{
-        padding: '9px 11px',
-        display: 'flex',
-        flexDirection: 'column',
-        gap: 3,
-        cursor: onClick ? 'pointer' : 'default',
-        minWidth: 0
-      }}
     >
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
-        <span style={{ color: tone, display: 'flex', flexShrink: 0 }}>{icon}</span>
-        <span style={{
-          fontSize: '0.68rem',
-          color: 'var(--text-muted)',
-          fontWeight: 600,
-          textTransform: 'uppercase',
-          letterSpacing: '0.03em',
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-          whiteSpace: 'nowrap'
-        }}>
-          {label}
-        </span>
+      <div className="tile-head">
+        <span className="tile-icon" style={{ color: tone }}>{icon}</span>
+        <span className="section-label truncate">{label}</span>
       </div>
 
-      <div className="font-mono" style={{
-        fontSize: valueSize,
-        fontWeight: 800,
-        color: tone,
-        lineHeight: 1.15,
-        overflow: 'hidden',
-        textOverflow: 'ellipsis',
-        whiteSpace: 'nowrap'
-      }}>
+      <div className="tile-value truncate" style={{ fontSize: valueSize, color: tone }}>
         {value}
       </div>
 
@@ -107,17 +87,9 @@ function Tile({ icon, tone, label, value, sub, history, historyMax, onClick, tit
         <Sparkline values={history} color={tone} max={historyMax} />
       ) : null}
 
-      {sub ? (
-        <div style={{
-          fontSize: '0.62rem',
-          color: 'var(--text-muted)',
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-          whiteSpace: 'nowrap'
-        }}>
-          {sub}
-        </div>
-      ) : null}
+      {subLines.map((line, i) => (
+        <div key={i} className="tile-sub truncate">{line}</div>
+      ))}
     </div>
   );
 }
@@ -325,12 +297,18 @@ export function TelemetryBar({ router, activeRouter, interfaces = [] }) {
           tone="var(--text-secondary)"
           label={t('wan_ip')}
           value={router.wan_ip || '—'}
-          valueSize="0.85rem"
-          // A carrier-grade NAT address on the WAN interface is not the address
-          // the outside world sees, so the public one is shown beneath it.
-          sub={router.public_ip && router.public_ip !== router.wan_ip
-            ? `↗ ${router.public_ip}`
-            : (router.version || '')}
+          valueSize="var(--fs-sm)"
+          title={router.isp
+            ? `${t('isp_label')}: ${router.isp}${router.asn ? ` (${router.asn})` : ''}`
+            : undefined}
+          // Three facts about the same link, most specific first: the address on
+          // the interface, the address the internet actually sees (they differ
+          // under carrier-grade NAT), and who the link belongs to.
+          sub={[
+            router.public_ip && router.public_ip !== router.wan_ip ? `↗ ${router.public_ip}` : null,
+            router.isp || null,
+            !router.public_ip && !router.isp ? (router.version || '') : null
+          ]}
         />
 
         <Tile
@@ -338,7 +316,7 @@ export function TelemetryBar({ router, activeRouter, interfaces = [] }) {
           tone="var(--text-secondary)"
           label={t('uptime')}
           value={formatUptime(router.uptime, lang)}
-          valueSize="0.9rem"
+          valueSize="var(--fs-md)"
           sub={router.board_name || ''}
         />
       </div>
@@ -346,10 +324,10 @@ export function TelemetryBar({ router, activeRouter, interfaces = [] }) {
       {/* Interface Configuration Modal */}
       {modalOpen && (
         <div className="modal-backdrop" onClick={() => setModalOpen(false)}>
-          <div className="modal-card" onClick={e => e.stopPropagation()} style={{ maxWidth: 500 }}>
+          <div className="modal-card modal-sm" onClick={e => e.stopPropagation()}>
             <div className="modal-header">
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontWeight: 700 }}>
-                <Network size={18} style={{ color: 'var(--color-primary)' }} />
+              <div className="panel-title">
+                <Network size={18} />
                 {t('gateway_ifaces_title')}
               </div>
               <button className="btn-icon" onClick={() => setModalOpen(false)} style={{ width: 28, height: 28 }}>
@@ -358,75 +336,37 @@ export function TelemetryBar({ router, activeRouter, interfaces = [] }) {
             </div>
 
             <div className="modal-body">
-              <p style={{ fontSize: '0.825rem', color: 'var(--text-muted)', marginBottom: 14, lineHeight: 1.4 }}>
+              <p style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-muted)', marginBottom: 14, lineHeight: 1.4 }}>
                 {t('gateway_ifaces_desc')}
               </p>
 
               {/* Quick Preset Buttons */}
               <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
-                <button
-                  type="button"
-                  className="btn btn-secondary btn-sm"
-                  style={{ fontSize: '0.75rem', padding: '3px 10px' }}
-                  onClick={handleSelectWanOnly}
-                >
+                <button type="button" className="btn btn-secondary btn-sm" onClick={handleSelectWanOnly}>
                   {t('wan_only')}
                 </button>
-                <button
-                  type="button"
-                  className="btn btn-secondary btn-sm"
-                  style={{ fontSize: '0.75rem', padding: '3px 10px' }}
-                  onClick={handleSelectAll}
-                >
+                <button type="button" className="btn btn-secondary btn-sm" onClick={handleSelectAll}>
                   {t('select_all')}
                 </button>
-                <button
-                  type="button"
-                  className="btn btn-ghost btn-sm"
-                  style={{ fontSize: '0.75rem', padding: '3px 10px' }}
-                  onClick={handleClearAll}
-                >
+                <button type="button" className="btn btn-ghost btn-sm" onClick={handleClearAll}>
                   {t('clear_all')}
                 </button>
               </div>
 
               {/* Interface Checkboxes List */}
-              <div style={{
-                maxHeight: 240,
-                overflowY: 'auto',
-                border: '1px solid var(--border-color)',
-                borderRadius: 'var(--radius-md)',
-                padding: 6,
-                display: 'flex',
-                flexDirection: 'column',
-                gap: 4
-              }}>
+              <div className="list-box" style={{ maxHeight: 240 }}>
                 {availableIfaces.length === 0 ? (
-                  <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', textAlign: 'center', padding: 16 }}>
-                    Loading router interfaces...
-                  </div>
+                  <div className="empty-note">{t('loading_interfaces')}</div>
                 ) : (
                   availableIfaces.map(iface => {
                     const isChecked = selectedIfaces.includes(iface.name);
                     return (
                       <div
                         key={iface.name}
+                        className={`list-row${isChecked ? ' is-selected' : ''}`}
                         onClick={() => handleToggleIface(iface.name)}
-                        style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'space-between',
-                          padding: '8px 12px',
-                          borderRadius: 'var(--radius-sm)',
-                          background: isChecked ? 'rgba(11, 114, 201, 0.12)' : 'transparent',
-                          border: `1px solid ${isChecked ? 'var(--color-primary)' : 'transparent'}`,
-                          cursor: 'pointer',
-                          fontSize: '0.85rem',
-                          userSelect: 'none',
-                          transition: 'all 0.15s ease'
-                        }}
                       >
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
                           <input
                             type="checkbox"
                             checked={isChecked}
@@ -436,13 +376,13 @@ export function TelemetryBar({ router, activeRouter, interfaces = [] }) {
                           <span style={{
                             width: 8,
                             height: 8,
-                            borderRadius: '50%',
+                            borderRadius: 'var(--radius-full)',
                             background: iface.running ? 'var(--color-success)' : 'var(--text-muted)',
                             flexShrink: 0
                           }} />
-                          <span style={{ fontWeight: isChecked ? 700 : 500 }}>{iface.name}</span>
+                          <span className="truncate" style={{ fontWeight: isChecked ? 700 : 500 }}>{iface.name}</span>
                         </div>
-                        <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                        <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', flexShrink: 0 }}>
                           {iface.type || 'interface'}
                         </span>
                       </div>

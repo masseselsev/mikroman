@@ -13,6 +13,11 @@ from backend.app.schemas.router import (
     RouterTestConnectionResponse,
 )
 from backend.app.services.routeros import RouterOSClient
+from backend.app.services.routeros_compat import (
+    MINIMUM_VERSION,
+    format_version,
+    log_compatibility,
+)
 
 logger = logging.getLogger("mikroman.router_manager")
 
@@ -123,6 +128,21 @@ class RouterManager:
             res = await client.get_system_resource()
             ssl_info = await client.check_ssl_status()
 
+            # Setup is the moment a version problem is cheapest to act on, so
+            # the check runs here and the verdict travels with the response.
+            compat = log_compatibility(res.version)
+            message = "Connection successful"
+            if not compat.supported:
+                message = (
+                    f"Connected, but RouterOS {compat.version_text} is below the "
+                    f"minimum {format_version(MINIMUM_VERSION)} this app requires."
+                )
+            elif compat.degraded:
+                message = (
+                    f"Connection successful. Some features need a newer RouterOS: "
+                    f"{'; '.join(compat.degraded)}."
+                )
+
             return RouterTestConnectionResponse(
                 success=True,
                 ros_version=res.version,
@@ -130,7 +150,7 @@ class RouterManager:
                 cpu_load=res.cpu_load,
                 uptime=res.uptime,
                 ssl_status=ssl_info,
-                message="Connection successful"
+                message=message
             )
         except Exception as primary_err:
             logger.warning(f"Initial connection test failed for {req.host}:{req.port} (ssl={req.use_ssl}) - {primary_err}")

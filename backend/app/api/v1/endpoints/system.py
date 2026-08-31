@@ -12,6 +12,12 @@ from backend.app.schemas.common import AlertLogDTO, APIResponse
 from backend.app.schemas.routeros import InterfaceDTO, RouterSystemHealth, RouterSystemResource
 from backend.app.services.router_manager import router_manager
 from backend.app.services.routeros import RouterOSClient
+from backend.app.services.routeros_compat import (
+    MINIMUM_VERSION,
+    VERIFIED_VERSION,
+    check_version,
+    format_version,
+)
 
 logger = logging.getLogger("mikroman.system")
 
@@ -25,17 +31,29 @@ async def get_router_client(db: AsyncSession = Depends(get_db)) -> RouterOSClien
 
 @router.get("/status", response_model=APIResponse[Dict[str, Any]])
 async def get_system_status(router_client: RouterOSClient = Depends(get_router_client)):
-    """Fetch live RouterOS system status, CPU, memory, health, and test connection."""
-    test_res = await router_client.test_connection()
-    if not test_res.get("connected"):
+    """Fetch live RouterOS system status, CPU, memory, health, and reachability.
+
+    Reachability is established by the resource read itself rather than by a
+    separate probe: if ``/system/resource`` answers, the REST API is up, and one
+    fewer request reaches the router per call. ``get_system_health`` already
+    swallows its own errors, since not every board has sensors.
+    """
+    try:
+        resource: RouterSystemResource = await router_client.get_system_resource()
+    except Exception as e:
+        logger.warning(f"RouterOS status probe failed: {e}")
         return APIResponse(
             success=False,
             message="Cannot reach RouterOS REST API",
-            data={"connected": False, "error": test_res.get("error")}
+            data={"connected": False, "error": str(e)}
         )
 
-    resource: RouterSystemResource = await router_client.get_system_resource()
     health: RouterSystemHealth = await router_client.get_system_health()
+
+    # Advisory only: the router answered, so it is usable. This tells the
+    # operator which features their RouterOS version cannot provide, instead of
+    # leaving them to wonder why a panel is empty.
+    compat = check_version(resource.version)
 
     return APIResponse(
         data={
@@ -43,6 +61,14 @@ async def get_system_status(router_client: RouterOSClient = Depends(get_router_c
             "resource": resource.model_dump(),
             "health": health.model_dump(),
             "app_version": settings.APP_VERSION,
+            "routeros_compat": {
+                "version": compat.version_text,
+                "supported": compat.supported,
+                "minimum": format_version(MINIMUM_VERSION),
+                "verified_up_to": format_version(VERIFIED_VERSION),
+                "degraded": compat.degraded,
+                "warnings": compat.warnings,
+            },
         }
     )
 

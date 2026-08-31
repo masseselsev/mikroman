@@ -34,13 +34,46 @@
   --color-danger: #ef4444;
   --color-danger-bg: rgba(239, 68, 68, 0.12);
   --color-info: #06b6d4;
-  
+  /* Radio/link accent. Deliberately outside the status palette: a Wi-Fi band is
+     not good or bad news, so it must not read as green/amber/red, but it is the
+     fastest way to tell 5G-BE from 5G-AX at a glance on a dense row. */
+  --color-radio: #e879f9;
+
+  /* Corner radius scale. Components had accumulated raw pixel values (2, 3, 4,
+     6, 8, 10, 16, 20) that read as noise rather than as a system; everything
+     now picks the nearest step here.
+       xs - progress bars, dots, micro chips
+       sm - buttons, inputs, list rows
+       md - grouped controls, inner containers
+       lg - cards, panels, modals
+       xl - hero surfaces */
+  --radius-xs: 4px;
   --radius-sm: 6px;
   --radius-md: 10px;
   --radius-lg: 16px;
   --radius-xl: 20px;
   --radius-full: 9999px;
-  
+
+  /* Control heights. Every toolbar element - button, dropdown, segmented
+     selector, clock - snaps to one of these two, so a row of controls sits on
+     one baseline instead of stair-stepping between 29px and 36px. */
+  --control-h: 38px;
+  --control-h-sm: 32px;
+
+  /* Type scale. The UI had drifted to 29 distinct font sizes, several of them
+     differing by a fraction of a pixel, which is exactly the kind of near-miss
+     that makes an interface feel unresolved. These eight steps cover every
+     legitimate use. */
+  --fs-3xs: 0.625rem;   /* 10px - dense inline chips on device rows */
+  --fs-2xs: 0.6875rem;  /* 11px - micro labels, tile captions */
+  --fs-xs: 0.75rem;     /* 12px - metadata, hints, table headers */
+  --fs-sm: 0.8125rem;   /* 13px - secondary body text */
+  --fs-md: 0.875rem;    /* 14px - body text and controls */
+  --fs-lg: 1rem;        /* 16px - tile values, section titles */
+  --fs-xl: 1.25rem;     /* 20px - headings */
+  --fs-2xl: 1.5rem;     /* 24px - hero figures */
+
+
   --shadow-sm: 0 2px 6px rgba(0, 0, 0, 0.3);
   --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.4);
   --shadow-lg: 0 16px 40px rgba(0, 0, 0, 0.55);
@@ -77,7 +110,9 @@
   --color-danger: #dc2626;
   --color-danger-bg: rgba(220, 38, 38, 0.1);
   --color-info: #0284c7;
-  
+  /* Darker on white: the dark-theme fuchsia is unreadable on a light ground. */
+  --color-radio: #a21caf;
+
   --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.08);
   --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.08);
   --shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.12);
@@ -125,7 +160,7 @@ body {
   gap: 6px;
   padding: 3px 8px;
   border-radius: var(--radius-full);
-  font-size: 0.75rem;
+  font-size: var(--fs-xs);
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -161,7 +196,7 @@ body {
    dominate the line it annotates. */
 .badge-chip {
   padding: 0 5px;
-  font-size: 0.6rem;
+  font-size: var(--fs-3xs);
   letter-spacing: 0.02em;
   border-radius: var(--radius-sm);
   background: rgba(100, 116, 139, 0.18);
@@ -185,7 +220,7 @@ body {
   gap: 8px;
   padding: 9px 18px;
   font-family: var(--font-sans);
-  font-size: 0.875rem;
+  font-size: var(--fs-md);
   font-weight: 600;
   border-radius: var(--radius-md);
   border: 1px solid transparent;
@@ -194,6 +229,10 @@ body {
   user-select: none;
   text-decoration: none;
   outline: none;
+  /* Fixed heights so a toolbar of buttons, dropdowns and segmented controls
+     lines up on one baseline instead of stair-stepping. */
+  height: var(--control-h);
+  flex-shrink: 0;
 }
 
 .btn:active {
@@ -253,14 +292,17 @@ body {
 }
 
 .btn-sm {
-  padding: 6px 12px;
-  font-size: 0.8125rem;
+  padding: 0 12px;
+  font-size: var(--fs-sm);
   border-radius: var(--radius-sm);
+  height: var(--control-h-sm);
 }
 
 .btn-icon {
   padding: 0;
-  border-radius: var(--radius-md);
+  width: var(--control-h-sm);
+  height: var(--control-h-sm);
+  border-radius: var(--radius-sm);
   background: var(--bg-secondary);
   border: 1px solid var(--border-color);
   color: var(--text-secondary);
@@ -278,12 +320,17 @@ body {
   border-color: var(--border-focus);
 }
 
-/* Cards & Glass Containers */
-.card {
+/* Cards & Glass Containers.
+   `.card` and `.panel` are the same surface under two names that grew up in
+   different parts of the app; they are defined together so they can never drift
+   apart again. Callers previously overrode the padding with 11px/13px/14px/16px/
+   18px/20px variants, which is why no two sections lined up. */
+.card,
+.panel {
   background: var(--bg-card);
   border: 1px solid var(--border-color);
   border-radius: var(--radius-lg);
-  padding: 20px;
+  padding: 14px 16px;
   box-shadow: var(--shadow-sm);
   transition: border-color 0.2s ease, box-shadow 0.2s ease;
 }
@@ -312,7 +359,7 @@ body {
   border-bottom: 2px solid transparent;
   color: var(--text-secondary);
   font-weight: 600;
-  font-size: 0.925rem;
+  font-size: var(--fs-md);
   cursor: pointer;
   transition: all 0.15s ease;
   white-space: nowrap;
@@ -417,7 +464,7 @@ body {
 }
 
 .form-label {
-  font-size: 0.8125rem;
+  font-size: var(--fs-sm);
   font-weight: 600;
   color: var(--text-secondary);
   display: flex;
@@ -427,13 +474,13 @@ body {
 }
 
 .form-label-badge {
-  font-size: 0.7rem;
+  font-size: var(--fs-2xs);
   font-weight: 500;
   color: var(--text-muted);
 }
 
 .form-hint {
-  font-size: 0.75rem;
+  font-size: var(--fs-xs);
   color: var(--text-muted);
   margin-top: 4px;
 }
@@ -449,7 +496,7 @@ body {
   padding: 10px 14px;
   color: var(--text-primary);
   font-family: var(--font-sans);
-  font-size: 0.9rem;
+  font-size: var(--fs-md);
   line-height: 1.4;
   transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
   outline: none;
@@ -459,7 +506,7 @@ body {
 .form-input.font-mono,
 .form-control.font-mono {
   font-family: var(--font-mono);
-  font-size: 0.85rem;
+  font-size: var(--fs-sm);
   letter-spacing: -0.01em;
 }
 
@@ -632,7 +679,10 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 4px 6px;
+  /* 2px of padding plus a 26px button and the 1px border makes exactly
+     --control-h-sm, so the selector matches the buttons beside it. */
+  padding: 2px 4px;
+  min-height: var(--control-h-sm);
   background: var(--bg-secondary);
   border: 1px solid var(--border-color);
   border-radius: var(--radius-md);
@@ -648,7 +698,7 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
 .range-btn {
   height: 26px;
   padding: 0 10px;
-  font-size: 0.75rem;
+  font-size: var(--fs-xs);
   font-weight: 600;
   font-family: var(--font-sans);
   border-radius: var(--radius-sm);
@@ -671,11 +721,456 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
   border-color: var(--color-primary);
 }
 
-/* Section panels share one radius and padding so cards, tiles and headers line
-   up rather than each carrying their own inline values. */
-.panel {
+/* ========================================================= */
+/* SURFACES, PANELS AND TILES                                */
+/* ========================================================= */
+
+/* A panel whose content draws its own edges (tables, scroll lists): the frame
+   and radius stay, the inner padding goes. */
+.panel-flush {
+  padding: 0;
+  overflow: hidden;
+}
+
+/* Title row of a panel: heading on the left, controls on the right. Every
+   section previously rebuilt this with its own margins and title size. */
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+
+.panel-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--fs-lg);
+  font-weight: 700;
+  color: var(--text-primary);
+  min-width: 0;
+}
+
+.panel-title > svg {
+  color: var(--color-primary);
+  flex-shrink: 0;
+}
+
+/* The small uppercase caption above a value. Used by telemetry tiles, table
+   headers and form section captions, which had three slightly different sizes
+   and letter spacings for the same visual role. */
+.section-label {
+  font-size: var(--fs-2xs);
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+/* Compact telemetry tile: caption, primary figure, optional sparkline and
+   secondary detail lines. */
+.tile {
   background: var(--bg-card);
   border: 1px solid var(--border-color);
   border-radius: var(--radius-lg);
-  padding: 14px 16px;
+  box-shadow: var(--shadow-sm);
+  padding: 9px 11px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.tile.is-clickable {
+  cursor: pointer;
+}
+
+.tile.is-clickable:hover {
+  border-color: var(--border-focus);
+}
+
+.tile-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.tile-head > .tile-icon {
+  display: flex;
+  flex-shrink: 0;
+}
+
+.tile-value {
+  font-family: var(--font-mono);
+  font-size: var(--fs-lg);
+  font-weight: 800;
+  line-height: 1.15;
+}
+
+.tile-sub {
+  font-size: var(--fs-3xs);
+  color: var(--text-muted);
+  line-height: 1.45;
+}
+
+/* Single-line clipping. Written out inline in dozens of places, always as the
+   same three declarations. */
+.truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+/* ========================================================= */
+/* LISTS                                                     */
+/* ========================================================= */
+
+/* Scrollable bordered container for a list of selectable rows. */
+.list-box {
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  overflow-y: auto;
+}
+
+.list-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  background: transparent;
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.list-row:hover {
+  background: var(--bg-card-hover);
+}
+
+.list-row.is-selected {
+  background: var(--color-primary-light);
+  border-color: var(--color-primary);
+}
+
+/* Full-width placeholder for a view with nothing in it yet. Distinct from
+   .empty-note, which is the one-line version used inside a list. */
+.empty-state {
+  text-align: center;
+  padding: 44px 20px;
+  color: var(--text-muted);
+}
+
+.empty-state-title {
+  font-size: var(--fs-lg);
+  font-weight: 600;
+  margin-bottom: 6px;
+  color: var(--text-secondary);
+}
+
+/* Checkbox styled as a toolbar control, so it lines up with the buttons it
+   sits beside. It was written twice with two different heights. */
+.toggle-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: var(--control-h-sm);
+  padding: 0 12px;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.toggle-pill:hover {
+  border-color: var(--border-focus);
+  color: var(--text-secondary);
+}
+
+.toggle-pill input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  cursor: pointer;
+  accent-color: var(--color-primary);
+}
+
+/* Placeholder shown where a list, chart or table has nothing to display. */
+.empty-note {
+  padding: 16px;
+  text-align: center;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+}
+
+/* ========================================================= */
+/* DEVICE ROWS                                               */
+/* ========================================================= */
+
+/* A device row is three columns: text that gives way, a fixed metrics column,
+   and fixed actions. Putting the live rate on the same line as the name meant
+   two things that refuse to shrink fought over one line, so on a narrow card
+   the name collapsed to "Pixe..." and the numbers still overflowed the card.
+   Only the text column may shrink now, so nothing can be pushed out. */
+.device-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 9px;
+  background: var(--bg-secondary);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-color);
+  cursor: pointer;
+  transition: border-color 0.15s ease;
+}
+
+.device-row:hover {
+  border-color: var(--border-focus);
+}
+
+.device-row-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* Right-aligned figures. The width is fixed so a device jumping from "0 bps"
+   to "12.4 Mbps" does not reflow the name beside it. */
+.device-row-metrics {
+  flex: 0 0 auto;
+  width: 104px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 1px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-2xs);
+  line-height: 1.35;
+  white-space: nowrap;
+}
+
+.device-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+/* Metadata lines beneath the device name. */
+.device-row-meta {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 2px;
+  padding-left: 14px;
+  font-size: var(--fs-2xs);
+  color: var(--text-muted);
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* Radio band tag - see --color-radio. */
+.band-tag {
+  color: var(--color-radio);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+/* Round presence indicator. Written inline as a 7px or 8px circle in a dozen
+   places; one size means online/offline reads the same everywhere. */
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full);
+  background: var(--text-muted);
+  flex-shrink: 0;
+  display: inline-block;
+}
+
+.status-dot.is-online {
+  background: var(--color-success);
+}
+
+/* ========================================================= */
+/* POPOVERS                                                  */
+/* ========================================================= */
+
+/* Anchored dropdown panel (router switcher, menus). Shares the card surface but
+   not its padding: rows run edge to edge so hover highlights the full width. */
+.popover {
+  position: absolute;
+  z-index: 1000;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+  padding: 6px 0;
+  overflow: hidden;
+}
+
+.popover-head {
+  padding: 6px 12px;
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.popover-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+  background: transparent;
+  border: none;
+  text-align: left;
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.popover-item:hover {
+  background: var(--bg-card-hover);
+}
+
+.popover-item.is-selected {
+  background: var(--bg-secondary);
+}
+
+.popover-foot {
+  border-top: 1px solid var(--border-color);
+  margin-top: 4px;
+  padding-top: 4px;
+}
+
+/* ========================================================= */
+/* MODAL SIZES                                               */
+/* ========================================================= */
+
+/* Modal widths had drifted to 440/480/500/520/560/640. Three steps cover every
+   dialog in the app: a confirmation, a form, and a form with a list beside it. */
+.modal-card.modal-sm {
+  max-width: 440px;
+}
+
+.modal-card.modal-lg {
+  max-width: 640px;
+}
+
+/* Modal heading: square icon, title, and a muted identifying line beneath it.
+   Every dialog built this by hand at a slightly different icon size. */
+.modal-title-group {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.modal-icon {
+  width: 38px;
+  height: 38px;
+  border-radius: var(--radius-md);
+  background: var(--color-primary-light);
+  color: var(--color-primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.modal-title-group h3 {
+  font-size: var(--fs-lg);
+  font-weight: 700;
+}
+
+.modal-subtitle {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+
+/* ========================================================= */
+/* SETTING ROWS AND INLINE ALERTS                            */
+/* ========================================================= */
+
+/* A labelled option with its control on the right: pause toggles, hide toggles,
+   notification switches. The tone variants let the row itself signal the state
+   rather than needing a separate badge. */
+.setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  border-radius: var(--radius-md);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+}
+
+.setting-row.is-danger {
+  background: var(--color-danger-bg);
+  border-color: var(--color-danger);
+}
+
+.setting-row.is-warning {
+  background: var(--color-warning-bg);
+  border-color: rgba(245, 158, 11, 0.35);
+}
+
+.setting-row-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+
+.setting-row-desc {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+
+/* Inline message strip inside forms and panels. */
+.alert {
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-sm);
+  line-height: 1.4;
+}
+
+.alert-danger {
+  background: var(--color-danger-bg);
+  color: var(--color-danger);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+}
+
+.alert-warning {
+  background: var(--color-warning-bg);
+  color: var(--color-warning);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+}
+
+.alert-info {
+  background: var(--color-primary-light);
+  color: var(--color-primary);
+  border: 1px solid rgba(11, 114, 201, 0.3);
 }

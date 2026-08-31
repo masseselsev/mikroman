@@ -35,18 +35,18 @@ function ShareBar({ pct }) {
         height: 5,
         minWidth: 40,
         background: 'var(--bg-secondary)',
-        borderRadius: 3,
+        borderRadius: 'var(--radius-xs)',
         overflow: 'hidden'
       }}>
         <div style={{
           width: `${Math.min(Math.max(value, 0), 100)}%`,
           height: '100%',
           background: 'var(--color-primary)',
-          borderRadius: 3
+          borderRadius: 'var(--radius-xs)'
         }} />
       </div>
       <span className="font-mono" style={{
-        fontSize: '0.72rem',
+        fontSize: 'var(--fs-xs)',
         fontWeight: 700,
         color: value > 0 ? 'var(--color-primary)' : 'var(--text-muted)',
         minWidth: 42,
@@ -241,7 +241,7 @@ export function TrafficAnalytics({ activeRouter }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
       {/* Header & Date Controls */}
-      <div className="card" style={{ padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: 14 }}>
+      <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
             <div style={{
@@ -257,8 +257,8 @@ export function TrafficAnalytics({ activeRouter }) {
               <BarChart2 size={22} />
             </div>
             <div>
-              <h2 style={{ fontSize: '1.2rem', fontWeight: 800 }}>{t('analytics_title')}</h2>
-              <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+              <h2 style={{ fontSize: 'var(--fs-xl)', fontWeight: 800 }}>{t('analytics_title')}</h2>
+              <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-muted)' }}>
                 {t('analytics_subtitle')}
               </div>
             </div>
@@ -267,7 +267,7 @@ export function TrafficAnalytics({ activeRouter }) {
           {/* Billing Cycle Setting Button */}
           <button
             className="btn btn-secondary btn-sm"
-            style={{ fontSize: '0.8rem', display: 'flex', alignItems: 'center', gap: 6 }}
+            style={{ fontSize: 'var(--fs-sm)', display: 'flex', alignItems: 'center', gap: 6 }}
             onClick={() => setBillingModalOpen(true)}
           >
             <Calendar size={14} style={{ color: 'var(--color-primary)' }} />
@@ -294,21 +294,21 @@ export function TrafficAnalytics({ activeRouter }) {
               <input
                 type="date"
                 className="form-input"
-                style={{ height: 28, fontSize: '0.75rem', padding: '2px 6px', width: 130 }}
+                style={{ height: 28, fontSize: 'var(--fs-xs)', padding: '2px 6px', width: 130 }}
                 value={customStart}
                 onChange={e => setCustomStart(e.target.value)}
               />
-              <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>→</span>
+              <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>→</span>
               <input
                 type="date"
                 className="form-input"
-                style={{ height: 28, fontSize: '0.75rem', padding: '2px 6px', width: 130 }}
+                style={{ height: 28, fontSize: 'var(--fs-xs)', padding: '2px 6px', width: 130 }}
                 value={customEnd}
                 onChange={e => setCustomEnd(e.target.value)}
               />
               <button
                 className="btn btn-primary btn-sm"
-                style={{ height: 28, fontSize: '0.75rem', padding: '0 10px' }}
+                style={{ height: 28, fontSize: 'var(--fs-xs)', padding: '0 10px' }}
                 onClick={loadAnalytics}
               >
                 {t('apply_dates')}
@@ -317,7 +317,7 @@ export function TrafficAnalytics({ activeRouter }) {
           )}
 
           {data && (
-            <span style={{ marginLeft: 'auto', fontSize: '0.75rem', color: 'var(--text-muted)', paddingRight: 4 }}>
+            <span style={{ marginLeft: 'auto', fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', paddingRight: 4 }}>
               {data.start_date} → {data.end_date}
             </span>
           )}
@@ -328,29 +328,29 @@ export function TrafficAnalytics({ activeRouter }) {
       {/* ISP allowance for the current billing cycle. Shown above the totals
           because "how much of my quota is gone" outranks the raw byte count. */}
       {quota?.enabled && (
-        <div className="card" style={{ padding: '13px 16px' }}>
+        <div className="card">
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap', marginBottom: 8 }}>
-            <span style={{ fontWeight: 700, fontSize: '0.85rem', color: 'var(--text-primary)' }}>
+            <span style={{ fontWeight: 700, fontSize: 'var(--fs-sm)', color: 'var(--text-primary)' }}>
               {t('quota_title')}
             </span>
-            <span className="font-mono" style={{ fontSize: '0.8rem', color: quotaColor }}>
+            <span className="font-mono" style={{ fontSize: 'var(--fs-sm)', color: quotaColor }}>
               {formatBytes(quota.used_bytes)} / {formatBytes(quota.limit_bytes)}
             </span>
-            <span className="font-mono" style={{ fontSize: '0.8rem', fontWeight: 700, color: quotaColor }}>
+            <span className="font-mono" style={{ fontSize: 'var(--fs-sm)', fontWeight: 700, color: quotaColor }}>
               {quota.used_pct.toFixed(1)}%
             </span>
             <span style={{ flex: 1 }} />
-            <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+            <span style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)' }}>
               {quota.cycle_start} → {quota.cycle_end} · {t('quota_days_left', { days: quota.days_remaining })}
             </span>
           </div>
 
-          <div style={{ height: 7, background: 'var(--bg-secondary)', borderRadius: 4, overflow: 'hidden', position: 'relative' }}>
+          <div style={{ height: 7, background: 'var(--bg-secondary)', borderRadius: 'var(--radius-xs)', overflow: 'hidden', position: 'relative' }}>
             <div style={{
               width: `${Math.min(quota.used_pct, 100)}%`,
               height: '100%',
               background: quotaColor,
-              borderRadius: 4,
+              borderRadius: 'var(--radius-xs)',
               transition: 'width 0.3s ease'
             }} />
             {/* Threshold markers, so the next alert point is visible. */}
@@ -371,7 +371,7 @@ export function TrafficAnalytics({ activeRouter }) {
             ))}
           </div>
 
-          <div style={{ display: 'flex', gap: 16, marginTop: 7, fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+          <div style={{ display: 'flex', gap: 16, marginTop: 7, fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)' }}>
             <span>{t('quota_remaining')}: <span className="font-mono" style={{ color: 'var(--text-primary)' }}>{formatBytes(quota.remaining_bytes)}</span></span>
             <span>{t('quota_daily_budget')}: <span className="font-mono" style={{ color: 'var(--text-primary)' }}>{formatBytes(quota.projected_daily_budget)}</span></span>
           </div>
@@ -402,13 +402,13 @@ export function TrafficAnalytics({ activeRouter }) {
             }}
           />
           <div>
-            <div style={{ fontWeight: 700, fontSize: '0.82rem', color: 'var(--text-primary)' }}>
+            <div style={{ fontWeight: 700, fontSize: 'var(--fs-sm)', color: 'var(--text-primary)' }}>
               {health.status === 'degraded' ? t('acct_degraded_title') : t('acct_partial_title')}
               <span className="font-mono" style={{ fontWeight: 600, color: 'var(--text-muted)', marginLeft: 8 }}>
                 {t('acct_coverage')}: {roundPct(health.coverage_pct)}%
               </span>
             </div>
-            <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginTop: 2 }}>
+            <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-muted)', marginTop: 2 }}>
               {health.message}
             </div>
           </div>
@@ -417,7 +417,7 @@ export function TrafficAnalytics({ activeRouter }) {
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 14 }}>
         {/* Total Consumed */}
-        <div className="card" style={{ padding: '16px 18px', display: 'flex', alignItems: 'center', gap: 14 }}>
+        <div className="card" style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
           <div style={{
             background: 'rgba(11, 114, 201, 0.15)',
             color: 'var(--color-primary)',
@@ -432,18 +432,18 @@ export function TrafficAnalytics({ activeRouter }) {
             <Layers size={22} />
           </div>
           <div>
-            <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontWeight: 600 }}>{t('total_combined')}</div>
-            <div className="font-mono" style={{ fontSize: '1.4rem', fontWeight: 800, color: 'var(--text-primary)' }}>
+            <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', fontWeight: 600 }}>{t('total_combined')}</div>
+            <div className="font-mono" style={{ fontSize: 'var(--fs-2xl)', fontWeight: 800, color: 'var(--text-primary)' }}>
               {formatBytes(gateway.total_bytes)}
             </div>
-            <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+            <div style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)' }}>
               {gateway.monitored_interfaces.length > 0 ? `${t('interfaces_label')}: ${gateway.monitored_interfaces.join(', ')}` : t('all_interfaces')}
             </div>
           </div>
         </div>
 
         {/* Total Download (RX) */}
-        <div className="card" style={{ padding: '16px 18px', display: 'flex', alignItems: 'center', gap: 14 }}>
+        <div className="card" style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
           <div style={{
             background: 'rgba(46, 204, 113, 0.15)',
             color: 'var(--color-success)',
@@ -458,18 +458,18 @@ export function TrafficAnalytics({ activeRouter }) {
             <ArrowDown size={22} />
           </div>
           <div>
-            <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontWeight: 600 }}>{t('total_download')}</div>
-            <div className="font-mono" style={{ fontSize: '1.4rem', fontWeight: 800, color: 'var(--color-success)' }}>
+            <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', fontWeight: 600 }}>{t('total_download')}</div>
+            <div className="font-mono" style={{ fontSize: 'var(--fs-2xl)', fontWeight: 800, color: 'var(--color-success)' }}>
               {formatBytes(gateway.total_bytes_in)}
             </div>
-            <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+            <div style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)' }}>
               {gateway.total_bytes > 0 ? `${roundPct(gateway.total_bytes_in / gateway.total_bytes * 100)}% ${t('of_total')}` : '0%'}
             </div>
           </div>
         </div>
 
         {/* Total Upload (TX) */}
-        <div className="card" style={{ padding: '16px 18px', display: 'flex', alignItems: 'center', gap: 14 }}>
+        <div className="card" style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
           <div style={{
             background: 'rgba(52, 152, 219, 0.15)',
             color: '#3498db',
@@ -484,18 +484,18 @@ export function TrafficAnalytics({ activeRouter }) {
             <ArrowUp size={22} />
           </div>
           <div>
-            <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontWeight: 600 }}>{t('total_upload')}</div>
-            <div className="font-mono" style={{ fontSize: '1.4rem', fontWeight: 800, color: '#3498db' }}>
+            <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', fontWeight: 600 }}>{t('total_upload')}</div>
+            <div className="font-mono" style={{ fontSize: 'var(--fs-2xl)', fontWeight: 800, color: '#3498db' }}>
               {formatBytes(gateway.total_bytes_out)}
             </div>
-            <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+            <div style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)' }}>
               {gateway.total_bytes > 0 ? `${roundPct(gateway.total_bytes_out / gateway.total_bytes * 100)}% ${t('of_total')}` : '0%'}
             </div>
           </div>
         </div>
 
         {/* Active Profiles & Devices */}
-        <div className="card" style={{ padding: '16px 18px', display: 'flex', alignItems: 'center', gap: 14 }}>
+        <div className="card" style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
           <div style={{
             background: 'rgba(155, 89, 182, 0.15)',
             color: '#9b59b6',
@@ -510,11 +510,11 @@ export function TrafficAnalytics({ activeRouter }) {
             <Users size={22} />
           </div>
           <div>
-            <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontWeight: 600 }}>{t('active_profiles_devices')}</div>
-            <div className="font-mono" style={{ fontSize: '1.2rem', fontWeight: 800 }}>
-              {users.length} <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontWeight: 500 }}>{t('users_short')}</span> • {devices.length} <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontWeight: 500 }}>{t('devs_short')}</span>
+            <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', fontWeight: 600 }}>{t('active_profiles_devices')}</div>
+            <div className="font-mono" style={{ fontSize: 'var(--fs-xl)', fontWeight: 800 }}>
+              {users.length} <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-muted)', fontWeight: 500 }}>{t('users_short')}</span> • {devices.length} <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-muted)', fontWeight: 500 }}>{t('devs_short')}</span>
             </div>
-            <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+            <div style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)' }}>
               {t('shaped_via_ros')}
             </div>
           </div>
@@ -522,7 +522,7 @@ export function TrafficAnalytics({ activeRouter }) {
       </div>
 
       {/* Breakdown View Tabs */}
-      <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
+      <div className="card panel-flush">
         <div style={{
           display: 'flex',
           borderBottom: '1px solid var(--border-color)',
@@ -532,7 +532,7 @@ export function TrafficAnalytics({ activeRouter }) {
           <button
             className={`nav-tab ${breakdownTab === 'overview' ? 'active' : ''}`}
             onClick={() => setBreakdownTab('overview')}
-            style={{ fontSize: '0.85rem', padding: '10px 18px', display: 'flex', alignItems: 'center', gap: 6 }}
+            style={{ fontSize: 'var(--fs-sm)', padding: '10px 18px', display: 'flex', alignItems: 'center', gap: 6 }}
           >
             <Activity size={15} />
             {t('breakdown_overview')}
@@ -540,7 +540,7 @@ export function TrafficAnalytics({ activeRouter }) {
           <button
             className={`nav-tab ${breakdownTab === 'users' ? 'active' : ''}`}
             onClick={() => setBreakdownTab('users')}
-            style={{ fontSize: '0.85rem', padding: '10px 18px', display: 'flex', alignItems: 'center', gap: 6 }}
+            style={{ fontSize: 'var(--fs-sm)', padding: '10px 18px', display: 'flex', alignItems: 'center', gap: 6 }}
           >
             <Users size={15} />
             {t('breakdown_users')} ({users.length})
@@ -548,7 +548,7 @@ export function TrafficAnalytics({ activeRouter }) {
           <button
             className={`nav-tab ${breakdownTab === 'devices' ? 'active' : ''}`}
             onClick={() => setBreakdownTab('devices')}
-            style={{ fontSize: '0.85rem', padding: '10px 18px', display: 'flex', alignItems: 'center', gap: 6 }}
+            style={{ fontSize: 'var(--fs-sm)', padding: '10px 18px', display: 'flex', alignItems: 'center', gap: 6 }}
           >
             <Smartphone size={15} />
             {t('breakdown_devices')} ({devices.length})
@@ -561,7 +561,7 @@ export function TrafficAnalytics({ activeRouter }) {
             <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
               {/* Daily Timeline Visual */}
               <div>
-                <h4 style={{ fontSize: '0.95rem', fontWeight: 700, marginBottom: 12, display: 'flex', alignItems: 'center', gap: 6 }}>
+                <h4 style={{ fontSize: 'var(--fs-md)', fontWeight: 700, marginBottom: 12, display: 'flex', alignItems: 'center', gap: 6 }}>
                   <Calendar size={16} style={{ color: 'var(--color-primary)' }} />
                   {t('traffic_timeline')} ({t('days_count', { count: timeline.length })})
                 </h4>
@@ -599,7 +599,7 @@ export function TrafficAnalytics({ activeRouter }) {
                         <div style={{
                           width: '100%',
                           height: `${heightPct}%`,
-                          borderRadius: 4,
+                          borderRadius: 'var(--radius-xs)',
                           overflow: 'hidden',
                           display: 'flex',
                           flexDirection: 'column',
@@ -608,7 +608,7 @@ export function TrafficAnalytics({ activeRouter }) {
                           <div style={{ height: `${rxPct}%`, background: 'var(--color-success)' }} />
                           <div style={{ flex: 1, background: '#3498db' }} />
                         </div>
-                        <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
+                        <span style={{ fontSize: 'var(--fs-3xs)', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
                           {String(pt.record_date).slice(-5)}
                         </span>
                       </div>
@@ -619,7 +619,7 @@ export function TrafficAnalytics({ activeRouter }) {
 
               {/* User Consumption Share Bars */}
               <div>
-                <h4 style={{ fontSize: '0.95rem', fontWeight: 700, marginBottom: 12, display: 'flex', alignItems: 'center', gap: 6 }}>
+                <h4 style={{ fontSize: 'var(--fs-md)', fontWeight: 700, marginBottom: 12, display: 'flex', alignItems: 'center', gap: 6 }}>
                   <Users size={16} style={{ color: 'var(--color-primary)' }} />
                   {t('distribution_title')}
                 </h4>
@@ -634,24 +634,24 @@ export function TrafficAnalytics({ activeRouter }) {
                     }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                          <span style={{ fontWeight: 700, fontSize: '0.9rem' }}>{u.user_name}</span>
-                          <span style={{ fontSize: '0.725rem', color: 'var(--text-muted)' }}>({u.device_count} {t('devs_short')})</span>
+                          <span style={{ fontWeight: 700, fontSize: 'var(--fs-md)' }}>{u.user_name}</span>
+                          <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>({u.device_count} {t('devs_short')})</span>
                         </div>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                          <span className="font-mono" style={{ fontSize: '0.85rem', fontWeight: 700 }}>
+                          <span className="font-mono" style={{ fontSize: 'var(--fs-sm)', fontWeight: 700 }}>
                             {formatBytes(u.total_bytes)}
                           </span>
-                          <span style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--color-primary)', minWidth: 40, textAlign: 'right' }}>
+                          <span style={{ fontSize: 'var(--fs-xs)', fontWeight: 700, color: 'var(--color-primary)', minWidth: 40, textAlign: 'right' }}>
                             {u.pct_of_total}%
                           </span>
                         </div>
                       </div>
-                      <div style={{ height: 6, background: 'var(--bg-input)', borderRadius: 3, overflow: 'hidden' }}>
+                      <div style={{ height: 6, background: 'var(--bg-input)', borderRadius: 'var(--radius-xs)', overflow: 'hidden' }}>
                         <div style={{
                           width: `${Math.min(u.pct_of_total, 100)}%`,
                           height: '100%',
                           background: 'var(--color-primary)',
-                          borderRadius: 3,
+                          borderRadius: 'var(--radius-xs)',
                           transition: 'width 0.4s ease'
                         }} />
                       </div>
@@ -667,7 +667,7 @@ export function TrafficAnalytics({ activeRouter }) {
             <div style={{ overflowX: 'auto' }}>
               <table className="table" style={{ width: '100%', borderCollapse: 'collapse' }}>
                 <thead>
-                  <tr style={{ borderBottom: '1px solid var(--border-color)', textAlign: 'left', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                  <tr style={{ borderBottom: '1px solid var(--border-color)', textAlign: 'left', fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
                     <SortHeader label={t('table_user')} field="user_name" sort={userSort} onSort={toggleUserSort} />
                     {/* device count for this user - not the "Unassigned Devices" tab label */}
                     <SortHeader label={t('table_devices')} field="device_count" sort={userSort} onSort={toggleUserSort} />
@@ -679,7 +679,7 @@ export function TrafficAnalytics({ activeRouter }) {
                 </thead>
                 <tbody>
                   {sortRows(users, userSort).map(u => (
-                    <tr key={u.user_id} style={{ borderBottom: '1px solid var(--border-color)', fontSize: '0.85rem' }}>
+                    <tr key={u.user_id} style={{ borderBottom: '1px solid var(--border-color)', fontSize: 'var(--fs-sm)' }}>
                       <td style={{ padding: '10px 12px', fontWeight: 700 }}>{u.user_name}</td>
                       <td style={{ padding: '10px 12px', color: 'var(--text-muted)' }}>{u.device_count}</td>
                       <td style={{ padding: '10px 12px', color: 'var(--color-success)', fontWeight: 600 }} className="font-mono">
@@ -714,7 +714,7 @@ export function TrafficAnalytics({ activeRouter }) {
                     placeholder={t('search_devices_placeholder')}
                     value={searchTerm}
                     onChange={e => setSearchTerm(e.target.value)}
-                    style={{ paddingLeft: 32, height: 34, fontSize: '0.825rem' }}
+                    style={{ paddingLeft: 32, height: 34, fontSize: 'var(--fs-sm)' }}
                   />
                 </div>
 
@@ -722,7 +722,7 @@ export function TrafficAnalytics({ activeRouter }) {
                   className="form-select"
                   value={userFilter}
                   onChange={e => setUserFilter(e.target.value)}
-                  style={{ width: 180, height: 34, fontSize: '0.825rem' }}
+                  style={{ width: 180, height: 34, fontSize: 'var(--fs-sm)' }}
                 >
                   <option value="all">{t('all_users_filter')}</option>
                   <option value="unassigned">{t('unassigned_traffic')}</option>
@@ -736,7 +736,7 @@ export function TrafficAnalytics({ activeRouter }) {
               <div style={{ overflowX: 'auto' }}>
                 <table className="table" style={{ width: '100%', borderCollapse: 'collapse' }}>
                   <thead>
-                    <tr style={{ borderBottom: '1px solid var(--border-color)', textAlign: 'left', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                    <tr style={{ borderBottom: '1px solid var(--border-color)', textAlign: 'left', fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
                       <SortHeader label={t('table_device')} field="custom_name" sort={deviceSort} onSort={toggleDeviceSort} />
                       <SortHeader label={t('table_ip_mac')} field="ip_address" sort={deviceSort} onSort={toggleDeviceSort} />
                       <SortHeader label={t('table_user')} field="user_name" sort={deviceSort} onSort={toggleDeviceSort} />
@@ -750,28 +750,28 @@ export function TrafficAnalytics({ activeRouter }) {
                   <tbody>
                     {filteredDevices.length === 0 ? (
                       <tr>
-                        <td colSpan={8} style={{ padding: 20, textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+                        <td colSpan={8} style={{ padding: 20, textAlign: 'center', color: 'var(--text-muted)', fontSize: 'var(--fs-sm)' }}>
                           {t('no_devices_matching')}
                         </td>
                       </tr>
                     ) : (
                       sortRows(filteredDevices, deviceSort).map(d => (
-                        <tr key={d.device_id} style={{ borderBottom: '1px solid var(--border-color)', fontSize: '0.85rem' }}>
+                        <tr key={d.device_id} style={{ borderBottom: '1px solid var(--border-color)', fontSize: 'var(--fs-sm)' }}>
                           <td style={{ padding: '10px 12px' }}>
                             <div style={{ fontWeight: 700 }}>{d.custom_name || d.hostname || `${t('table_device')} ${d.device_id}`}</div>
-                            <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>{d.vendor || t('unknown_vendor')}</div>
+                            <div style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)' }}>{d.vendor || t('unknown_vendor')}</div>
                           </td>
-                          <td style={{ padding: '10px 12px', fontSize: '0.75rem' }} className="font-mono">
+                          <td style={{ padding: '10px 12px', fontSize: 'var(--fs-xs)' }} className="font-mono">
                             <div>{d.ip_address || '—'}</div>
                             <div style={{ color: 'var(--text-muted)' }}>{d.mac_address}</div>
                           </td>
                           <td style={{ padding: '10px 12px' }}>
                             {d.user_name ? (
-                              <span style={{ padding: '2px 6px', borderRadius: 4, background: 'var(--bg-secondary)', fontSize: '0.75rem', fontWeight: 600 }}>
+                              <span style={{ padding: '2px 6px', borderRadius: 'var(--radius-xs)', background: 'var(--bg-secondary)', fontSize: 'var(--fs-xs)', fontWeight: 600 }}>
                                 {d.user_name}
                               </span>
                             ) : (
-                              <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{t('unassigned_label')}</span>
+                              <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>{t('unassigned_label')}</span>
                             )}
                           </td>
                           <td style={{ padding: '10px 12px', color: 'var(--color-success)', fontWeight: 600 }} className="font-mono">
@@ -787,7 +787,7 @@ export function TrafficAnalytics({ activeRouter }) {
                             <ShareBar pct={d.pct_of_total} />
                           </td>
                           <td style={{ padding: '10px 12px' }}>
-                            <span style={{ fontSize: '0.75rem', color: d.speed_limit !== 'default' ? 'var(--color-warning)' : 'var(--text-muted)' }}>
+                            <span style={{ fontSize: 'var(--fs-xs)', color: d.speed_limit !== 'default' ? 'var(--color-warning)' : 'var(--text-muted)' }}>
                               {d.speed_limit === 'default' ? t('inherit_user') : d.speed_limit}
                             </span>
                           </td>
@@ -817,7 +817,7 @@ export function TrafficAnalytics({ activeRouter }) {
             </div>
 
             <div className="modal-body">
-              <p style={{ fontSize: '0.825rem', color: 'var(--text-muted)', marginBottom: 14 }}>
+              <p style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-muted)', marginBottom: 14 }}>
                 {t('billing_anchor_desc')}
               </p>
 
@@ -830,7 +830,7 @@ export function TrafficAnalytics({ activeRouter }) {
                   className="form-input font-mono"
                   value={anchorDay}
                   onChange={e => setAnchorDay(Math.max(1, minVal(Number(e.target.value), 31)))}
-                  style={{ height: 38, fontSize: '1rem' }}
+                  style={{ height: 38, fontSize: 'var(--fs-lg)' }}
                 />
               </div>
             </div>

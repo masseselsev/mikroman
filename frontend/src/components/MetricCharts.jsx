@@ -134,14 +134,14 @@ function ChartCard({
     : null;
 
   return (
-    <div className="card" style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: 10 }}>
+    <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
       {/* Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <Icon size={18} style={{ color: iconColor }} />
           <div>
-            <div style={{ fontWeight: 700, fontSize: '0.925rem' }}>{title}</div>
-            <div style={{ fontSize: '0.725rem', color: 'var(--text-muted)' }}>{subtitle}</div>
+            <div style={{ fontWeight: 700, fontSize: 'var(--fs-md)' }}>{title}</div>
+            <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>{subtitle}</div>
           </div>
         </div>
         {headerRight}
@@ -159,14 +159,14 @@ function ChartCard({
           height: 180, 
           position: 'relative', 
           background: 'var(--bg-secondary)', 
-          borderRadius: 8, 
+          borderRadius: 'var(--radius-sm)', 
           overflow: 'hidden',
           cursor: 'crosshair',
           userSelect: 'none'
         }}
       >
         {(!points || points.length === 0) ? (
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-muted)', fontSize: '0.8rem', padding: 20, textAlign: 'center' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-muted)', fontSize: 'var(--fs-sm)', padding: 20, textAlign: 'center' }}>
             {emptyMessage || t('no_metrics_yet')}
           </div>
         ) : (
@@ -337,8 +337,8 @@ function ChartCard({
               border: '1px solid var(--border-color)',
               backdropFilter: 'blur(8px)',
               padding: '6px 10px',
-              borderRadius: 6,
-              fontSize: '0.75rem',
+              borderRadius: 'var(--radius-sm)',
+              fontSize: 'var(--fs-xs)',
               boxShadow: '0 4px 14px rgba(0,0,0,0.4)',
               pointerEvents: 'none',
               zIndex: 10,
@@ -348,7 +348,7 @@ function ChartCard({
               minWidth: 120
             }}
           >
-            <div style={{ color: 'var(--text-muted)', fontSize: '0.675rem', borderBottom: '1px solid rgba(255,255,255,0.1)', paddingBottom: 2 }}>
+            <div style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-2xs)', borderBottom: '1px solid rgba(255,255,255,0.1)', paddingBottom: 2 }}>
               🕒 {formatTimeTooltip(activePoint.timestamp)}
             </div>
             {series.map(s => (
@@ -510,13 +510,13 @@ export function MetricCharts({ activeRouterId }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
       {/* Top Controls: Range & Interface Selector */}
-      <div className="card" style={{ padding: '14px 18px', display: 'flex', flexDirection: 'column', gap: 14 }}>
+      <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <Activity size={20} style={{ color: 'var(--color-primary)' }} />
             <div>
-              <h3 style={{ fontSize: '1.05rem', fontWeight: 700 }}>{t('metrics_title')}</h3>
-              <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+              <h3 style={{ fontSize: 'var(--fs-lg)', fontWeight: 700 }}>{t('metrics_title')}</h3>
+              <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
                 Live & Historical telemetry for active MikroTik router
               </div>
             </div>
@@ -540,7 +540,7 @@ export function MetricCharts({ activeRouterId }) {
         {/* Monitored Interfaces Multi-select Bar */}
         <div style={{ borderTop: '1px solid var(--border-color)', paddingTop: 12, display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-secondary)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 'var(--fs-sm)', fontWeight: 600, color: 'var(--text-secondary)' }}>
               <Layers size={15} />
               <span>{t('select_interfaces')}:</span>
             </div>
@@ -557,8 +557,8 @@ export function MetricCharts({ activeRouterId }) {
                     alignItems: 'center',
                     gap: 6,
                     padding: '4px 10px',
-                    borderRadius: 6,
-                    fontSize: '0.75rem',
+                    borderRadius: 'var(--radius-sm)',
+                    fontSize: 'var(--fs-xs)',
                     fontWeight: 600,
                     cursor: 'pointer',
                     transition: 'all 0.15s ease',
@@ -570,7 +570,7 @@ export function MetricCharts({ activeRouterId }) {
                   <span style={{
                     width: 6,
                     height: 6,
-                    borderRadius: '50%',
+                    borderRadius: 'var(--radius-full)',
                     background: iface.running ? 'var(--color-success)' : 'var(--text-muted)'
                   }} />
                   <span>{iface.name}</span>
@@ -582,7 +582,7 @@ export function MetricCharts({ activeRouterId }) {
 
           <button
             className={`btn btn-sm ${saveSuccess ? 'btn-primary' : 'btn-secondary'}`}
-            style={{ fontSize: '0.75rem', padding: '4px 10px' }}
+            style={{ fontSize: 'var(--fs-xs)', padding: '4px 10px' }}
             onClick={handleSaveDefaultIfaces}
             disabled={savingConfig}
           >
@@ -612,7 +612,7 @@ export function MetricCharts({ activeRouterId }) {
           emptyMessage={selectedIfaces.length === 0 ? "No interfaces selected. Click interface buttons above to monitor traffic." : null}
           headerRight={
             selectedIfaces.length > 0 ? (
-              <div style={{ display: 'flex', gap: 12, fontSize: '0.8rem' }}>
+              <div style={{ display: 'flex', gap: 12, fontSize: 'var(--fs-sm)' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 4, color: '#10b981', fontWeight: 700 }}>
                   <ArrowDown size={14} />
                   <span>{formatSpeed(ifaceMetrics?.current_rx_bps || 0)}</span>
@@ -658,7 +658,7 @@ export function MetricCharts({ activeRouterId }) {
           points={sysPoints}
           range={range}
           headerRight={
-            <div style={{ fontSize: '1.05rem', fontWeight: 800, color: 'var(--color-primary)' }} className="font-mono">
+            <div style={{ fontSize: 'var(--fs-lg)', fontWeight: 800, color: 'var(--color-primary)' }} className="font-mono">
               {systemMetrics?.current_cpu ?? 0}%
             </div>
           }
@@ -690,7 +690,7 @@ export function MetricCharts({ activeRouterId }) {
           points={sysPoints}
           range={range}
           headerRight={
-            <div style={{ fontSize: '1.05rem', fontWeight: 800, color: '#8b5cf6' }} className="font-mono">
+            <div style={{ fontSize: 'var(--fs-lg)', fontWeight: 800, color: '#8b5cf6' }} className="font-mono">
               {systemMetrics?.current_ram_pct ?? 0}%
             </div>
           }
@@ -749,7 +749,7 @@ export function MetricCharts({ activeRouterId }) {
                     border: '1px solid var(--color-primary)',
                     boxShadow: '0 0 10px rgba(11, 114, 201, 0.25)'
                   }}>
-                    <span style={{ fontSize: '0.725rem', fontWeight: 600, color: 'var(--text-muted)' }}>Alert:</span>
+                    <span style={{ fontSize: 'var(--fs-xs)', fontWeight: 600, color: 'var(--text-muted)' }}>Alert:</span>
                     <input
                       type="number"
                       value={inputThreshold}
@@ -757,9 +757,9 @@ export function MetricCharts({ activeRouterId }) {
                       style={{
                         width: 44,
                         height: 24,
-                        fontSize: '0.8rem',
+                        fontSize: 'var(--fs-sm)',
                         textAlign: 'center',
-                        borderRadius: 4,
+                        borderRadius: 'var(--radius-xs)',
                         border: '1px solid var(--border-color)',
                         background: 'var(--bg-secondary)',
                         color: 'var(--text-primary)',
@@ -769,11 +769,11 @@ export function MetricCharts({ activeRouterId }) {
                       min="40"
                       max="110"
                     />
-                    <span style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--text-secondary)' }}>°C</span>
+                    <span style={{ fontSize: 'var(--fs-xs)', fontWeight: 700, color: 'var(--text-secondary)' }}>°C</span>
                     <button
                       type="button"
                       className="btn btn-sm btn-primary"
-                      style={{ padding: '2px 8px', height: 24, fontSize: '0.725rem', display: 'flex', alignItems: 'center', gap: 3 }}
+                      style={{ padding: '2px 8px', height: 24, fontSize: 'var(--fs-xs)', display: 'flex', alignItems: 'center', gap: 3 }}
                       onClick={() => handleSaveTempThreshold(inputThreshold)}
                       title="Save threshold"
                     >
@@ -783,7 +783,7 @@ export function MetricCharts({ activeRouterId }) {
                     <button
                       type="button"
                       className="btn btn-sm btn-ghost"
-                      style={{ padding: '2px 6px', height: 24, fontSize: '0.725rem' }}
+                      style={{ padding: '2px 6px', height: 24, fontSize: 'var(--fs-xs)' }}
                       onClick={() => setShowThresholdInput(false)}
                       title="Cancel"
                     >
@@ -795,7 +795,7 @@ export function MetricCharts({ activeRouterId }) {
                     type="button"
                     onClick={() => setShowThresholdInput(true)}
                     style={{
-                      fontSize: '0.725rem',
+                      fontSize: 'var(--fs-xs)',
                       fontWeight: 600,
                       color: 'var(--text-secondary)',
                       background: 'var(--bg-secondary)',
@@ -816,48 +816,35 @@ export function MetricCharts({ activeRouterId }) {
                 )
               )}
               {/* Either / Or Switcher Pills */}
-              <div style={{ display: 'flex', gap: 2, background: 'var(--bg-input)', padding: 2, borderRadius: 6, border: '1px solid var(--border-color)' }}>
+              {/* Same segmented control as every other either/or choice. The
+                  active pill keeps its metric's own colour, since temperature
+                  and voltage are read as different quantities. */}
+              <div className="range-group">
                 <button
                   type="button"
+                  className={`range-btn${healthMetric === 'temp' ? ' active' : ''}`}
                   onClick={() => setHealthMetric('temp')}
-                  style={{
-                    padding: '3px 8px',
-                    fontSize: '0.725rem',
-                    fontWeight: 700,
-                    borderRadius: 4,
-                    border: 'none',
-                    cursor: 'pointer',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 4,
-                    background: healthMetric === 'temp' ? (isTempAlert ? '#ef4444' : '#f59e0b') : 'transparent',
-                    color: healthMetric === 'temp' ? '#fff' : 'var(--text-muted)'
-                  }}
+                  style={healthMetric === 'temp' ? {
+                    background: isTempAlert ? 'var(--color-danger)' : 'var(--color-warning)',
+                    borderColor: isTempAlert ? 'var(--color-danger)' : 'var(--color-warning)'
+                  } : undefined}
                   title="Switch to Temperature View"
                 >
-                  <Thermometer size={12} />
-                  <span>{systemMetrics?.current_temp !== null && systemMetrics?.current_temp !== undefined ? `${systemMetrics.current_temp}°C` : (t('temp') || 'Temp')}</span>
+                  <Thermometer size={12} style={{ verticalAlign: '-2px', marginRight: 4 }} />
+                  {systemMetrics?.current_temp !== null && systemMetrics?.current_temp !== undefined ? `${systemMetrics.current_temp}°C` : (t('temp') || 'Temp')}
                 </button>
                 <button
                   type="button"
+                  className={`range-btn${healthMetric === 'voltage' ? ' active' : ''}`}
                   onClick={() => setHealthMetric('voltage')}
-                  style={{
-                    padding: '3px 8px',
-                    fontSize: '0.725rem',
-                    fontWeight: 700,
-                    borderRadius: 4,
-                    border: 'none',
-                    cursor: 'pointer',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 4,
-                    background: healthMetric === 'voltage' ? '#06b6d4' : 'transparent',
-                    color: healthMetric === 'voltage' ? '#fff' : 'var(--text-muted)'
-                  }}
+                  style={healthMetric === 'voltage' ? {
+                    background: 'var(--color-info)',
+                    borderColor: 'var(--color-info)'
+                  } : undefined}
                   title="Switch to Voltage View"
                 >
-                  <Zap size={12} />
-                  <span>{systemMetrics?.current_voltage !== null && systemMetrics?.current_voltage !== undefined ? `${systemMetrics.current_voltage}V` : (t('voltage') || 'Volt')}</span>
+                  <Zap size={12} style={{ verticalAlign: '-2px', marginRight: 4 }} />
+                  {systemMetrics?.current_voltage !== null && systemMetrics?.current_voltage !== undefined ? `${systemMetrics.current_voltage}V` : (t('voltage') || 'Volt')}
                 </button>
               </div>
             </div>

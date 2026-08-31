@@ -235,7 +235,7 @@ export function SettingsModal({ isOpen, onClose, onReboot, onRoutersChanged }) {
             <div className="modal-body">
               {/* Telegram Bot Section */}
               <div>
-                <h3 style={{ fontSize: '0.9rem', fontWeight: 700, marginBottom: 10, color: 'var(--color-primary)' }}>
+                <h3 style={{ fontSize: 'var(--fs-md)', fontWeight: 700, marginBottom: 10, color: 'var(--color-primary)' }}>
                   {t('telegram_integration')}
                 </h3>
                 <div className="form-group" style={{ marginBottom: 10 }}>
@@ -285,7 +285,7 @@ export function SettingsModal({ isOpen, onClose, onReboot, onRoutersChanged }) {
                       onChange={e => setSettings({ ...settings, telegram_webhook_url: e.target.value })}
                       placeholder="https://your-domain.example/api/v1/telegram/webhook"
                     />
-                    <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: 5, lineHeight: 1.5 }}>
+                    <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginTop: 5, lineHeight: 1.5 }}>
                       {t('tg_webhook_help')}
                     </div>
                   </div>
@@ -303,7 +303,7 @@ export function SettingsModal({ isOpen, onClose, onReboot, onRoutersChanged }) {
 
                   {testResult && (
                     <span style={{
-                      fontSize: '0.8rem',
+                      fontSize: 'var(--fs-sm)',
                       color: testResult.ok ? 'var(--color-success)' : 'var(--color-danger)',
                       display: 'flex',
                       alignItems: 'center',
@@ -319,10 +319,10 @@ export function SettingsModal({ isOpen, onClose, onReboot, onRoutersChanged }) {
               <div style={{ height: 1, background: 'var(--border-color)', margin: '6px 0' }}></div>
 
               <div>
-                <h3 style={{ fontSize: '0.9rem', fontWeight: 700, marginBottom: 4, color: 'var(--color-success)' }}>
+                <h3 style={{ fontSize: 'var(--fs-md)', fontWeight: 700, marginBottom: 4, color: 'var(--color-success)' }}>
                   {t('quota_title')}
                 </h3>
-                <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: 10 }}>
+                <p style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginBottom: 10 }}>
                   {t('quota_desc')}
                 </p>
 
@@ -333,7 +333,7 @@ export function SettingsModal({ isOpen, onClose, onReboot, onRoutersChanged }) {
                       className="form-select font-mono"
                       value={String(quota.limit_gb)}
                       onChange={e => setQuota({ ...quota, limit_gb: Number(e.target.value) })}
-                      style={{ width: '100%', height: 36, fontSize: '0.85rem' }}
+                      style={{ width: '100%', height: 36, fontSize: 'var(--fs-sm)' }}
                     >
                       <option value="0">{t('quota_unlimited')}</option>
                       {[50, 100, 200, 300, 500, 750, 1000, 1500, 2000, 3000].map(gb => (
@@ -373,7 +373,7 @@ export function SettingsModal({ isOpen, onClose, onReboot, onRoutersChanged }) {
                   </div>
                 </div>
 
-                <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: '0.78rem', cursor: 'pointer', color: 'var(--text-secondary)' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--fs-sm)', cursor: 'pointer', color: 'var(--text-secondary)' }}>
                   <input
                     type="checkbox"
                     checked={quota.notify_telegram}
@@ -387,10 +387,10 @@ export function SettingsModal({ isOpen, onClose, onReboot, onRoutersChanged }) {
               <div style={{ height: 1, background: 'var(--border-color)', margin: '6px 0' }}></div>
 
               <div>
-                <h3 style={{ fontSize: '0.9rem', fontWeight: 700, marginBottom: 4, color: 'var(--color-primary)' }}>
+                <h3 style={{ fontSize: 'var(--fs-md)', fontWeight: 700, marginBottom: 4, color: 'var(--color-primary)' }}>
                   {t('poll_interval_title')}
                 </h3>
-                <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: 10 }}>
+                <p style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginBottom: 10 }}>
                   {t('poll_interval_desc')}
                 </p>
                 <div className="form-group" style={{ marginBottom: 6 }}>
@@ -398,7 +398,7 @@ export function SettingsModal({ isOpen, onClose, onReboot, onRoutersChanged }) {
                     className="form-select font-mono"
                     value={settings.telemetry_interval_seconds || '1'}
                     onChange={e => setSettings({ ...settings, telemetry_interval_seconds: e.target.value })}
-                    style={{ width: '100%', height: 36, fontSize: '0.85rem' }}
+                    style={{ width: '100%', height: 36, fontSize: 'var(--fs-sm)' }}
                   >
                     <option value="1">1s — Most responsive, highest router load</option>
                     <option value="2">2s — Responsive</option>
@@ -412,7 +412,7 @@ export function SettingsModal({ isOpen, onClose, onReboot, onRoutersChanged }) {
               {/* Background Device Auto-Discovery (Auto-Scan) */}
               <div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-                  <h3 style={{ fontSize: '0.9rem', fontWeight: 700, color: 'var(--color-primary)' }}>
+                  <h3 style={{ fontSize: 'var(--fs-md)', fontWeight: 700, color: 'var(--color-primary)' }}>
                     {t('auto_scan_title')}
                   </h3>
                   <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
@@ -422,12 +422,12 @@ export function SettingsModal({ isOpen, onClose, onReboot, onRoutersChanged }) {
                       onChange={e => setSettings({ ...settings, auto_scan_enabled: e.target.checked ? 'true' : 'false' })}
                       style={{ width: 18, height: 18, cursor: 'pointer', accentColor: 'var(--color-primary)' }}
                     />
-                    <span style={{ fontSize: '0.8rem', fontWeight: 600 }}>
+                    <span style={{ fontSize: 'var(--fs-sm)', fontWeight: 600 }}>
                       {settings.auto_scan_enabled !== 'false' ? t('enable_auto_scan') : t('auto_scan_paused')}
                     </span>
                   </label>
                 </div>
-                <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                <p style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
                   {t('auto_scan_desc')}
                 </p>
               </div>
@@ -436,10 +436,10 @@ export function SettingsModal({ isOpen, onClose, onReboot, onRoutersChanged }) {
 
               {/* Temperature Warning Threshold */}
               <div>
-                <h3 style={{ fontSize: '0.9rem', fontWeight: 700, marginBottom: 4, color: 'var(--color-warning, #f59e0b)' }}>
+                <h3 style={{ fontSize: 'var(--fs-md)', fontWeight: 700, marginBottom: 4, color: 'var(--color-warning, #f59e0b)' }}>
                   {t('temp_warning_title')}
                 </h3>
-                <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: 10 }}>
+                <p style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginBottom: 10 }}>
                   {t('temp_warning_desc')}
                 </p>
 
@@ -450,7 +450,7 @@ export function SettingsModal({ isOpen, onClose, onReboot, onRoutersChanged }) {
                       className="form-select font-mono"
                       value={settings.temp_warning_threshold || '80'}
                       onChange={e => setSettings({ ...settings, temp_warning_threshold: e.target.value })}
-                      style={{ flex: 1, height: 36, fontSize: '0.85rem' }}
+                      style={{ flex: 1, height: 36, fontSize: 'var(--fs-sm)' }}
                     >
                       <option value="65">65°C — Sensitive</option>
                       <option value="70">70°C — Low</option>
@@ -467,10 +467,10 @@ export function SettingsModal({ isOpen, onClose, onReboot, onRoutersChanged }) {
 
               {/* Unassigned / New Devices Quarantine Speed Limit */}
               <div>
-                <h3 style={{ fontSize: '0.9rem', fontWeight: 700, marginBottom: 4, color: 'var(--color-primary)' }}>
+                <h3 style={{ fontSize: 'var(--fs-md)', fontWeight: 700, marginBottom: 4, color: 'var(--color-primary)' }}>
                   {t('unassigned_quarantine_title')}
                 </h3>
-                <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: 10 }}>
+                <p style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginBottom: 10 }}>
                   {t('unassigned_quarantine_desc')}
                 </p>
 
@@ -481,7 +481,7 @@ export function SettingsModal({ isOpen, onClose, onReboot, onRoutersChanged }) {
                       className="form-select font-mono"
                       value={settings.unassigned_device_speed_limit || '5M/5M'}
                       onChange={e => setSettings({ ...settings, unassigned_device_speed_limit: e.target.value })}
-                      style={{ flex: 1, height: 36, fontSize: '0.85rem' }}
+                      style={{ flex: 1, height: 36, fontSize: 'var(--fs-sm)' }}
                     >
                       <option value="1M/1M">1 Mbps (1M/1M) — Strict</option>
                       <option value="2M/2M">2 Mbps (2M/2M) — Low</option>
@@ -499,8 +499,8 @@ export function SettingsModal({ isOpen, onClose, onReboot, onRoutersChanged }) {
               {/* System Actions */}
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <div>
-                  <div style={{ fontWeight: 600, fontSize: '0.85rem' }}>{t('reboot_router')}</div>
-                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Dispatches a reboot signal to the active MikroTik router</div>
+                  <div style={{ fontWeight: 600, fontSize: 'var(--fs-sm)' }}>{t('reboot_router')}</div>
+                  <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>Dispatches a reboot signal to the active MikroTik router</div>
                 </div>
                 <button
                   type="button"
@@ -513,7 +513,7 @@ export function SettingsModal({ isOpen, onClose, onReboot, onRoutersChanged }) {
               </div>
 
               {statusMsg && (
-                <div style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--color-primary)', textAlign: 'center' }}>
+                <div style={{ fontSize: 'var(--fs-sm)', fontWeight: 600, color: 'var(--color-primary)', textAlign: 'center' }}>
                   {statusMsg}
                 </div>
               )}
@@ -534,7 +534,7 @@ export function SettingsModal({ isOpen, onClose, onReboot, onRoutersChanged }) {
         {activeTab === 'routers' && (
           <div className="modal-body">
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-              <div style={{ fontWeight: 700, fontSize: '0.9rem' }}>{t('routers_title')}</div>
+              <div style={{ fontWeight: 700, fontSize: 'var(--fs-md)' }}>{t('routers_title')}</div>
               <button
                 type="button"
                 className="btn btn-primary btn-sm"
@@ -548,8 +548,8 @@ export function SettingsModal({ isOpen, onClose, onReboot, onRoutersChanged }) {
 
             {/* Add Router Form */}
             {showAddRouter && (
-              <form onSubmit={handleCreateRouter} style={{ background: 'var(--bg-secondary)', padding: 14, borderRadius: 8, marginBottom: 14, border: '1px solid var(--border-color)' }}>
-                <div style={{ fontWeight: 700, fontSize: '0.85rem', marginBottom: 8, color: 'var(--color-primary)' }}>New Router Details</div>
+              <form onSubmit={handleCreateRouter} style={{ background: 'var(--bg-secondary)', padding: 14, borderRadius: 'var(--radius-sm)', marginBottom: 14, border: '1px solid var(--border-color)' }}>
+                <div style={{ fontWeight: 700, fontSize: 'var(--fs-sm)', marginBottom: 8, color: 'var(--color-primary)' }}>New Router Details</div>
                 <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 8, marginBottom: 8 }}>
                   <input
                     type="text"
@@ -616,7 +616,7 @@ export function SettingsModal({ isOpen, onClose, onReboot, onRoutersChanged }) {
                 {testRouterResult && (
                   <div style={{
                     marginTop: 8,
-                    fontSize: '0.75rem',
+                    fontSize: 'var(--fs-xs)',
                     color: testRouterResult.ok ? 'var(--color-success)' : 'var(--color-danger)'
                   }}>
                     {testRouterResult.msg}
@@ -637,7 +637,7 @@ export function SettingsModal({ isOpen, onClose, onReboot, onRoutersChanged }) {
                     padding: '10px 14px',
                     background: r.is_default ? 'var(--bg-secondary)' : 'var(--bg-card)',
                     border: `1px solid ${r.is_default ? 'var(--color-primary)' : 'var(--border-color)'}`,
-                    borderRadius: 8
+                    borderRadius: 'var(--radius-sm)'
                   }}
                 >
                   <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -645,23 +645,23 @@ export function SettingsModal({ isOpen, onClose, onReboot, onRoutersChanged }) {
                       style={{
                         width: 8,
                         height: 8,
-                        borderRadius: '50%',
+                        borderRadius: 'var(--radius-full)',
                         background: r.is_online ? 'var(--color-success)' : 'var(--text-muted)'
                       }}
                     />
                     <div>
-                      <div style={{ fontWeight: 700, fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <div style={{ fontWeight: 700, fontSize: 'var(--fs-sm)', display: 'flex', alignItems: 'center', gap: 6 }}>
                         <span>{r.name}</span>
                         {r.is_default && (
-                          <span className="badge badge-primary" style={{ fontSize: '0.65rem', padding: '1px 6px' }}>
+                          <span className="badge badge-primary" style={{ fontSize: 'var(--fs-3xs)', padding: '1px 6px' }}>
                             {t('active_router')}
                           </span>
                         )}
-                        <span className={`badge ${r.use_ssl ? 'badge-success' : 'badge-neutral'}`} style={{ fontSize: '0.65rem', padding: '1px 6px' }}>
+                        <span className={`badge ${r.use_ssl ? 'badge-success' : 'badge-neutral'}`} style={{ fontSize: 'var(--fs-3xs)', padding: '1px 6px' }}>
                           {r.use_ssl ? 'HTTPS' : 'HTTP'}
                         </span>
                       </div>
-                      <div style={{ fontSize: '0.725rem', color: 'var(--text-muted)' }} className="font-mono">
+                      <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }} className="font-mono">
                         {r.host}:{r.port} {r.board_name ? `• ${r.board_name}` : (r.model ? `• ${r.model}` : '')} {r.ros_version ? `• RouterOS ${r.ros_version}` : ''} {r.architecture ? `(${r.architecture})` : ''}
                       </div>
                     </div>
@@ -673,7 +673,7 @@ export function SettingsModal({ isOpen, onClose, onReboot, onRoutersChanged }) {
                         type="button"
                         className="btn btn-secondary btn-sm"
                         onClick={() => handleUpgradeSsl(r.id)}
-                        style={{ fontSize: '0.75rem', padding: '3px 8px', color: 'var(--color-success)', borderColor: 'rgba(16, 185, 129, 0.3)' }}
+                        style={{ fontSize: 'var(--fs-xs)', padding: '3px 8px', color: 'var(--color-success)', borderColor: 'rgba(16, 185, 129, 0.3)' }}
                         title={t('auto_ssl_hint')}
                       >
                         🔒 {t('provision_ssl_title')}
@@ -684,7 +684,7 @@ export function SettingsModal({ isOpen, onClose, onReboot, onRoutersChanged }) {
                         type="button"
                         className="btn btn-secondary btn-sm"
                         onClick={() => handleActivateRouter(r.id)}
-                        style={{ fontSize: '0.75rem', padding: '3px 8px' }}
+                        style={{ fontSize: 'var(--fs-xs)', padding: '3px 8px' }}
                       >
                         Set Active
                       </button>
