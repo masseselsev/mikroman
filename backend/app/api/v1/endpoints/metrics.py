@@ -1,4 +1,5 @@
 import json
+import logging
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, Query
@@ -17,6 +18,7 @@ from backend.app.services.metrics_collector import metrics_collector
 from backend.app.services.router_manager import router_manager
 
 router = APIRouter(prefix="/metrics", tags=["Metrics & Graphing"])
+logger = logging.getLogger("mikroman.metrics")
 
 
 @router.get("/system", response_model=APIResponse[SystemMetricsResponse])
@@ -95,6 +97,15 @@ async def list_available_interfaces(
     if not client:
         return APIResponse(data=[], message="Router not connected")
     ifaces = await client.get_interfaces()
+    # Flag the interfaces that carry a default route so the "WAN only" preset
+    # in the UI selects the real uplink(s) instead of matching on the name.
+    try:
+        wan = set(await client.get_wan_interfaces())
+        for iface in ifaces:
+            if iface.name in wan:
+                iface.is_wan = True
+    except Exception:
+        logger.debug("Could not resolve WAN interfaces from /ip/route", exc_info=True)
     return APIResponse(data=ifaces)
 
 

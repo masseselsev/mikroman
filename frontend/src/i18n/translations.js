@@ -281,6 +281,9 @@ export const translations = {
     select_all: "Select All",
     clear_all: "Clear All",
     wan_only: "WAN Only",
+    wan_label: "WAN",
+    wan_iface_hint: "Carries a default route — the router sends internet traffic out of it.",
+    ifaces_none: "none",
     monitored_ifaces_badge: "Interfaces: {ifaces}",
     unlimited: "Unlimited",
 
@@ -798,6 +801,9 @@ export const translations = {
     select_all: "Выбрать все",
     clear_all: "Сбросить",
     wan_only: "Только WAN",
+    wan_label: "WAN",
+    wan_iface_hint: "Через него идёт маршрут по умолчанию — роутер отправляет интернет-трафик сюда.",
+    ifaces_none: "нет",
     monitored_ifaces_badge: "Интерфейсы: {ifaces}",
     unlimited: "Без лимита",
 

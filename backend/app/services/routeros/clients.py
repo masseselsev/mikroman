@@ -20,6 +20,19 @@ from backend.app.services.routeros.parsing import build_wifi_links, parse_signal
 logger = logging.getLogger("mikroman.routeros")
 
 
+def _looks_like_ip(value: str) -> bool:
+    """True for an IPv4/IPv6 literal, false for an interface name.
+
+    Used to tell a resolved next-hop interface from an unresolved gateway
+    address in ``/ip/route``.
+    """
+    v = value.strip()
+    if ":" in v:  # any colon -> IPv6 literal (interface names never contain one)
+        return True
+    parts = v.split(".")
+    return len(parts) == 4 and all(p.isdigit() and 0 <= int(p) <= 255 for p in parts)
+
+
 class ClientsMixin:
     """DHCP, ARP, wireless registration and interface listing."""
 
@@ -140,3 +153,49 @@ class ClientsMixin:
                     mtu=str(item.get("mtu")) if item.get("mtu") is not None else None
                 ))
             return results
+
+    async def get_wan_interfaces(self) -> List[str]:
+        """Interface names that carry a default route.
+
+        This is what "WAN" actually means - the link the router sends
+        internet-bound traffic out of - rather than a guess from the name.
+        A multi-WAN router returns more than one; a router with no default
+        route (offline, or routing handled upstream) returns an empty list and
+        the caller falls back to its own heuristic.
+
+        RouterOS 7 reports the resolved next hop in ``immediate-gw`` as
+        ``<gateway-ip>%<interface>`` for a routed link, or as a bare interface
+        name for a point-to-point link such as PPPoE. ``gateway`` is used as a
+        fallback for builds that do not populate ``immediate-gw``.
+        """
+        async with self._get_client() as client:
+            resp = await client.get("/ip/route")
+            resp.raise_for_status()
+            rows = resp.json()
+            if not isinstance(rows, list):
+                rows = [rows]
+
+        wan: List[str] = []
+        for r in rows:
+            if r.get("dst-address") not in ("0.0.0.0/0", "::/0"):
+                continue
+            # An inactive or disabled default route is not a live WAN.
+            if str(r.get("active", "true")).lower() in ("false", "no"):
+                continue
+            if str(r.get("disabled", "false")).lower() in ("true", "yes"):
+                continue
+            hop = str(r.get("immediate-gw") or r.get("gateway") or "").strip()
+            # "1.2.3.4%ether1, 1.2.3.4%ether2" -> each after the '%'
+            for part in hop.split(","):
+                part = part.strip()
+                if not part:
+                    continue
+                if "%" in part:
+                    name = part.split("%", 1)[1].strip()
+                elif _looks_like_ip(part):
+                    continue  # an unresolved IP hop tells us no interface
+                else:
+                    name = part  # bare interface name (PPPoE and the like)
+                if name and name not in wan:
+                    wan.append(name)
+        return wan
