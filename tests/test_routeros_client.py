@@ -219,3 +219,38 @@ async def test_get_wan_interfaces_empty_when_no_default_route(mock_settings):
             {"dst-address": "192.168.88.0/24", "gateway": "bridge", "active": "true"},
         ])
         assert await client.get_wan_interfaces() == []
+
+
+@pytest.mark.asyncio
+async def test_get_interface_parents_maps_vlan_pppoe_and_bridge_ports(mock_settings):
+    client = RouterOSClient(mock_settings)
+    with respx.mock(base_url="https://192.168.88.1:443/rest") as respx_mock:
+        respx_mock.get("/interface/vlan").respond(200, json=[
+            {"name": "vlan500", "interface": "ether1"},
+        ])
+        respx_mock.get("/interface/pppoe-client").respond(200, json=[
+            {"name": "pppoe-out1", "interface": "ether1"},
+        ])
+        respx_mock.get("/interface/bridge/port").respond(200, json=[
+            {"interface": "ether4", "bridge": "br.lan"},
+            {"interface": "ether5", "bridge": "br.lan"},
+        ])
+        parents = await client.get_interface_parents()
+
+    assert parents == {
+        "vlan500": "ether1",
+        "pppoe-out1": "ether1",
+        "ether4": "br.lan",
+        "ether5": "br.lan",
+    }
+
+
+@pytest.mark.asyncio
+async def test_get_interface_parents_survives_a_missing_endpoint(mock_settings):
+    client = RouterOSClient(mock_settings)
+    with respx.mock(base_url="https://192.168.88.1:443/rest") as respx_mock:
+        respx_mock.get("/interface/vlan").respond(200, json=[{"name": "vlan10", "interface": "ether2"}])
+        respx_mock.get("/interface/pppoe-client").respond(404)
+        respx_mock.get("/interface/bridge/port").respond(200, json=[])
+        parents = await client.get_interface_parents()
+    assert parents == {"vlan10": "ether2"}
