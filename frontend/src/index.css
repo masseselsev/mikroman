@@ -1053,7 +1053,8 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
   opacity: 0.5;
 }
 
-/* Line 2: one truncating run of facts, then the actions pinned right. */
+/* Line 2: one truncating run of facts, then last-active, then the actions
+   pinned right. Only .drow-facts is greedy. */
 .drow-sub {
   display: flex;
   align-items: center;
@@ -1070,6 +1071,16 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Fixed, never shrinks or clips: "now" / "5h" / "2d". Full timestamp in the
+   title. Sits between the facts and the action buttons. */
+.drow-lastseen {
+  flex-shrink: 0;
+  white-space: nowrap;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  cursor: help;
 }
 
 .drow-actions {
