@@ -29,6 +29,11 @@ from backend.app.services.router_time import router_local_date
 logger = logging.getLogger("mikroman.analytics_engine")
 
 
+def _inclusive_end_date(end_dt: datetime) -> date:
+    """Last calendar date a half-open cycle bound touches."""
+    return (end_dt - timedelta(microseconds=1)).date()
+
+
 def get_billing_cycle_bounds(
     anchor_day: int,
     anchor_hour: int,
@@ -82,16 +87,16 @@ def get_billing_cycle_dates(
     """Inclusive first and last *calendar dates* an ISP billing cycle touches.
 
     A thin date-granular view of :func:`get_billing_cycle_bounds` at midnight.
-    Kept for callers that only think in whole days (range presets, alert-state
-    keying). For anything that needs the reset time - the quota's "used" figure
-    and its countdown - use ``get_billing_cycle_bounds`` with the real anchor
-    time and ``router_local_now``.
+    Retained purely as a convenience for the handful of callers (and tests) that
+    only ever think in whole days. Everything that has to respect the reset time
+    - the quota's "used" figure, its countdown, the range presets - now calls
+    ``get_billing_cycle_bounds`` directly with the real anchor time.
     """
     ref = reference_date or date.today()
     start_dt, end_dt = get_billing_cycle_bounds(
         anchor_day, 0, 0, datetime.combine(ref, datetime.min.time()), previous
     )
-    return (start_dt.date(), (end_dt - timedelta(microseconds=1)).date())
+    return (start_dt.date(), _inclusive_end_date(end_dt))
 
 
 def resolve_date_range(
@@ -124,13 +129,13 @@ def resolve_date_range(
     elif preset == "billing_current":
         ref = now_dt or datetime.combine(today, datetime.min.time())
         s_dt, e_dt = get_billing_cycle_bounds(anchor_day, anchor_hour, anchor_minute, ref, previous=False)
-        e_date = (e_dt - timedelta(microseconds=1)).date()
+        e_date = _inclusive_end_date(e_dt)
         # Cap current cycle view to today for live measurement
         return (s_dt.date(), min(e_date, today), "billing_current")
     elif preset == "billing_previous":
         ref = now_dt or datetime.combine(today, datetime.min.time())
         s_dt, e_dt = get_billing_cycle_bounds(anchor_day, anchor_hour, anchor_minute, ref, previous=True)
-        return (s_dt.date(), (e_dt - timedelta(microseconds=1)).date(), "billing_previous")
+        return (s_dt.date(), _inclusive_end_date(e_dt), "billing_previous")
     elif preset == "custom" and start_date and end_date:
         return (min(start_date, end_date), max(start_date, end_date), "custom")
     else:
@@ -192,7 +197,14 @@ class AnalyticsEngine:
 
     @staticmethod
     async def set_billing_anchor_time(session: AsyncSession, hour: int, minute: int) -> Tuple[int, int]:
-        """Persist the reset time of day, clamped to a valid wall-clock time."""
+        """Persist the reset time of day as two app settings.
+
+        ``hour`` is clamped to 0-23 and ``minute`` to 0-59 rather than rejected,
+        matching ``get_billing_anchor_time`` and ``set_billing_anchor_day``. The
+        hour and minute rows are written and committed together, so a reader can
+        never observe a half-updated time. Returns the clamped ``(hour, minute)``
+        actually stored.
+        """
         hh = max(0, min(hour, 23))
         mm = max(0, min(minute, 59))
         for key, value, desc in (
