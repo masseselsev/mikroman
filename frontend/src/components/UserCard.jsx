@@ -305,21 +305,31 @@ function DeviceRow({ group, t, lang, grandTotal = 0, onOpen, onUpdate, onViewTra
           <div className="drow-adapters-head">{t('linked_adapters_title')}</div>
           {group.adapters.map(a => {
             const isPrimary = a.id === group.key;
+            const wireless = a.connection_kind
+              ? a.connection_kind === 'wireless'
+              : a.last_wifi_signal != null;
             return (
               <div key={a.id} className="drow-adapter">
-                <span className="drow-adapter-name font-mono">
-                  {isPrimary ? <Cable size={10} /> : <Wifi size={10} />}
-                  {a.custom_name || a.hostname || a.mac_address}
-                  <span className="drow-adapter-meta">
-                    {a.last_interface || a.ip_address || a.mac_address}
-                    {isPrimary && <> · {t('primary_adapter')}</>}
+                <span className="drow-adapter-ident">
+                  {wireless ? <Wifi size={11} /> : <Cable size={11} />}
+                  {/* The MAC is the only thing that tells two same-named
+                      adapters apart, so it leads. */}
+                  <span className="font-mono drow-adapter-mac">{a.mac_address}</span>
+                  {isPrimary && (
+                    <span className="badge badge-chip drow-adapter-primary">{t('primary_adapter')}</span>
+                  )}
+                  <span className="drow-adapter-meta font-mono">
+                    {a.ip_address || '—'}{a.last_interface ? ` · ${a.last_interface}` : ''}
                   </span>
                 </span>
-                {!isPrimary && (
+                {isPrimary ? (
+                  <span className="drow-adapter-primary-note">{t('primary_adapter_note')}</span>
+                ) : (
                   <button
                     type="button"
                     className="btn btn-ghost btn-sm drow-adapter-unlink"
                     disabled={unlinkingId === a.id}
+                    title={t('unlink_adapter_hint')}
                     onClick={(e) => unlinkAdapter(e, a.id)}
                   >
                     {t('unlink_adapter')}
@@ -452,6 +462,15 @@ export function UserCard({ user, users = [], onEdit, onDelete, onLimitChange, on
       setCustomDown(raw);
     }
   }, [user.speed_limit]);
+
+  // The current limit per direction, used as the field placeholder so an empty
+  // box still says what is in force ("unlimited" when nothing is set) rather
+  // than a made-up example.
+  const _lim = user.speed_limit;
+  const _limParts = _lim && _lim.includes('/') ? _lim.split('/') : null;
+  const _limPlain = _lim && !['unlimited', 'default', '0/0', ''].includes(_lim) && !_limParts ? _lim : '';
+  const upPlaceholder = (_limParts ? _limParts[0] : _limPlain) || t('unlimited');
+  const downPlaceholder = (_limParts ? _limParts[1] : _limPlain) || t('unlimited');
 
   const visibleDevices = (user.devices || []).filter(d => showHidden || !d.is_hidden);
   // Adapters of one machine collapse into a single row.
@@ -719,7 +738,7 @@ export function UserCard({ user, users = [], onEdit, onDelete, onLimitChange, on
               type="text"
               className="form-input font-mono"
               style={{ padding: '4px 6px', fontSize: 'var(--fs-sm)', height: 30, width: '100%' }}
-              placeholder="25M"
+              placeholder={downPlaceholder}
               value={customDown}
               onChange={e => setCustomDown(e.target.value)}
               title={t('limit_units_hint')}
@@ -733,7 +752,7 @@ export function UserCard({ user, users = [], onEdit, onDelete, onLimitChange, on
               type="text"
               className="form-input font-mono"
               style={{ padding: '4px 6px', fontSize: 'var(--fs-sm)', height: 30, width: '100%' }}
-              placeholder="10M"
+              placeholder={upPlaceholder}
               value={customUp}
               onChange={e => setCustomUp(e.target.value)}
               title={t('limit_units_hint')}
