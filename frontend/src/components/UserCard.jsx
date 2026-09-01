@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useI18n } from '../context/I18nContext';
 import { api } from '../api/client';
 import { formatSpeed, formatSpeedShort, formatBytes, formatBytesCompact, formatGbWhole, formatRelativeTime, formatLastActive, formatDateTime, parseUtcDate } from '../utils/formatters';
@@ -19,23 +19,10 @@ import {
   ArrowDown,
   ArrowUp,
   Check,
-  X,
   Sliders,
   GripVertical,
   BarChart2
 } from 'lucide-react';
-
-const SPEED_PRESETS = [
-  { label: '⚡ Unlimited (Max speed)', value: 'unlimited' },
-  { label: '↓ 15 Mbps (Down) / ↑ 5 Mbps (Up) — Light', value: '5M/15M' },
-  { label: '↓ 30 Mbps (Down) / ↑ 10 Mbps (Up) — Standard', value: '10M/30M' },
-  { label: '↓ 50 Mbps (Down) / ↑ 25 Mbps (Up) — Fast', value: '25M/50M' },
-  { label: '↓ 50 Mbps / ↑ 50 Mbps — Symmetric', value: '50M/50M' },
-  { label: '↓ 100 Mbps (Down) / ↑ 50 Mbps (Up) — Super', value: '50M/100M' },
-  { label: '↓ 100 Mbps / ↑ 100 Mbps — Symmetric', value: '100M/100M' },
-  { label: '↓ 200 Mbps (Down) / ↑ 100 Mbps (Up) — Ultra', value: '100M/200M' },
-  { label: '✏️ Custom manual limit...', value: 'custom' },
-];
 
 function getDeviceIcon(vendor, hostname, size = 14) {
   const text = `${vendor || ''} ${hostname || ''}`.toLowerCase();
@@ -379,10 +366,27 @@ function DeviceRow({ group, t, lang, grandTotal = 0, onOpen, onUpdate, onViewTra
 export function UserCard({ user, users = [], onEdit, onDelete, onLimitChange, onPauseToggle, onUpdate, onViewTrafficHistory, showHidden = false, autoSortActivity = false, gatewayTotal = 0, deviceGrandTotal = 0, dragIndex = null }) {
   const { t, lang } = useI18n();
   const [isUpdating, setIsUpdating] = useState(false);
-  const [showCustomInput, setShowCustomInput] = useState(false);
   const [customDown, setCustomDown] = useState('');
   const [customUp, setCustomUp] = useState('');
   const [selectedDevice, setSelectedDevice] = useState(null);
+
+  // Keep the limit fields in step with the stored value. RouterOS Simple Queue
+  // format is "upload/download"; "unlimited" / "default" / "0/0" read as blank,
+  // which is also how the operator clears a limit.
+  useEffect(() => {
+    const raw = user.speed_limit;
+    if (!raw || raw === 'unlimited' || raw === 'default' || raw === '0/0') {
+      setCustomUp('');
+      setCustomDown('');
+    } else if (raw.includes('/')) {
+      const [up, down] = raw.split('/');
+      setCustomUp(up || '');
+      setCustomDown(down || '');
+    } else {
+      setCustomUp(raw);
+      setCustomDown(raw);
+    }
+  }, [user.speed_limit]);
 
   const visibleDevices = (user.devices || []).filter(d => showHidden || !d.is_hidden);
   // Adapters of one machine collapse into a single row.
@@ -420,43 +424,27 @@ export function UserCard({ user, users = [], onEdit, onDelete, onLimitChange, on
   const cycleTotal = (user.bytes_cycle_in || 0) + (user.bytes_cycle_out || 0);
   const allTimeTotal = (user.bytes_total_in || 0) + (user.bytes_total_out || 0);
 
-  const currentLimit = user.speed_limit || 'unlimited';
-  const isKnownPreset = SPEED_PRESETS.some(p => p.value === currentLimit);
-
-  const handleLimitSelect = async (e) => {
-    const val = e.target.value;
-    if (val === 'custom') {
-      if (currentLimit.includes('/')) {
-        const [up, down] = currentLimit.split('/');
-        setCustomUp(up);
-        setCustomDown(down);
-      } else if (currentLimit !== 'unlimited') {
-        setCustomUp(currentLimit);
-        setCustomDown(currentLimit);
-      } else {
-        setCustomDown('50M');
-        setCustomUp('20M');
-      }
-      setShowCustomInput(true);
-      return;
-    }
-
-    setIsUpdating(true);
-    try {
-      await onLimitChange(user.id, val);
-    } finally {
-      setIsUpdating(false);
-    }
-  };
-
   const handleApplyCustom = async () => {
     let down = customDown.trim();
     let up = customUp.trim();
-    if (!down && !up) return;
 
+    // Both fields empty is an explicit "remove the limit".
+    if (!down && !up) {
+      setIsUpdating(true);
+      try {
+        await onLimitChange(user.id, 'unlimited');
+      } finally {
+        setIsUpdating(false);
+      }
+      return;
+    }
+
+    // One side left blank mirrors the other, so a single figure caps both ways.
     if (!down) down = up;
     if (!up) up = down;
 
+    // A bare number is taken as megabits; an explicit K / M / G suffix is kept
+    // as typed so 512K or 1G work.
     if (/^\d+$/.test(down)) down += 'M';
     if (/^\d+$/.test(up)) up += 'M';
 
@@ -464,7 +452,6 @@ export function UserCard({ user, users = [], onEdit, onDelete, onLimitChange, on
     setIsUpdating(true);
     try {
       await onLimitChange(user.id, formatted);
-      setShowCustomInput(false);
     } finally {
       setIsUpdating(false);
     }
@@ -650,117 +637,66 @@ export function UserCard({ user, users = [], onEdit, onDelete, onLimitChange, on
         </div>
       </div>
 
-      {/* Footer: speed limiter and pause toggle */}
+      {/* Footer: per-user bandwidth cap and the pause toggle.
+          Down / Up / Apply are always on screen - no preset list, no expand
+          step. Empty both fields and Apply to lift the cap. The K / M / G rule
+          lives in the fields' tooltip and the note beneath them. */}
       <div style={{ borderTop: '1px solid var(--border-color)', paddingTop: 10 }}>
-        {showCustomInput ? (
-          <div style={{
-            display: 'flex',
-            flexDirection: 'column',
-            gap: 8,
-            background: 'var(--bg-secondary)',
-            padding: 10,
-            borderRadius: 'var(--radius-sm)',
-            border: '1px solid var(--border-color)'
-          }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span style={{ fontSize: 'var(--fs-xs)', fontWeight: 700, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: 4 }}>
-                <Sliders size={13} style={{ color: 'var(--color-primary)' }} />
-                {t('custom_limit_title')}
-              </span>
-              <button
-                type="button"
-                className="btn-icon"
-                onClick={() => setShowCustomInput(false)}
-                style={{ width: 22, height: 22 }}
-                title={t('cancel')}
-              >
-                <X size={13} />
-              </button>
-            </div>
-
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-              <div>
-                <label style={{ fontSize: 'var(--fs-2xs)', color: 'var(--color-success)', fontWeight: 700, display: 'flex', alignItems: 'center', gap: 3, marginBottom: 3 }}>
-                  <ArrowDown size={11} /> {t('download_limit')}
-                </label>
-                <input
-                  type="text"
-                  className="form-input font-mono"
-                  style={{ padding: '4px 6px', fontSize: 'var(--fs-sm)', height: 30 }}
-                  placeholder="50M or 100M"
-                  value={customDown}
-                  onChange={e => setCustomDown(e.target.value)}
-                  autoFocus
-                />
-              </div>
-              <div>
-                <label style={{ fontSize: 'var(--fs-2xs)', color: 'var(--color-primary)', fontWeight: 700, display: 'flex', alignItems: 'center', gap: 3, marginBottom: 3 }}>
-                  <ArrowUp size={11} /> {t('upload_limit')}
-                </label>
-                <input
-                  type="text"
-                  className="form-input font-mono"
-                  style={{ padding: '4px 6px', fontSize: 'var(--fs-sm)', height: 30 }}
-                  placeholder="20M or 50M"
-                  value={customUp}
-                  onChange={e => setCustomUp(e.target.value)}
-                />
-              </div>
-            </div>
-
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 6, marginTop: 2 }}>
-              <button
-                type="button"
-                className="btn btn-ghost btn-sm"
-                onClick={() => setShowCustomInput(false)}
-                style={{ fontSize: 'var(--fs-xs)', height: 26, padding: '2px 8px' }}
-              >
-                {t('cancel')}
-              </button>
-              <button
-                type="button"
-                className="btn btn-primary btn-sm"
-                onClick={handleApplyCustom}
-                disabled={isUpdating || (!customDown.trim() && !customUp.trim())}
-                style={{ fontSize: 'var(--fs-xs)', height: 26, padding: '2px 10px', display: 'flex', alignItems: 'center', gap: 4 }}
-              >
-                <Check size={12} />
-                {t('apply_limit')}
-              </button>
-            </div>
+        <div
+          style={{ display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap' }}
+          title={t('limit_units_hint')}
+        >
+          <div style={{ flex: 1, minWidth: 84 }}>
+            <label style={{ fontSize: 'var(--fs-2xs)', color: 'var(--color-success)', fontWeight: 700, display: 'flex', alignItems: 'center', gap: 3, marginBottom: 3 }}>
+              <ArrowDown size={11} /> {t('download_limit')}
+            </label>
+            <input
+              type="text"
+              className="form-input font-mono"
+              style={{ padding: '4px 6px', fontSize: 'var(--fs-sm)', height: 30, width: '100%' }}
+              placeholder="25M"
+              value={customDown}
+              onChange={e => setCustomDown(e.target.value)}
+              title={t('limit_units_hint')}
+            />
           </div>
-        ) : (
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <select
-                className="form-select"
-                style={{ width: '100%', padding: '5px 8px', fontSize: 'var(--fs-sm)' }}
-                value={isKnownPreset ? currentLimit : 'custom'}
-                onChange={handleLimitSelect}
-                disabled={isUpdating}
-              >
-                {!isKnownPreset && (
-                  <option value="custom">
-                    {formatLimitSummary(currentLimit)} (Custom)
-                  </option>
-                )}
-                {SPEED_PRESETS.map(p => (
-                  <option key={p.value} value={p.value}>{p.label}</option>
-                ))}
-              </select>
-            </div>
-
-            <button
-              className={`btn ${isPaused ? 'btn-primary' : 'btn-danger'} btn-sm`}
-              onClick={handlePauseClick}
-              disabled={isUpdating}
-              style={{ whiteSpace: 'nowrap' }}
-            >
-              {isPaused ? <Play size={14} /> : <Pause size={14} />}
-              {isPaused ? t('resume_btn') : t('pause_btn')}
-            </button>
+          <div style={{ flex: 1, minWidth: 84 }}>
+            <label style={{ fontSize: 'var(--fs-2xs)', color: 'var(--color-primary)', fontWeight: 700, display: 'flex', alignItems: 'center', gap: 3, marginBottom: 3 }}>
+              <ArrowUp size={11} /> {t('upload_limit')}
+            </label>
+            <input
+              type="text"
+              className="form-input font-mono"
+              style={{ padding: '4px 6px', fontSize: 'var(--fs-sm)', height: 30, width: '100%' }}
+              placeholder="10M"
+              value={customUp}
+              onChange={e => setCustomUp(e.target.value)}
+              title={t('limit_units_hint')}
+            />
           </div>
-        )}
+          <button
+            type="button"
+            className="btn btn-primary btn-sm"
+            onClick={handleApplyCustom}
+            disabled={isUpdating}
+            style={{ height: 30, padding: '2px 12px', display: 'flex', alignItems: 'center', gap: 4 }}
+          >
+            <Check size={12} />
+            {t('apply_limit')}
+          </button>
+          <button
+            className={`btn ${isPaused ? 'btn-primary' : 'btn-danger'} btn-sm`}
+            onClick={handlePauseClick}
+            disabled={isUpdating}
+            style={{ height: 30, whiteSpace: 'nowrap' }}
+          >
+            {isPaused ? <Play size={14} /> : <Pause size={14} />}
+            {isPaused ? t('resume_btn') : t('pause_btn')}
+          </button>
+        </div>
+        <div style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', marginTop: 5 }}>
+          {t('limit_units_hint')}
+        </div>
       </div>
 
       {selectedDevice && (
