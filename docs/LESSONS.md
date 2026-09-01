@@ -419,3 +419,30 @@ installs and `= NULL` matches nothing - which would have created a new row on
 every tick instead of finding the day's. Lesson: an unexplained gap in a
 measurement is a question, not a constant. Ask what the instrument is
 structurally incapable of seeing.
+
+**[2026-09-01] Problem:** The ISP billing-cycle anchor was a day of the month
+only; some ISPs reset at a specific time. **Solution:** every traffic figure
+MikroMan stores is a daily total, so a mid-day reset splits the boundary day
+between two cycles and the rollups cannot express that. But `interface_metrics`
+samples the WAN interface's *cumulative* byte counter about every 1.5 s
+(30-day retention), and the quota is billed on the gateway total - so the
+current cycle's start day (always < 30 days old) can be sliced at the reset
+minute from those samples: walk every sample in `[00:00, reset]`, sum
+`max(0, curr - prev)` per interface (which drops a reboot's backwards step),
+subtract from `used`. Previous-cycle boundaries are usually pruned, so that path
+degrades to whole-day. Reworking the cycle math onto datetime bounds also
+surfaced a latent bug: `get_billing_cycle_dates` returned an end date in the
+*next* month for `anchor_day == 1`, giving the default config a two-month
+window. Lesson: "we only store daily totals" is not the end of the question -
+check whether a finer-grained series exists for the one figure that needs it.
+
+**[2026-09-01] Problem:** The same rework surfaced a second latent bug in the
+old `get_billing_cycle_dates`. For a clamped anchor - `anchor_day = 31` in a
+short month - `get_billing_cycle_dates(31, <a Feb date>)` returned
+`Jan 31 … Feb 28`: 29 *inclusive* days. Feb 28 was both the current cycle's
+last day and the next cycle's first, so its whole-day rollup was double-counted
+and the cycle "rolled over" a day late. **Solution:** the datetime-bounds shim
+makes the interval half-open - `Jan 31 00:00 … Feb 28 00:00`, inclusive last
+date `Feb 27` - so Feb 28 belongs cleanly to the new cycle and the count is a
+correct 28 days. Lesson: an off-by-one in an *inclusive* date range only bites
+at the clamp; test the February-31 case explicitly, not just mid-month anchors.

@@ -128,9 +128,13 @@ export const api = {
     return request(url);
   },
   getBillingCycleConfig: () => request('/analytics/billing-cycle'),
-  saveBillingCycleConfig: (anchorDay) => request('/analytics/billing-cycle', {
+  saveBillingCycleConfig: (anchorDay, anchorHour = 0, anchorMinute = 0) => request('/analytics/billing-cycle', {
     method: 'POST',
-    body: JSON.stringify({ anchor_day: Number(anchorDay) })
+    body: JSON.stringify({
+      anchor_day: Number(anchorDay),
+      anchor_hour: Number(anchorHour),
+      anchor_minute: Number(anchorMinute),
+    }),
   }),
 
   // Metrics & Graphs
