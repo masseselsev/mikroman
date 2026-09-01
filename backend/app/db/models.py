@@ -81,6 +81,11 @@ class Device(Base):
     last_wifi_signal: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # in dBm e.g. -65
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     is_hidden: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # Deleted by the operator, but the row and its daily traffic rollups stay so
+    # the bytes it moved remain attributed to its profile (shown together as
+    # "Old devices"). Hidden from every live view; its accounting rule is pruned
+    # on the next sync. Cleared if discovery sees the same MAC again.
+    is_deleted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
     # One physical machine can reach the network through several adapters - a
     # laptop docked over Ethernet and roaming over Wi-Fi has a MAC per adapter.
     # A secondary adapter points at the primary device; the primary holds NULL.

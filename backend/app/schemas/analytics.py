@@ -129,6 +129,11 @@ class DeviceTrafficSummary(BaseModel):
     last_seen: Optional[datetime] = None
     cycle_bytes: int = 0
     all_time_bytes: int = 0
+    # True for the synthetic row that carries the pooled volume of a profile's
+    # deleted devices. It has a negative ``device_id`` (the owner id negated),
+    # an empty MAC, and is not a real device - the client labels it and skips
+    # the per-device actions.
+    is_retired_pool: bool = False
 
 
 class InterfaceTrafficSummary(BaseModel):

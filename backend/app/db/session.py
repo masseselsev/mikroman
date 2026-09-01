@@ -134,6 +134,7 @@ async def init_db() -> None:
                     "connection_kind": "VARCHAR(20)",
                     "wifi_links": "TEXT",
                     "is_container": "BOOLEAN NOT NULL DEFAULT 0",
+                    "is_deleted": "BOOLEAN NOT NULL DEFAULT 0",
                 }
                 for column, ddl in additions.items():
                     if column not in columns:

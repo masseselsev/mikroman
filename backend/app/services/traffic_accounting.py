@@ -244,7 +244,9 @@ class TrafficAccountingService:
         clients discovered before multi-router support attributed them, and
         excluding them silently dropped them from every analytics view.
         """
-        stmt = select(Device).where(Device.is_active, Device.ip_address.is_not(None))
+        stmt = select(Device).where(
+            Device.is_active, Device.is_deleted.is_(False), Device.ip_address.is_not(None)
+        )
         if self.router_id is not None:
             stmt = stmt.where(
                 (Device.router_id == self.router_id) | (Device.router_id.is_(None))

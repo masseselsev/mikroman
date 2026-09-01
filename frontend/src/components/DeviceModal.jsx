@@ -9,7 +9,8 @@ import {
   X,
   Pause,
   Play,
-  EyeOff
+  EyeOff,
+  Trash2
 } from 'lucide-react';
 import { RateLimitInputs, LimitModeToggle } from './RateLimitInputs';
 
@@ -50,6 +51,7 @@ export function DeviceModal({ device, user, users = [], onClose, onUpdated }) {
   const [customDown, setCustomDown] = useState(device.speed_limit && device.speed_limit.includes('/') ? device.speed_limit.split('/')[1] : '15M');
   const [customUp, setCustomUp] = useState(device.speed_limit && device.speed_limit.includes('/') ? device.speed_limit.split('/')[0] : '5M');
   const [isSaving, setIsSaving] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
   const [error, setError] = useState(null);
 
   React.useEffect(() => {
@@ -64,6 +66,21 @@ export function DeviceModal({ device, user, users = [], onClose, onUpdated }) {
 
   const handleSpeedSelect = (val) => {
     setSpeedLimit(val);
+  };
+
+  const handleDelete = async () => {
+    if (!window.confirm(t('delete_device_confirm'))) return;
+    setIsDeleting(true);
+    setError(null);
+    try {
+      await api.deleteDevice(device.id);
+      if (onUpdated) onUpdated();
+      onClose();
+    } catch (err) {
+      setError(err.message || 'Failed to delete device');
+    } finally {
+      setIsDeleting(false);
+    }
   };
 
   const handleSubmit = async (e) => {
@@ -238,18 +255,33 @@ export function DeviceModal({ device, user, users = [], onClose, onUpdated }) {
             </div>
           </div>
 
-          <div className="modal-footer">
-            <button type="button" className="btn btn-secondary btn-sm" onClick={onClose}>
-              {t('cancel')}
-            </button>
+          <div className="modal-footer" style={{ justifyContent: 'space-between' }}>
+            {/* Removing a device takes it out of every live view but keeps its
+                traffic history on the profile, pooled as "Old devices". */}
             <button
-              type="submit"
-              className="btn btn-primary btn-sm"
-              disabled={isSaving}
-              style={{ display: 'flex', alignItems: 'center', gap: 6 }}
+              type="button"
+              className="btn btn-ghost btn-sm"
+              onClick={handleDelete}
+              disabled={isSaving || isDeleting}
+              title={t('delete_device_hint')}
+              style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--color-danger)' }}
             >
-              {t('save')}
+              <Trash2 size={14} />
+              {t('delete_device')}
             </button>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button type="button" className="btn btn-secondary btn-sm" onClick={onClose}>
+                {t('cancel')}
+              </button>
+              <button
+                type="submit"
+                className="btn btn-primary btn-sm"
+                disabled={isSaving || isDeleting}
+                style={{ display: 'flex', alignItems: 'center', gap: 6 }}
+              >
+                {t('save')}
+              </button>
+            </div>
           </div>
         </form>
       </div>

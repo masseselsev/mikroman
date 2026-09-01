@@ -451,8 +451,8 @@ export function TrafficHistoryModal({ isOpen, target, onClose, onSelectTarget })
                         >
                           <div style={{ minWidth: 0, flex: 1 }}>
                             <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                              <span style={{ fontWeight: 700, fontSize: 'var(--fs-sm)' }}>
-                                {dev.custom_name || dev.hostname || dev.mac_address}
+                              <span style={{ fontWeight: 700, fontSize: 'var(--fs-sm)', fontStyle: dev.is_retired_pool ? 'italic' : 'normal' }}>
+                                {dev.is_retired_pool ? t('old_devices') : (dev.custom_name || dev.hostname || dev.mac_address)}
                               </span>
                               <span className="badge badge-neutral" style={{ fontSize: 'var(--fs-3xs)' }}>
                                 {sharePct}%
@@ -494,7 +494,7 @@ export function TrafficHistoryModal({ isOpen, target, onClose, onSelectTarget })
                               </div>
                             </div>
 
-                            {onSelectTarget && (
+                            {onSelectTarget && !dev.is_retired_pool && (
                               <button
                                 type="button"
                                 className="btn btn-secondary btn-sm"
