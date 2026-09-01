@@ -2,6 +2,7 @@ import React from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, renderWithProviders, screen, waitFor } from '../test/render';
 import { TrafficAnalytics } from './TrafficAnalytics';
+import { QuotaStrip } from './QuotaStrip';
 import { api } from '../api/client';
 
 vi.mock('../api/client', () => ({
@@ -9,6 +10,7 @@ vi.mock('../api/client', () => ({
     getBillingCycleConfig: vi.fn(),
     saveBillingCycleConfig: vi.fn().mockResolvedValue({ data: {} }),
     getTrafficAnalytics: vi.fn().mockResolvedValue({ data: null }),
+    getQuota: vi.fn().mockResolvedValue({ data: null }),
   },
 }));
 
@@ -47,5 +49,28 @@ describe('billing-cycle reset time', () => {
     renderWithProviders(<TrafficAnalytics activeRouter={{ id: 1 }} />);
     expect(await screen.findByText(/Day 5/i)).toBeInTheDocument();
     expect(screen.queryByText(/Day 5 ·/)).toBeNull();
+  });
+});
+
+describe('QuotaStrip countdown', () => {
+  const base = {
+    enabled: true, used_bytes: 50 * 1024 ** 3, limit_bytes: 100 * 1024 ** 3,
+    used_pct: 50, remaining_bytes: 50 * 1024 ** 3, projected_daily_budget: 1024 ** 3,
+    on_track: true, projected_pct_linear: 70, pace_basis: 'recent',
+    projected_pct_at_pace: 72, days_remaining: 3,
+    cycle_start: '2026-09-05', cycle_end: '2026-10-04',
+  };
+
+  it('shows whole days when the reset is at midnight (no cycle_end_at)', () => {
+    vi.spyOn(api, 'getQuota').mockResolvedValue({ data: { ...base, cycle_end_at: null } });
+    renderWithProviders(<QuotaStrip activeRouterId={1} onOpenSettings={() => {}} />);
+    return screen.findByText(/3 days left/i);
+  });
+
+  it('shows Nd Nh when cycle_end_at is a non-midnight instant', async () => {
+    const soon = new Date(Date.now() + (2 * 24 + 14) * 3600 * 1000).toISOString();
+    vi.spyOn(api, 'getQuota').mockResolvedValue({ data: { ...base, cycle_end_at: soon } });
+    renderWithProviders(<QuotaStrip activeRouterId={1} onOpenSettings={() => {}} />);
+    expect(await screen.findByText(/2d 1[34]h left/)).toBeInTheDocument();
   });
 });
