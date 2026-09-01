@@ -1,6 +1,6 @@
 import calendar
 import logging
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any, List, Optional, Tuple
 
 from sqlalchemy import select
@@ -81,6 +81,53 @@ def get_billing_cycle_dates(anchor_day: int, reference_date: Optional[date] = No
     return (start_date, end_date)
 
 
+def get_billing_cycle_bounds(
+    anchor_day: int,
+    anchor_hour: int,
+    anchor_minute: int,
+    ref_dt: datetime,
+    previous: bool = False,
+) -> Tuple[datetime, datetime]:
+    """Router-local start (inclusive) and end (exclusive) of an ISP billing cycle.
+
+    ``end_dt`` is the next cycle's reset instant, so the current cycle is the
+    half-open interval ``[start_dt, end_dt)``. Unlike the date-only
+    :func:`get_billing_cycle_dates`, this is time-aware: on the anchor day
+    itself the cycle you are in depends on whether ``ref_dt`` has passed the
+    reset time yet.
+    """
+    day = max(1, min(anchor_day, 31))
+    hh = max(0, min(anchor_hour, 23))
+    mm = max(0, min(anchor_minute, 59))
+
+    def reset_on(year: int, month: int) -> datetime:
+        last = calendar.monthrange(year, month)[1]
+        return datetime(year, month, min(day, last), hh, mm)
+
+    this_month = reset_on(ref_dt.year, ref_dt.month)
+    if ref_dt >= this_month:
+        start = this_month
+    elif ref_dt.month == 1:
+        start = reset_on(ref_dt.year - 1, 12)
+    else:
+        start = reset_on(ref_dt.year, ref_dt.month - 1)
+
+    if start.month == 12:
+        end = reset_on(start.year + 1, 1)
+    else:
+        end = reset_on(start.year, start.month + 1)
+
+    if previous:
+        prev_end = start
+        if start.month == 1:
+            prev_start = reset_on(start.year - 1, 12)
+        else:
+            prev_start = reset_on(start.year, start.month - 1)
+        return (prev_start, prev_end)
+
+    return (start, end)
+
+
 def resolve_date_range(
     preset: str,
     start_date: Optional[date] = None,
@@ -145,6 +192,48 @@ class AnalyticsEngine:
             session.add(setting)
         await session.commit()
         return day
+
+    @staticmethod
+    async def get_billing_anchor_time(session: AsyncSession) -> Tuple[int, int]:
+        """The configured reset time of day as ``(hour, minute)``.
+
+        Defaults to midnight, which reproduces the pre-existing date-only
+        behaviour exactly, so an install that never set a time is unaffected.
+        A stored value that is not a valid integer falls back to 0 rather than
+        raising, matching how ``get_billing_anchor_day`` handles corruption.
+        """
+        hour = 0
+        minute = 0
+        h_setting = await session.get(AppSetting, "billing_cycle_anchor_hour")
+        m_setting = await session.get(AppSetting, "billing_cycle_anchor_minute")
+        if h_setting and h_setting.value:
+            try:
+                hour = max(0, min(int(h_setting.value), 23))
+            except ValueError:
+                hour = 0
+        if m_setting and m_setting.value:
+            try:
+                minute = max(0, min(int(m_setting.value), 59))
+            except ValueError:
+                minute = 0
+        return (hour, minute)
+
+    @staticmethod
+    async def set_billing_anchor_time(session: AsyncSession, hour: int, minute: int) -> Tuple[int, int]:
+        """Persist the reset time of day, clamped to a valid wall-clock time."""
+        hh = max(0, min(hour, 23))
+        mm = max(0, min(minute, 59))
+        for key, value, desc in (
+            ("billing_cycle_anchor_hour", hh, "ISP billing cycle reset hour (0-23), router-local"),
+            ("billing_cycle_anchor_minute", mm, "ISP billing cycle reset minute (0-59)"),
+        ):
+            setting = await session.get(AppSetting, key)
+            if setting:
+                setting.value = str(value)
+            else:
+                session.add(AppSetting(key=key, value=str(value), description=desc))
+        await session.commit()
+        return (hh, mm)
 
     @classmethod
     async def get_historical_traffic(

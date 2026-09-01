@@ -5,12 +5,16 @@ can be armed at once (for example 50, 80 and 100 percent). Each threshold fires
 once per billing cycle: re-alerting on every poll would be noise, and the cycle
 reset must re-arm them so the next month warns again.
 """
-from datetime import date
+from datetime import date, datetime
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from backend.app.db.models import AppSetting, Base
+from backend.app.services.analytics_engine import (
+    AnalyticsEngine,
+    get_billing_cycle_bounds,
+)
 from backend.app.services.quota import (
     QuotaConfig,
     clean_portal_url,
@@ -133,3 +137,61 @@ async def test_fired_thresholds_reset_when_the_cycle_changes(session):
 
     setting = await session.get(AppSetting, "quota_fired_thresholds")
     assert setting is not None
+
+
+class TestBillingCycleBounds:
+    def test_midnight_anchor_matches_the_old_inclusive_dates(self):
+        # anchor 15 at 00:00, ref mid-cycle -> Aug 15 00:00 .. Sep 15 00:00
+        start, end = get_billing_cycle_bounds(15, 0, 0, datetime(2026, 8, 29, 12, 0))
+        assert start == datetime(2026, 8, 15, 0, 0)
+        assert end == datetime(2026, 9, 15, 0, 0)
+
+    def test_before_the_reset_time_on_the_anchor_day_is_still_the_old_cycle(self):
+        # reset is day 5 at 14:30; it is 10:00 on the 5th -> cycle started Aug 5
+        start, end = get_billing_cycle_bounds(5, 14, 30, datetime(2026, 9, 5, 10, 0))
+        assert start == datetime(2026, 8, 5, 14, 30)
+        assert end == datetime(2026, 9, 5, 14, 30)
+
+    def test_after_the_reset_time_on_the_anchor_day_is_the_new_cycle(self):
+        start, end = get_billing_cycle_bounds(5, 14, 30, datetime(2026, 9, 5, 16, 0))
+        assert start == datetime(2026, 9, 5, 14, 30)
+        assert end == datetime(2026, 10, 5, 14, 30)
+
+    def test_exactly_at_the_reset_instant_counts_as_the_new_cycle(self):
+        start, _ = get_billing_cycle_bounds(5, 14, 30, datetime(2026, 9, 5, 14, 30))
+        assert start == datetime(2026, 9, 5, 14, 30)
+
+    def test_day_31_anchor_clamps_to_the_last_day_of_a_short_month(self):
+        start, end = get_billing_cycle_bounds(31, 9, 0, datetime(2026, 2, 15, 12, 0))
+        assert start == datetime(2026, 1, 31, 9, 0)
+        assert end == datetime(2026, 2, 28, 9, 0)  # 2026 is not a leap year
+
+    def test_previous_cycle_is_the_one_before(self):
+        start, end = get_billing_cycle_bounds(5, 14, 30, datetime(2026, 9, 20, 8, 0), previous=True)
+        assert start == datetime(2026, 8, 5, 14, 30)
+        assert end == datetime(2026, 9, 5, 14, 30)
+
+    def test_year_boundary(self):
+        start, end = get_billing_cycle_bounds(20, 6, 0, datetime(2026, 1, 5, 3, 0))
+        assert start == datetime(2025, 12, 20, 6, 0)
+        assert end == datetime(2026, 1, 20, 6, 0)
+
+    def test_anchor_day_one_is_a_single_calendar_month(self):
+        # The old get_billing_cycle_dates had a bug here (two-month window).
+        start, end = get_billing_cycle_bounds(1, 0, 0, datetime(2026, 9, 15, 0, 0))
+        assert start == datetime(2026, 9, 1, 0, 0)
+        assert end == datetime(2026, 10, 1, 0, 0)
+
+
+@pytest.mark.asyncio
+async def test_billing_anchor_time_round_trips_with_clamping_and_defaults(session):
+    # default before anything is stored
+    assert await AnalyticsEngine.get_billing_anchor_time(session) == (0, 0)
+
+    stored = await AnalyticsEngine.set_billing_anchor_time(session, 14, 30)
+    assert stored == (14, 30)
+    assert await AnalyticsEngine.get_billing_anchor_time(session) == (14, 30)
+
+    # out-of-range values are clamped, not rejected
+    assert await AnalyticsEngine.set_billing_anchor_time(session, 99, -5) == (23, 0)
+    assert await AnalyticsEngine.get_billing_anchor_time(session) == (23, 0)
