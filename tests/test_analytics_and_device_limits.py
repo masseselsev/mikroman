@@ -1,13 +1,16 @@
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from backend.app.db.models import (
+    AppSetting,
     Base,
     Device,
     DeviceTrafficRollup,
+    InterfaceMetric,
+    RouterTrafficRollup,
     TrafficRollup,
     User,
 )
@@ -17,6 +20,21 @@ from backend.app.services.analytics_engine import (
     get_billing_cycle_dates,
     resolve_date_range,
 )
+from backend.app.services.router_time import ROUTER_OFFSET_SETTING_KEY
+
+GB = 1024 ** 3
+
+
+def _fake_now(dt):
+    async def _inner(_session):
+        return dt
+    return _inner
+
+
+def _fake_date(d):
+    async def _inner(_session, now_utc=None):
+        return d
+    return _inner
 
 
 @pytest.fixture
@@ -375,4 +393,110 @@ def test_delta_computation_logic():
 
     # None previous: baseline initialization -> delta 0
     assert AnalyticsEngine._compute_delta(5000, None) == 0
+
+
+class TestQuotaBoundaryPrecision:
+    async def _configure(self, session, *, limit_gb, anchor_day, hour=0, minute=0):
+        await session.execute(
+            __import__("sqlalchemy").text("DELETE FROM app_settings")
+        )
+        # router clock == container clock, so router_local_now is predictable
+        session.add(AppSetting(key=ROUTER_OFFSET_SETTING_KEY, value="0"))
+        session.add(AppSetting(key="billing_cycle_anchor_day", value=str(anchor_day)))
+        session.add(AppSetting(key="billing_cycle_anchor_hour", value=str(hour)))
+        session.add(AppSetting(key="billing_cycle_anchor_minute", value=str(minute)))
+        session.add(AppSetting(key="isp_quota_limit_bytes", value=str(limit_gb * GB)))
+        await session.commit()
+
+    async def _daily_gateway(self, session, day, total_bytes, router_id=1):
+        session.add(RouterTrafficRollup(
+            router_id=router_id, record_date=day,
+            bytes_in=total_bytes, bytes_out=0,
+        ))
+        await session.commit()
+
+    async def _samples(self, session, day, points, interface="ether1", router_id=1):
+        for hh, mm, rx in points:
+            session.add(InterfaceMetric(
+                router_id=router_id, interface_name=interface,
+                rx_rate_bps=0.0, tx_rate_bps=0.0,
+                rx_bytes_total=rx, tx_bytes_total=0,
+                timestamp=datetime.combine(day, time(hh, mm)),
+            ))
+        await session.commit()
+
+    @pytest.mark.asyncio
+    async def test_pre_reset_traffic_on_the_start_day_is_subtracted_from_used(self, api_client, monkeypatch):
+        from backend.app.api.v1.endpoints import analytics as analytics_ep
+
+        # Freeze "now" to the 10th of the month at noon.
+        frozen = datetime(2026, 9, 10, 12, 0)
+        monkeypatch.setattr(analytics_ep, "router_local_now", _fake_now(frozen))
+        monkeypatch.setattr(analytics_ep, "router_local_date", _fake_date(frozen.date()))
+
+        async with api_client.session_factory() as s:
+            await self._configure(s, limit_gb=100, anchor_day=5, hour=14, minute=30)
+            # cycle start day (Sep 5): whole-day rollup 10 GB, of which the WAN
+            # counter shows 6 GB moved before 14:30.
+            await self._daily_gateway(s, date(2026, 9, 5), 10 * GB)
+            await self._daily_gateway(s, date(2026, 9, 6), 20 * GB)
+            await self._daily_gateway(s, date(2026, 9, 10), 5 * GB)
+            await self._samples(s, date(2026, 9, 5), [
+                (0, 0, 0), (14, 30, 6 * GB), (23, 0, 10 * GB),
+            ])
+
+        resp = await api_client.get("/api/v1/analytics/quota")
+        q = resp.json()["data"]
+        # 10 + 20 + 5 = 35 GB whole days, minus the 6 GB pre-reset slice = 29 GB
+        assert abs(q["used_bytes"] - 29 * GB) < 1024 * 1024
+        assert q["cycle_end_at"].startswith("2026-10-05T14:30")
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_the_whole_day_when_samples_are_pruned(self, api_client, monkeypatch):
+        from backend.app.api.v1.endpoints import analytics as analytics_ep
+        frozen = datetime(2026, 9, 10, 12, 0)
+        monkeypatch.setattr(analytics_ep, "router_local_now", _fake_now(frozen))
+        monkeypatch.setattr(analytics_ep, "router_local_date", _fake_date(frozen.date()))
+
+        async with api_client.session_factory() as s:
+            await self._configure(s, limit_gb=100, anchor_day=5, hour=14, minute=30)
+            await self._daily_gateway(s, date(2026, 9, 5), 10 * GB)
+            await self._daily_gateway(s, date(2026, 9, 10), 5 * GB)
+            # no interface_metrics rows for Sep 5 -> slice returns None
+
+        resp = await api_client.get("/api/v1/analytics/quota")
+        q = resp.json()["data"]
+        assert abs(q["used_bytes"] - 15 * GB) < 1024 * 1024  # whole start day kept
+
+    @pytest.mark.asyncio
+    async def test_midnight_anchor_reproduces_the_pre_change_number(self, api_client, monkeypatch):
+        from backend.app.api.v1.endpoints import analytics as analytics_ep
+        frozen = datetime(2026, 9, 10, 12, 0)
+        monkeypatch.setattr(analytics_ep, "router_local_now", _fake_now(frozen))
+        monkeypatch.setattr(analytics_ep, "router_local_date", _fake_date(frozen.date()))
+
+        async with api_client.session_factory() as s:
+            await self._configure(s, limit_gb=100, anchor_day=5, hour=0, minute=0)
+            await self._daily_gateway(s, date(2026, 9, 5), 10 * GB)
+            await self._daily_gateway(s, date(2026, 9, 10), 5 * GB)
+            # samples exist but must be ignored at a 00:00 anchor
+            await self._samples(s, date(2026, 9, 5), [(0, 0, 0), (23, 0, 10 * GB)])
+
+        resp = await api_client.get("/api/v1/analytics/quota")
+        q = resp.json()["data"]
+        assert abs(q["used_bytes"] - 15 * GB) < 1024 * 1024
+        assert q["cycle_end_at"].startswith("2026-10-05T00:00")
+
+    @pytest.mark.asyncio
+    async def test_billing_cycle_config_endpoint_round_trips_the_time(self, api_client):
+        resp = await api_client.post(
+            "/api/v1/analytics/billing-cycle",
+            json={"anchor_day": 5, "anchor_hour": 14, "anchor_minute": 30},
+        )
+        assert resp.status_code == 200
+        d = resp.json()["data"]
+        assert (d["anchor_day"], d["anchor_hour"], d["anchor_minute"]) == (5, 14, 30)
+
+        got = (await api_client.get("/api/v1/analytics/billing-cycle")).json()["data"]
+        assert (got["anchor_hour"], got["anchor_minute"]) == (14, 30)
 
