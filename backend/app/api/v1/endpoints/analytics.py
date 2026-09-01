@@ -1,4 +1,4 @@
-from datetime import date, time
+from datetime import date
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -14,8 +14,8 @@ from backend.app.schemas.analytics import (
 from backend.app.schemas.common import APIResponse
 from backend.app.services.analytics_engine import (
     AnalyticsEngine,
-    _inclusive_end_date,
     get_billing_cycle_bounds,
+    inclusive_end_date,
     resolve_date_range,
 )
 from backend.app.services.quota import (
@@ -26,7 +26,7 @@ from backend.app.services.quota import (
 )
 from backend.app.services.rollups import resolve_monitored_interfaces, slice_of_day_bytes
 from backend.app.services.router_manager import router_manager
-from backend.app.services.router_time import router_local_now
+from backend.app.services.router_time import get_router_offset, router_local_now
 
 router = APIRouter(prefix="/analytics", tags=["Traffic Analytics"])
 
@@ -160,12 +160,24 @@ async def build_quota_status(db: AsyncSession, router_id: Optional[int] = None) 
     anchor_hour, anchor_minute = await AnalyticsEngine.get_billing_anchor_time(db)
     now = await router_local_now(db)
     today = now.date()
+    non_midnight = anchor_hour != 0 or anchor_minute != 0
 
     start_dt, end_dt = get_billing_cycle_bounds(
         anchor_day, anchor_hour, anchor_minute, now, previous=False,
     )
     cycle_start = start_dt.date()
-    cycle_end = _inclusive_end_date(end_dt)
+    cycle_end = inclusive_end_date(end_dt)
+
+    # Both boundary slices below fire on exactly the same condition (a
+    # non-midnight reset) and need the same two lookups. Resolve them once:
+    # the offset is threaded into slice_of_day_bytes so it is not re-read per
+    # call, and prev_end_dt is this cycle's start instant so one interface list
+    # serves both.
+    slice_interfaces: list = []
+    slice_offset = 0
+    if non_midnight:
+        slice_interfaces = await resolve_monitored_interfaces(db, router_id)
+        slice_offset = await get_router_offset(db) or 0
 
     data = await AnalyticsEngine.get_historical_traffic(
         session=db,
@@ -182,10 +194,10 @@ async def build_quota_status(db: AsyncSession, router_id: Optional[int] = None) 
     # always mid-cycle here, so "everything up to now" on any later day is
     # already inside this cycle. A midnight anchor never enters this branch, so
     # its "used" figure stays byte-for-byte the pre-change one.
-    if start_dt.time() != time(0, 0):
-        interfaces = await resolve_monitored_interfaces(db, router_id)
+    if non_midnight:
         pre = await slice_of_day_bytes(
-            db, router_id, cycle_start, None, start_dt.time(), interfaces,
+            db, router_id, cycle_start, None, start_dt.time(), slice_interfaces,
+            offset_minutes=slice_offset,
         )
         if pre is not None:
             used = max(0, used - (pre[0] + pre[1]))
@@ -231,7 +243,7 @@ async def build_quota_status(db: AsyncSession, router_id: Optional[int] = None) 
         anchor_day, anchor_hour, anchor_minute, now, previous=True,
     )
     prev_start = prev_start_dt.date()
-    prev_end = _inclusive_end_date(prev_end_dt)
+    prev_end = inclusive_end_date(prev_end_dt)
     prev_data = await AnalyticsEngine.get_historical_traffic(
         session=db,
         start_date=prev_start,
@@ -248,11 +260,11 @@ async def build_quota_status(db: AsyncSession, router_id: Optional[int] = None) 
     # cycle's "used". Subtract the post-reset slice of that day so it is not
     # counted in both. If the samples are pruned (None) the whole day stands -
     # the same documented fallback as the current-cycle start-day slice.
-    if prev_end_dt.time() != time(0, 0):
-        interfaces = await resolve_monitored_interfaces(db, router_id)
+    if non_midnight:
         s = await slice_of_day_bytes(
             db, router_id, prev_end_dt.date(),
-            from_time=prev_end_dt.time(), to_time=None, interfaces=interfaces,
+            from_time=prev_end_dt.time(), to_time=None, interfaces=slice_interfaces,
+            offset_minutes=slice_offset,
         )
         if s is not None:
             prev_cycle_bytes = max(0, prev_cycle_bytes - (s[0] + s[1]))

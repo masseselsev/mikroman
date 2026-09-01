@@ -160,6 +160,8 @@ async def slice_of_day_bytes(
     from_time: Optional[time],
     to_time: Optional[time],
     interfaces: List[str],
+    *,
+    offset_minutes: Optional[int] = None,
 ) -> Optional[Tuple[int, int]]:
     """Bytes transferred on ``day`` between two clock times, from the sampled
     WAN interface counters.
@@ -169,7 +171,9 @@ async def slice_of_day_bytes(
     ``interface_metrics.timestamp`` are stored as naive **UTC**, so the window
     is converted into that UTC frame (``utc = router_local - offset``) before it
     is queried; on any router not at UTC+0 comparing the two frames directly
-    hits the wrong rows.
+    hits the wrong rows. ``offset_minutes`` lets a caller that already knows the
+    router offset pass it in rather than have it re-read here; ``None`` looks it
+    up.
 
     ``interface_metrics`` records each interface's *cumulative* rx/tx byte
     counter about every 1.5 s. Walking every sample in the window and summing
@@ -189,7 +193,7 @@ async def slice_of_day_bytes(
     hi = datetime.combine(day, to_time or time(23, 59, 59, 999999))
 
     # Shift the router-local window back into the UTC frame the samples carry.
-    offset = await get_router_offset(session) or 0
+    offset = offset_minutes if offset_minutes is not None else (await get_router_offset(session) or 0)
     lo -= timedelta(minutes=offset)
     hi -= timedelta(minutes=offset)
 

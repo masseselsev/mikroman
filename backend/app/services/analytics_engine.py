@@ -29,8 +29,13 @@ from backend.app.services.router_time import router_local_date
 logger = logging.getLogger("mikroman.analytics_engine")
 
 
-def _inclusive_end_date(end_dt: datetime) -> date:
-    """Last calendar date a half-open cycle bound touches."""
+def inclusive_end_date(end_dt: datetime) -> date:
+    """Last calendar date a half-open cycle bound touches.
+
+    Shared with the analytics endpoint, hence no leading underscore: turning the
+    exclusive ``end_dt`` of ``get_billing_cycle_bounds`` into an inclusive
+    ``date`` is done in several places and must be done the same way each time.
+    """
     return (end_dt - timedelta(microseconds=1)).date()
 
 
@@ -96,7 +101,7 @@ def get_billing_cycle_dates(
     start_dt, end_dt = get_billing_cycle_bounds(
         anchor_day, 0, 0, datetime.combine(ref, datetime.min.time()), previous
     )
-    return (start_dt.date(), _inclusive_end_date(end_dt))
+    return (start_dt.date(), inclusive_end_date(end_dt))
 
 
 def resolve_date_range(
@@ -129,13 +134,13 @@ def resolve_date_range(
     elif preset == "billing_current":
         ref = now_dt or datetime.combine(today, datetime.min.time())
         s_dt, e_dt = get_billing_cycle_bounds(anchor_day, anchor_hour, anchor_minute, ref, previous=False)
-        e_date = _inclusive_end_date(e_dt)
+        e_date = inclusive_end_date(e_dt)
         # Cap current cycle view to today for live measurement
         return (s_dt.date(), min(e_date, today), "billing_current")
     elif preset == "billing_previous":
         ref = now_dt or datetime.combine(today, datetime.min.time())
         s_dt, e_dt = get_billing_cycle_bounds(anchor_day, anchor_hour, anchor_minute, ref, previous=True)
-        return (s_dt.date(), _inclusive_end_date(e_dt), "billing_previous")
+        return (s_dt.date(), inclusive_end_date(e_dt), "billing_previous")
     elif preset == "custom" and start_date and end_date:
         return (min(start_date, end_date), max(start_date, end_date), "custom")
     else:
