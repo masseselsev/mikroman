@@ -135,6 +135,8 @@ class DeviceManager(DeviceConsolidationMixin):
         """
         key = f"monitored_interfaces_{self.router_id}" if self.router_id else "monitored_interfaces_default"
         setting = await session.get(AppSetting, key)
+        if not setting and not self.router_id:
+            setting = await session.get(AppSetting, "monitored_interfaces_1")
         if setting and setting.value:
             try:
                 names = json.loads(setting.value)
@@ -296,9 +298,12 @@ class DeviceManager(DeviceConsolidationMixin):
         # question cannot be answered from a set being filled in as we go.
         present_macs = collect_present_macs(leases, arps, wifis)
 
-        # Query all existing devices in DB with history preloaded
-        result = await session.execute(select(Device).options(selectinload(Device.history)))
-        db_devices = {d.mac_address: d for d in result.scalars().all()}
+        # Query existing devices in DB for this router (or unassigned router_id) with history preloaded
+        query = select(Device).options(selectinload(Device.history))
+        if self.router_id is not None:
+            query = query.where((Device.router_id == self.router_id) | (Device.router_id.is_(None)))
+        existing_devices = (await session.execute(query)).scalars().all()
+        db_devices: Dict[str, Device] = {d.mac_address: d for d in existing_devices}
 
         active_macs = set()
         newly_discovered: List[Device] = []
@@ -323,6 +328,8 @@ class DeviceManager(DeviceConsolidationMixin):
                 device = db_devices[mac]
                 old_ip = device.ip_address
                 old_host = device.hostname
+                if device.router_id is None and self.router_id is not None:
+                    device.router_id = self.router_id
 
                 # Track IP change
                 if lease.address and lease.address != old_ip:
@@ -463,8 +470,8 @@ class DeviceManager(DeviceConsolidationMixin):
 
             if mac in db_devices:
                 device = db_devices[mac]
-                if arp.address and (not device.ip_address or device.ip_address == "0.0.0.0"):
-                    device.ip_address = arp.address
+                if device.router_id is None and self.router_id is not None:
+                    device.router_id = self.router_id
                 if wifi_info:
                     apply_wifi_registration(device, wifi_info)
                 elif arp.interface and not device.last_interface:

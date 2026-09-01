@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { formatBytes, formatBytesCompact, formatDateTime, formatGbWhole, formatLastActive, formatRelativeTime, formatSpeed, formatSpeedShort, formatUptime } from './formatters';
+import { formatBytes, formatBytesCompact, formatDateTime, formatGbWhole, formatLastActive, formatRelativeTime, formatSpeed, formatSpeedShort, formatUptime, parseUtcDate } from './formatters';
+
 /**
  * These decide what every figure on the dashboard actually reads as, so their
  * unit boundaries are worth pinning: an off-by-one there turns 999 bps into
@@ -181,13 +182,13 @@ describe('formatLastActive', () => {
     expect(formatLastActive('2026-08-31T12:05:00Z')).toBe('now');
   });
 
-  it('localises the suffix', () => {
+  it('handles naive ISO timestamps as UTC', () => {
     at('2026-08-31T12:00:00Z');
     expect(formatLastActive('2026-08-31T10:30:00Z', 'ru')).toBe('2ч');
   });
 });
 
-describe('formatDateTime', () => {
+describe('parseUtcDate', () => {
   it('is empty for missing or unparseable input', () => {
     expect(formatDateTime(null)).toBe('');
     expect(formatDateTime('not a date')).toBe('');

@@ -1,7 +1,6 @@
 import logging
-from typing import Any, Dict, List
-
-from fastapi import APIRouter, Depends, HTTPException
+from typing import Any, Dict, List, Optional
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -137,11 +136,39 @@ async def get_alerts(limit: int = 50, db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/settings", response_model=APIResponse[Dict[str, str]])
-async def get_settings(db: AsyncSession = Depends(get_db)):
+async def get_settings(
+    router_id: Optional[int] = Query(None),
+    db: AsyncSession = Depends(get_db)
+):
     """Fetch stored application settings."""
+    eff_router_id = router_id
+    if eff_router_id is None:
+        active_r = await router_manager.get_active_router(db)
+        if active_r:
+            eff_router_id = active_r.id
+
     result = await db.execute(select(AppSetting))
     settings_list = result.scalars().all()
     data = {s.key: s.value for s in settings_list}
+
+    # Overlay router-scoped values for router-specific settings
+    router_specific_keys = [
+        "unassigned_device_speed_limit",
+        "temp_warning_threshold",
+        "auto_scan_enabled",
+        "pause_allowed_networks",
+        "isp_download_speed",
+        "isp_upload_speed",
+        "monitored_wan_interfaces",
+    ]
+    if eff_router_id is not None:
+        for rk in router_specific_keys:
+            scoped_key = f"{rk}_{eff_router_id}"
+            if scoped_key in data:
+                data[rk] = data[scoped_key]
+            elif eff_router_id not in (1, None):
+                # Distinct secondary router: do not inherit router 1's settings
+                data.pop(rk, None)
 
     # Defaults
     if "theme" not in data:
@@ -163,13 +190,37 @@ async def get_settings(db: AsyncSession = Depends(get_db)):
         data["temp_warning_threshold"] = "80"
     if "auto_scan_enabled" not in data:
         data["auto_scan_enabled"] = "true"
+    if "pause_allowed_networks" not in data:
+        data["pause_allowed_networks"] = "192.168.0.0/16, 10.0.0.0/8, 172.16.0.0/12"
+    if "monitored_wan_interfaces" not in data:
+        data["monitored_wan_interfaces"] = ""
 
     return APIResponse(data=data)
 
 
 @router.post("/settings", response_model=APIResponse[bool])
-async def save_settings(payload: Dict[str, str], db: AsyncSession = Depends(get_db)):
+async def save_settings(
+    payload: Dict[str, str],
+    router_id: Optional[int] = Query(None),
+    db: AsyncSession = Depends(get_db)
+):
     """Save application settings."""
+    eff_router_id = router_id
+    if eff_router_id is None:
+        active_r = await router_manager.get_active_router(db)
+        if active_r:
+            eff_router_id = active_r.id
+
+    router_specific_keys = [
+        "unassigned_device_speed_limit",
+        "temp_warning_threshold",
+        "auto_scan_enabled",
+        "pause_allowed_networks",
+        "isp_download_speed",
+        "isp_upload_speed",
+        "monitored_wan_interfaces",
+    ]
+
     for k, v in payload.items():
         setting = await db.get(AppSetting, k)
         if setting:
@@ -177,14 +228,27 @@ async def save_settings(payload: Dict[str, str], db: AsyncSession = Depends(get_
         else:
             setting = AppSetting(key=k, value=v)
             db.add(setting)
+
+        # If it's a router-specific setting and eff_router_id is known, also write the scoped setting
+        if k in router_specific_keys and eff_router_id is not None:
+            scoped_key = f"{k}_{eff_router_id}"
+            scoped_setting = await db.get(AppSetting, scoped_key)
+            if scoped_setting:
+                scoped_setting.value = v
+            else:
+                db.add(AppSetting(key=scoped_key, value=v))
+
     await db.commit()
 
-    # If unassigned_device_speed_limit changed, update all unassigned devices
+    # If unassigned_device_speed_limit changed, update unassigned devices for this router
     if "unassigned_device_speed_limit" in payload:
         new_unassigned_limit = payload["unassigned_device_speed_limit"]
         from backend.app.db.models import Device
         from backend.app.services.traffic_controller import TrafficController
-        unassigned_res = await db.execute(select(Device).where(Device.user_id == None))  # noqa: E711
+        dev_query = select(Device).where(Device.user_id == None)  # noqa: E711
+        if eff_router_id is not None:
+            dev_query = dev_query.where((Device.router_id == eff_router_id) | (Device.router_id.is_(None)))
+        unassigned_res = await db.execute(dev_query)
         unassigned_devs = unassigned_res.scalars().all()
         for d in unassigned_devs:
             d.speed_limit = new_unassigned_limit
@@ -192,13 +256,24 @@ async def save_settings(payload: Dict[str, str], db: AsyncSession = Depends(get_
 
         # Resync unassigned device queues on RouterOS
         try:
-            client = await router_manager.get_client(session=db)
+            client = await router_manager.get_client(eff_router_id, session=db)
             if client:
-                tc = TrafficController(client)
+                tc = TrafficController(client, router_id=eff_router_id)
                 for d in unassigned_devs:
                     await tc.sync_device_queue(d.id, db)
         except Exception as e:
             logger.debug(f"Failed to sync unassigned device queues: {e}")
+
+    # If pause_allowed_networks changed, resync RouterOS firewall rules
+    if "pause_allowed_networks" in payload:
+        try:
+            client = await router_manager.get_client(eff_router_id, session=db)
+            if client:
+                from backend.app.services.traffic_controller import TrafficController
+                tc = TrafficController(client, router_id=eff_router_id)
+                await tc.ensure_pause_firewall_rules(db)
+        except Exception as e:
+            logger.debug(f"Failed to sync pause firewall rules: {e}")
 
     # Dynamically reconfigure live Telegram bot service if updated
     try:

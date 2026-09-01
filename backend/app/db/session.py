@@ -144,10 +144,18 @@ async def init_db() -> None:
             try:
                 res = await conn.execute(text("PRAGMA table_info(users)"))
                 columns = [row[1] for row in res.fetchall()]
-                if columns and "sort_order" not in columns:
-                    await conn.execute(text("ALTER TABLE users ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0"))
+                if columns:
+                    if "sort_order" not in columns:
+                        await conn.execute(text("ALTER TABLE users ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0"))
+                    if "router_id" not in columns:
+                        await conn.execute(text("ALTER TABLE users ADD COLUMN router_id INTEGER REFERENCES routers(id) ON DELETE SET NULL"))
+                        router_row = (await conn.execute(text("SELECT id FROM routers WHERE is_default = 1 LIMIT 1"))).fetchone()
+                        if not router_row:
+                            router_row = (await conn.execute(text("SELECT id FROM routers ORDER BY id ASC LIMIT 1"))).fetchone()
+                        if router_row:
+                            await conn.execute(text(f"UPDATE users SET router_id = {router_row[0]} WHERE router_id IS NULL"))
             except Exception as e:
-                logger.warning(f"Could not apply user schema additions: {e}")
+                logger.warning(f"Could not apply users schema additions: {e}")
 
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:

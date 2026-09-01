@@ -28,18 +28,14 @@ export function RouterSelector({ routers = [], activeRouter, onSelectRouter, onA
     <div className="router-selector" ref={dropdownRef} style={{ position: 'relative' }}>
       <button
         type="button"
-        className="btn btn-ghost"
+        className="btn btn-secondary btn-sm"
         style={{
           gap: 8,
-          padding: '6px 12px',
-          background: 'var(--bg-secondary)',
-          border: '1px solid var(--border-color)',
-          borderRadius: 'var(--radius-sm)',
           fontSize: 'var(--fs-sm)'
         }}
         onClick={() => setIsOpen(!isOpen)}
       >
-        <Server size={16} style={{ color: 'var(--color-primary)' }} />
+        <Server size={15} style={{ color: 'var(--color-primary)' }} />
         <span className="truncate" style={{ maxWidth: 140 }}>
           {current?.name || 'Router'}
         </span>
@@ -62,8 +58,8 @@ export function RouterSelector({ routers = [], activeRouter, onSelectRouter, onA
                   type="button"
                   className={`popover-item${isSelected ? ' is-selected' : ''}`}
                   onClick={() => {
-                    onSelectRouter(r.id);
                     setIsOpen(false);
+                    onSelectRouter(r);
                   }}
                 >
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 2, overflow: 'hidden', flex: 1 }}>

@@ -9,6 +9,7 @@ import { OverviewTab } from './analytics/OverviewTab';
 import { UsersTab } from './analytics/UsersTab';
 import { DevicesTab } from './analytics/DevicesTab';
 import { InterfacesTab } from './analytics/InterfacesTab';
+import { TrafficAnalytics } from './TrafficAnalytics';
 
 /**
  * Render each component that was split out of SetupWizard and TrafficAnalytics.
@@ -23,6 +24,17 @@ import { InterfacesTab } from './analytics/InterfacesTab';
 vi.mock('../api/client', () => ({
   api: {
     getBillingCycleConfig: vi.fn().mockResolvedValue({ data: { anchor_day: 1 } }),
+    getTrafficAnalytics: vi.fn().mockResolvedValue({
+      data: {
+        gateway: { total_bytes_in: 90, total_bytes_out: 10, total_bytes: 100, monitored_interfaces: ['ether1'] },
+        accounting_health: { status: 'ok', coverage_pct: 100 },
+        users: [],
+        devices: [],
+        interfaces: [],
+        timeline: [],
+        router_self: { total_bytes: 0, pct_of_total: 0 },
+      }
+    }),
     testRouterConnection: vi.fn().mockResolvedValue({ data: { success: true } }),
     getSettings: vi.fn().mockResolvedValue({ data: {} }),
   },
@@ -167,5 +179,12 @@ describe('components split out of traffic analytics', () => {
     );
     screen.getByRole('button', { name: /Show Hidden/i }).click();
     expect(setShowHidden).toHaveBeenCalledWith(true);
+  });
+
+  it('renders the complete TrafficAnalytics component without throwing', () => {
+    const { container } = renderWithProviders(
+      <TrafficAnalytics activeRouter={{ id: 1 }} />
+    );
+    expect(container.querySelectorAll('.nav-tab').length).toBeGreaterThan(0);
   });
 });

@@ -61,19 +61,39 @@ export const api = {
     request(`/routers/${routerId}/speedtest/history?limit=${limit}`),
 
   // Users
-  getUsers: () => request('/users'),
-  createUser: (data) => request('/users', { method: 'POST', body: JSON.stringify(data) }),
+  getUsers: (routerId = null) => request(`/users${routerId ? `?router_id=${routerId}` : ''}`),
   getUser: (id) => request(`/users/${id}`),
   updateUser: (id, data) => request(`/users/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
   deleteUser: (id) => request(`/users/${id}`, { method: 'DELETE' }),
+  getUserTrafficHistory: (userId, { preset = '7d', startDate = null, endDate = null } = {}) => {
+    const params = new URLSearchParams();
+    if (preset) params.append('preset', preset);
+    if (startDate) params.append('start_date', startDate);
+    if (endDate) params.append('end_date', endDate);
+    return request(`/users/${userId}/traffic-history?${params.toString()}`);
+  },
+  getDeviceTrafficHistory: (deviceId, { preset = '7d', startDate = null, endDate = null } = {}) => {
+    const params = new URLSearchParams();
+    if (preset) params.append('preset', preset);
+    if (startDate) params.append('start_date', startDate);
+    if (endDate) params.append('end_date', endDate);
+    return request(`/devices/${deviceId}/traffic-history?${params.toString()}`);
+  },
 
   // Devices
   // `kind` defaults to 'client' server-side: containers are router workloads,
   // not people's devices, and must not queue in the unassigned inbox.
-  getDevices: (unassignedOnly = false, showHidden = true, kind = 'client') =>
-    request(`/devices?unassigned_only=${unassignedOnly}&show_hidden=${showHidden}&kind=${kind}`),
-  getContainerDevices: () => request('/devices?kind=container&show_hidden=true'),
-  scanNetwork: () => request('/devices/scan', { method: 'POST' }),
+  getDevices: (unassignedOnly = false, showHidden = true, kind = 'client', routerId = null) => {
+    const params = new URLSearchParams({
+      unassigned_only: String(unassignedOnly),
+      show_hidden: String(showHidden),
+      kind
+    });
+    if (routerId) params.append('router_id', String(routerId));
+    return request(`/devices?${params.toString()}`);
+  },
+  getContainerDevices: (routerId = null) => request(`/devices?kind=container&show_hidden=true${routerId ? `&router_id=${routerId}` : ''}`),
+  scanNetwork: (routerId = null) => request(`/devices/scan${routerId ? `?router_id=${routerId}` : ''}`, { method: 'POST' }),
   updateDevice: (id, data) => request(`/devices/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
   deleteDevice: (id) => request(`/devices/${id}`, { method: 'DELETE' }),
   splitDevice: (id, macAddress) => request(`/devices/${id}/split`, { method: 'POST', body: JSON.stringify({ mac_address: macAddress }) }),
@@ -84,7 +104,7 @@ export const api = {
     body: JSON.stringify({ user_ids: userIds })
   }),
   getQuota: (routerId = null) => request(`/analytics/quota${routerId ? `?router_id=${routerId}` : ''}`),
-  saveQuota: (config) => request('/analytics/quota', {
+  saveQuota: (config, routerId = null) => request(`/analytics/quota${routerId ? `?router_id=${routerId}` : ''}`, {
     method: 'POST',
     body: JSON.stringify(config)
   }),
@@ -127,13 +147,14 @@ export const api = {
     if (routerId) url += `&router_id=${routerId}`;
     return request(url);
   },
-  getBillingCycleConfig: () => request('/analytics/billing-cycle'),
-  saveBillingCycleConfig: (anchorDay, anchorHour = 0, anchorMinute = 0) => request('/analytics/billing-cycle', {
+  getBillingCycleConfig: (routerId = null) => request(`/analytics/billing-cycle${routerId ? `?router_id=${routerId}` : ''}`),
+  saveBillingCycleConfig: (anchorDay, anchorHour = 0, anchorMinute = 0, routerId = null) => request(`/analytics/billing-cycle${routerId ? `?router_id=${routerId}` : ''}`, {
     method: 'POST',
     body: JSON.stringify({
       anchor_day: Number(anchorDay),
       anchor_hour: Number(anchorHour),
       anchor_minute: Number(anchorMinute),
+      router_id: routerId
     }),
   }),
 
@@ -158,13 +179,13 @@ export const api = {
   },
 
   // System & Settings
-  getSystemStatus: () => request('/system/status'),
-  getInterfaces: () => request('/system/interfaces'),
-  getAlerts: () => request('/system/alerts'),
-  getSettings: () => request('/system/settings'),
+  getSystemStatus: (routerId = null) => request(`/system/status${routerId ? `?router_id=${routerId}` : ''}`),
+  getInterfaces: (routerId = null) => request(`/system/interfaces${routerId ? `?router_id=${routerId}` : ''}`),
+  getAlerts: (routerId = null) => request(`/system/alerts${routerId ? `?router_id=${routerId}` : ''}`),
+  getSettings: (routerId = null) => request(`/system/settings${routerId ? `?router_id=${routerId}` : ''}`),
   getIpLookup: () => request('/system/ip-lookup'),
   saveIpLookup: (config) => request('/system/ip-lookup', { method: 'POST', body: JSON.stringify(config) }),
-  saveSettings: (settings) => request('/system/settings', { method: 'POST', body: JSON.stringify(settings) }),
-  rebootRouter: () => request('/system/reboot', { method: 'POST' }),
+  saveSettings: (settings, routerId = null) => request(`/system/settings${routerId ? `?router_id=${routerId}` : ''}`, { method: 'POST', body: JSON.stringify(settings) }),
+  rebootRouter: (routerId = null) => request(`/system/reboot${routerId ? `?router_id=${routerId}` : ''}`, { method: 'POST' }),
   testTelegram: (data = {}) => request('/telegram/test', { method: 'POST', body: JSON.stringify(data) }),
 };

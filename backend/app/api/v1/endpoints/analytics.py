@@ -71,13 +71,19 @@ async def get_traffic_analytics(
 
 @router.get("/billing-cycle", response_model=APIResponse[BillingCycleConfig])
 async def get_billing_cycle_config(
+    router_id: Optional[int] = Query(None),
     db: AsyncSession = Depends(get_db)
 ):
     """The ISP billing cycle anchor: day of month, and time of day."""
-    anchor_day = await AnalyticsEngine.get_billing_anchor_day(db)
-    anchor_hour, anchor_minute = await AnalyticsEngine.get_billing_anchor_time(db)
+    eff_router_id = router_id
+    if eff_router_id is None:
+        active_r = await router_manager.get_active_router(db)
+        if active_r:
+            eff_router_id = active_r.id
+    anchor_day = await AnalyticsEngine.get_billing_anchor_day(db, router_id=eff_router_id)
+    anchor_hour, anchor_minute = await AnalyticsEngine.get_billing_anchor_time(db, router_id=eff_router_id)
     return APIResponse(data=BillingCycleConfig(
-        anchor_day=anchor_day, anchor_hour=anchor_hour, anchor_minute=anchor_minute,
+        anchor_day=anchor_day, anchor_hour=anchor_hour, anchor_minute=anchor_minute, router_id=eff_router_id,
     ))
 
 
@@ -125,16 +131,18 @@ async def get_debug_state(db: AsyncSession = Depends(get_db)):
 @router.post("/billing-cycle", response_model=APIResponse[BillingCycleConfig])
 async def set_billing_cycle_config(
     payload: BillingCycleConfig,
+    router_id: Optional[int] = Query(None),
     db: AsyncSession = Depends(get_db)
 ):
     """Save the ISP billing cycle renewal day and time of day."""
-    saved_day = await AnalyticsEngine.set_billing_anchor_day(db, payload.anchor_day)
+    eff_router_id = payload.router_id if payload.router_id is not None else router_id
+    saved_day = await AnalyticsEngine.set_billing_anchor_day(db, payload.anchor_day, router_id=eff_router_id)
     saved_hour, saved_minute = await AnalyticsEngine.set_billing_anchor_time(
-        db, payload.anchor_hour, payload.anchor_minute,
+        db, payload.anchor_hour, payload.anchor_minute, router_id=eff_router_id,
     )
     return APIResponse(
         data=BillingCycleConfig(
-            anchor_day=saved_day, anchor_hour=saved_hour, anchor_minute=saved_minute,
+            anchor_day=saved_day, anchor_hour=saved_hour, anchor_minute=saved_minute, router_id=eff_router_id,
         ),
         message=f"Billing cycle anchor set to day {saved_day} at {saved_hour:02d}:{saved_minute:02d}",
     )
@@ -148,9 +156,15 @@ async def build_quota_status(db: AsyncSession, router_id: Optional[int] = None) 
     pre-reset slice is subtracted using the sampled WAN counters; if those
     samples have been pruned, the whole start day is kept (documented fallback).
     """
-    config = await get_quota_config(db)
-    anchor_day = await AnalyticsEngine.get_billing_anchor_day(db)
-    anchor_hour, anchor_minute = await AnalyticsEngine.get_billing_anchor_time(db)
+    eff_router_id = router_id
+    if eff_router_id is None:
+        active_r = await router_manager.get_active_router(db)
+        if active_r:
+            eff_router_id = active_r.id
+
+    config = await get_quota_config(db, router_id=eff_router_id)
+    anchor_day = await AnalyticsEngine.get_billing_anchor_day(db, router_id=eff_router_id)
+    anchor_hour, anchor_minute = await AnalyticsEngine.get_billing_anchor_time(db, router_id=eff_router_id)
     now = await router_local_now(db)
     today = now.date()
     non_midnight = anchor_hour != 0 or anchor_minute != 0
@@ -316,7 +330,7 @@ async def build_quota_status(db: AsyncSession, router_id: Optional[int] = None) 
         pace_basis=pace_basis,
         on_track=bool(limit) and projected_bytes_linear <= limit,
         thresholds=config.thresholds,
-        thresholds_reached=await unfired_for_cycle(db, cycle_start),
+        thresholds_reached=await unfired_for_cycle(db, cycle_start, router_id=eff_router_id),
         enabled=limit > 0,
         notify_telegram=config.notify_telegram,
         portal_url=config.portal_url,
@@ -340,6 +354,11 @@ async def set_quota_config(
     db: AsyncSession = Depends(get_db)
 ):
     """Set the ISP allowance, the warning percentages, and the portal link."""
+    eff_router_id = router_id
+    if eff_router_id is None:
+        active_r = await router_manager.get_active_router(db)
+        if active_r:
+            eff_router_id = active_r.id
     try:
         await save_quota_config(db, QuotaConfig(
             limit_bytes=payload.limit_bytes,
@@ -347,7 +366,7 @@ async def set_quota_config(
             notify_telegram=payload.notify_telegram,
             portal_url=payload.portal_url,
             portal_label=payload.portal_label,
-        ))
+        ), router_id=eff_router_id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
-    return APIResponse(data=await build_quota_status(db, router_id))
+    return APIResponse(data=await build_quota_status(db, eff_router_id))

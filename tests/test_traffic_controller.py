@@ -103,6 +103,8 @@ async def test_pause_and_resume_internet(mock_settings):
                 json=[{".id": "*A1", "list": "mikroman_blocked", "address": "192.168.88.55", "comment": "mikroman:paused:user_1"}]
             )
             respx_mock.delete("/ip/firewall/address-list/*A1").respond(200, json={})
+            respx_mock.get("/ip/firewall/filter").respond(200, json=[])
+            respx_mock.put("/ip/firewall/filter").respond(200, json={".id": "*F1"})
 
             # Test Pause
             pause_ok = await ctrl.pause_user_internet(user.id, session)
@@ -113,5 +115,55 @@ async def test_pause_and_resume_internet(mock_settings):
             resume_ok = await ctrl.resume_user_internet(user.id, session)
             assert resume_ok is True
             assert user.is_paused is False
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_ensure_pause_firewall_rules(mock_settings):
+    client = RouterOSClient(mock_settings)
+    ctrl = TrafficController(client)
+
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    session_factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+
+    async with session_factory() as session:
+        from backend.app.db.models import AppSetting
+        session.add(AppSetting(key="pause_allowed_networks", value="192.168.1.0/24, 10.10.0.0/16"))
+        await session.commit()
+
+        with respx.mock(base_url="https://192.168.88.1:443/rest") as respx_mock:
+            # Address list mocks
+            respx_mock.get("/ip/firewall/address-list").respond(
+                200,
+                json=[
+                    {".id": "*OLD1", "list": "mikroman_allowed_lans", "address": "172.16.0.0/12", "comment": "mikroman:allowed_lan"}
+                ]
+            )
+            respx_mock.delete("/ip/firewall/address-list/*OLD1").respond(200, json={})
+            respx_mock.put("/ip/firewall/address-list").respond(200, json={".id": "*NEW1"})
+
+            # Filter rule mocks
+            respx_mock.get("/ip/firewall/filter").respond(
+                200,
+                json=[
+                    {
+                        ".id": "*F1",
+                        "chain": "forward",
+                        "action": "drop",
+                        "src-address-list": "mikroman_blocked",
+                        "dst-address-list": "!mikroman_allowed_lans",
+                        "disabled": True,
+                        "comment": "mikroman:drop_blocked_internet"
+                    }
+                ]
+            )
+            respx_mock.patch("/ip/firewall/filter/*F1").respond(200, json={})
+
+            ok = await ctrl.ensure_pause_firewall_rules(session)
+            assert ok is True
 
     await engine.dispose()

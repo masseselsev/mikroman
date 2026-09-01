@@ -20,11 +20,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.db.models import (
     AppSetting,
+    Device,
     DeviceTrafficRollup,
     InterfaceMetric,
     RouterSelfTrafficRollup,
     RouterTrafficRollup,
     TrafficRollup,
+    User,
 )
 from backend.app.services.router_time import get_router_offset
 
@@ -51,9 +53,9 @@ async def sum_by(
 
     ``key_column`` is whatever the caller wants to group by - the owner column
     for a totals-per-owner view, ``record_date`` for a timeline. ``router_id``
-    is only meaningful for :class:`RouterTrafficRollup`, which is the one table
-    that records which router a row came from; it is ignored elsewhere because
-    a user or a device belongs to a household, not to an interface.
+    filters by router for :class:`RouterTrafficRollup`, :class:`InterfaceTrafficRollup`,
+    :class:`RouterSelfTrafficRollup`, and joins the corresponding owner entity
+    for :class:`DeviceTrafficRollup` and :class:`TrafficRollup`.
     """
     stmt = (
         select(
@@ -63,13 +65,25 @@ async def sum_by(
         )
         .where(model.record_date >= start_date)
         .where(model.record_date <= end_date)
-        .group_by(key_column)
     )
-    if router_id is not None and hasattr(model, "router_id"):
-        stmt = stmt.where(model.router_id == router_id)
+    if router_id is not None:
+        if hasattr(model, "router_id"):
+            stmt = stmt.where(model.router_id == router_id)
+        elif model == DeviceTrafficRollup:
+            stmt = stmt.join(Device, DeviceTrafficRollup.device_id == Device.id).where(
+                (Device.router_id == router_id) | (Device.router_id.is_(None))
+            )
+        elif model == TrafficRollup:
+            stmt = stmt.join(User, TrafficRollup.user_id == User.id).where(
+                (User.router_id == router_id) | (User.router_id.is_(None))
+            )
 
-    result = await session.execute(stmt)
-    return {row.key: (int(row.total_in or 0), int(row.total_out or 0)) for row in result}
+    stmt = stmt.group_by(key_column)
+    res = await session.execute(stmt)
+    return {
+        row.key: (int(row.total_in or 0), int(row.total_out or 0))
+        for row in res.all()
+    }
 
 
 async def total(
@@ -114,18 +128,18 @@ async def daily_totals(
             start_date, end_date, router_id=router_id,
         ),
         "user": await sum_by(
-            session, TrafficRollup, TrafficRollup.record_date, start_date, end_date
+            session, TrafficRollup, TrafficRollup.record_date,
+            start_date, end_date, router_id=router_id,
         ),
         "device": await sum_by(
             session, DeviceTrafficRollup, DeviceTrafficRollup.record_date,
-            start_date, end_date,
+            start_date, end_date, router_id=router_id,
         ),
         "self": await sum_by(
             session, RouterSelfTrafficRollup, RouterSelfTrafficRollup.record_date,
             start_date, end_date, router_id=router_id,
         ),
     }
-
 
 def split_bytes_by_day(
     start_dt: datetime,

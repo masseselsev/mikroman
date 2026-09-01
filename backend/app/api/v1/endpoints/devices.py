@@ -1,8 +1,8 @@
 import logging
-from datetime import datetime, timezone
-from typing import List, Literal
+from datetime import date, datetime, timezone
+from typing import List, Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -16,6 +16,7 @@ from backend.app.db.models import (
     User,
 )
 from backend.app.db.session import get_db
+from backend.app.schemas.analytics import EntityTrafficHistoryResponse
 from backend.app.schemas.common import APIResponse
 from backend.app.schemas.device import (
     DeviceDTO,
@@ -29,7 +30,7 @@ from backend.app.schemas.device import (
     DeviceUpdate,
 )
 from backend.app.services import rollups
-from backend.app.services.analytics_engine import AnalyticsEngine, get_billing_cycle_dates
+from backend.app.services.analytics_engine import AnalyticsEngine, get_billing_cycle_dates, resolve_date_range
 from backend.app.services.device_linking import (
     LinkSuggestion,
     find_link_suggestions,
@@ -58,17 +59,25 @@ async def list_devices(
     active_only: bool = False,
     show_hidden: bool = False,
     kind: Literal["client", "container", "all"] = "client",
+    router_id: Optional[int] = None,
     db: AsyncSession = Depends(get_db)
 ):
-    """List network devices with optional unassigned/active/hidden filtering.
-
+    """List network devices with optional unassigned/active/hidden filtering for a specific router.
     ``kind`` splits network clients from the router's own container workloads.
     It defaults to ``client`` because that is what every existing view wants:
     nobody is going to assign a container to a family member, and letting them
     queue in the unassigned inbox teaches the operator to ignore that queue.
     The containers page asks for ``container``; ``all`` is for diagnostics.
     """
+    eff_router_id = router_id
+    if eff_router_id is None:
+        active_r = await router_manager.get_active_router(db)
+        if active_r:
+            eff_router_id = active_r.id
+
     query = select(Device).options(selectinload(Device.history))
+    if eff_router_id is not None:
+        query = query.where((Device.router_id == eff_router_id) | (Device.router_id.is_(None)))
     if unassigned_only:
         query = query.where(Device.user_id.is_(None))
     if active_only:
@@ -185,10 +194,21 @@ async def get_device_history(
 
 @router.post("/scan", response_model=APIResponse[List[DeviceDTO]])
 async def scan_network(
+    router_id: Optional[int] = Query(None, description="Router ID to scan"),
     db: AsyncSession = Depends(get_db)
 ):
     """Trigger immediate network discovery scan from RouterOS."""
-    dev_mgr = DeviceManager(await router_manager.require_client(session=db))
+    eff_router_id = router_id
+    if eff_router_id is None:
+        default_r = await router_manager.get_default_or_first_router(db)
+        if default_r:
+            eff_router_id = default_r.id
+
+    client = await router_manager.get_client(eff_router_id, session=db)
+    if not client:
+        raise HTTPException(status_code=400, detail="Router connection not available")
+
+    dev_mgr = DeviceManager(client, router_id=eff_router_id)
     all_devs, newly_discovered = await dev_mgr.sync_devices_from_router(db)
     return APIResponse(
         data=[DeviceDTO.model_validate(d) for d in all_devs],
@@ -492,3 +512,36 @@ async def split_device(
     await db.commit()
     await db.refresh(new_device)
     return APIResponse(data=DeviceDTO.model_validate(new_device), message="Device split")
+
+
+@router.get("/{device_id}/traffic-history", response_model=APIResponse[EntityTrafficHistoryResponse])
+async def get_device_traffic_history(
+    device_id: int,
+    preset: str = Query("7d", description="Range preset: today, 7d, 30d, 1y, custom"),
+    start_date: Optional[date] = Query(None, description="Custom start date (YYYY-MM-DD)"),
+    end_date: Optional[date] = Query(None, description="Custom end date (YYYY-MM-DD)"),
+    db: AsyncSession = Depends(get_db),
+):
+    """Retrieve detailed historical traffic timeline for a device."""
+    anchor_day = await AnalyticsEngine.get_billing_anchor_day(db)
+    anchor_hour, anchor_minute = await AnalyticsEngine.get_billing_anchor_time(db)
+    now = await router_local_now(db)
+    today = now.date()
+    resolved_start, resolved_end, range_label = resolve_date_range(
+        preset=preset,
+        start_date=start_date,
+        end_date=end_date,
+        anchor_day=anchor_day,
+        anchor_hour=anchor_hour,
+        anchor_minute=anchor_minute,
+        today=today,
+        now_dt=now,
+    )
+    data = await AnalyticsEngine.get_device_traffic_history(
+        session=db,
+        device_id=device_id,
+        start_date=resolved_start,
+        end_date=resolved_end,
+        range_preset=range_label,
+    )
+    return APIResponse(data=data)

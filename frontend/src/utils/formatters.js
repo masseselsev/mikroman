@@ -65,14 +65,33 @@ export function formatSpeedShort(bps) {
 }
 
 /**
+ * Parse an ISO or SQLite timestamp from the backend as UTC.
+ * Backend datetimes from SQLite are naive UTC strings (e.g. "2026-09-01T12:30:00").
+ * Without an explicit timezone indicator ('Z' or offset), standard JS `new Date(str)`
+ * incorrectly parses ISO strings as local browser time, introducing an offset equal
+ * to the client's timezone (e.g. +5h / +6h).
+ */
+export function parseUtcDate(timestamp) {
+  if (!timestamp) return null;
+  if (timestamp instanceof Date) return isNaN(timestamp.getTime()) ? null : timestamp;
+  let str = String(timestamp).trim();
+  if (!str) return null;
+  // If string has date & time without explicit timezone suffix (Z or +/-HH:MM), treat as UTC
+  if (/^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2})?(\.\d+)?$/.test(str)) {
+    str = str.replace(' ', 'T') + 'Z';
+  }
+  const d = new Date(str);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+/**
  * Compact "time since" label for a timestamp, e.g. "2m", "3h", "5d".
  * Used on device rows where a full date would not fit and is rarely what the
  * reader wants - "how stale is this" is the actual question.
  */
 export function formatRelativeTime(timestamp, lang = 'en') {
-  if (!timestamp) return '';
-  const then = new Date(timestamp);
-  if (Number.isNaN(then.getTime())) return '';
+  const then = parseUtcDate(timestamp);
+  if (!then) return '';
 
   const isRu = lang === 'ru';
   const seconds = Math.max(0, Math.floor((Date.now() - then.getTime()) / 1000));
@@ -94,9 +113,8 @@ export function formatRelativeTime(timestamp, lang = 'en') {
  * is a staleness question, and rounding it down understates the staleness.
  */
 export function formatLastActive(timestamp, lang = 'en') {
-  if (!timestamp) return '';
-  const then = new Date(timestamp);
-  if (Number.isNaN(then.getTime())) return '';
+  const then = parseUtcDate(timestamp);
+  if (!then) return '';
 
   const isRu = lang === 'ru';
   const seconds = Math.max(0, Math.floor((Date.now() - then.getTime()) / 1000));
@@ -115,9 +133,8 @@ export function formatLastActive(timestamp, lang = 'en') {
  * stale", the title answers "exactly when".
  */
 export function formatDateTime(timestamp, lang = 'en') {
-  if (!timestamp) return '';
-  const d = new Date(timestamp);
-  if (Number.isNaN(d.getTime())) return '';
+  const d = parseUtcDate(timestamp);
+  if (!d) return '';
   return d.toLocaleString(lang === 'ru' ? 'ru-RU' : 'en-GB', {
     year: 'numeric', month: '2-digit', day: '2-digit',
     hour: '2-digit', minute: '2-digit',

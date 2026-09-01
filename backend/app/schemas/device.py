@@ -18,6 +18,7 @@ class DeviceHistoryDTO(BaseModel):
 
 
 class DeviceBase(BaseModel):
+    router_id: Optional[int] = None
     mac_address: str
     ip_address: Optional[str] = None
     hostname: Optional[str] = None
@@ -48,6 +49,7 @@ class DeviceCreate(DeviceBase):
 
 
 class DeviceUpdate(BaseModel):
+    router_id: Optional[int] = None
     user_id: Optional[int] = None
     custom_name: Optional[str] = None
     ip_address: Optional[str] = None  # send explicit null to clear a stale lease

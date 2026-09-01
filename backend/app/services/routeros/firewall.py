@@ -55,11 +55,24 @@ class FirewallMixin:
             raw = resp.json()
             return raw if isinstance(raw, list) else [raw]
 
+    async def create_firewall_filter_rule(self, payload: Dict[str, Any]) -> str:
+        """Create a firewall filter rule on RouterOS."""
+        async with self._get_client() as client:
+            resp = await client.put("/ip/firewall/filter", json=payload)
+            resp.raise_for_status()
+            return resp.json().get(".id", "")
+
     async def update_firewall_filter_rule(self, rule_id: str, payload: Dict[str, Any]) -> bool:
         """Update a firewall filter rule on RouterOS."""
         async with self._get_client() as client:
             resp = await client.patch(f"/ip/firewall/filter/{rule_id}", json=payload)
             return resp.status_code in (200, 201, 204)
+
+    async def delete_firewall_filter_rule(self, rule_id: str) -> None:
+        """Delete a firewall filter rule."""
+        async with self._get_client() as client:
+            resp = await client.delete(f"/ip/firewall/filter/{rule_id}")
+            resp.raise_for_status()
 
     # --- Firewall Mangle Operations (per-device traffic accounting) ---
     #

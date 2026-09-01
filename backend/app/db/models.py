@@ -43,13 +43,15 @@ class Router(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
 
     devices: Mapped[List["Device"]] = relationship("Device", back_populates="router")
+    users: Mapped[List["User"]] = relationship("User", back_populates="router")
 
 
 class User(Base):
     __tablename__ = "users"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    name: Mapped[str] = mapped_column(String(100), nullable=False, unique=True, index=True)
+    router_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("routers.id", ondelete="CASCADE"), nullable=True, index=True)
+    name: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
     avatar_icon: Mapped[str] = mapped_column(String(50), default="user", nullable=False)
     speed_limit: Mapped[str] = mapped_column(String(50), default="unlimited", nullable=False)  # e.g., "10M/50M" or "unlimited"
     is_paused: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
@@ -59,6 +61,7 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
 
+    router: Mapped[Optional["Router"]] = relationship("Router", back_populates="users")
     devices: Mapped[List["Device"]] = relationship("Device", back_populates="user", cascade="all, delete-orphan", lazy="selectin")
     traffic_rollups: Mapped[List["TrafficRollup"]] = relationship("TrafficRollup", back_populates="user", cascade="all, delete-orphan", lazy="selectin")
 

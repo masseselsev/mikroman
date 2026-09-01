@@ -30,6 +30,7 @@ const PRESETS = [
   { id: '30d', labelKey: 'range_30d' },
   { id: 'billing_current', labelKey: 'range_billing_current' },
   { id: 'billing_previous', labelKey: 'range_billing_previous' },
+  { id: 'all_time', labelKey: 'range_all_time' },
   { id: 'custom', labelKey: 'range_custom' },
 ];
 
@@ -50,6 +51,8 @@ export function TrafficAnalytics({ activeRouter, initialBreakdownTab = 'overview
   const [loading, setLoading] = useState(false);
   const [breakdownTab, setBreakdownTab] = useState(initialBreakdownTab);
 
+  const [searchTerm, setSearchTerm] = useState('');
+  const [userFilter, setUserFilter] = useState('all');
   const [showHidden, setShowHidden] = useState(false);
   // Table sort state. Default to heaviest consumer first, which is the
   // question these tables are usually opened to answer.
@@ -68,15 +71,17 @@ export function TrafficAnalytics({ activeRouter, initialBreakdownTab = 'overview
 
   // Load billing cycle anchor day
   useEffect(() => {
-    api.getBillingCycleConfig()
-      .then(res => {
-        if (res?.data?.anchor_day) {
-          setAnchorDay(res.data.anchor_day);
-          setAnchorHour(res.data.anchor_hour ?? 0);
-          setAnchorMinute(res.data.anchor_minute ?? 0);
-        }
-      })
-      .catch(() => {});
+    if (typeof api.getBillingCycleConfig === 'function') {
+      api.getBillingCycleConfig()
+        ?.then?.(res => {
+          if (res?.data?.anchor_day) {
+            setAnchorDay(res.data.anchor_day);
+            setAnchorHour(res.data.anchor_hour ?? 0);
+            setAnchorMinute(res.data.anchor_minute ?? 0);
+          }
+        })
+        ?.catch?.(() => {});
+    }
   }, []);
 
   // Fetch traffic analytics data

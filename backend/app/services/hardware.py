@@ -54,6 +54,24 @@ class CpuIdentity(NamedTuple):
 # Product code (RouterBOARD ``model``) -> CPU part number, from the CPU row of
 # each product's specification table on mikrotik.com.
 SOC_BY_PRODUCT_CODE: Dict[str, str] = {
+    # --- Cloud Core Routers (CCR) ------------------------------------------
+    "CCR1009-7G-1C-1S+": "Tilera TILE-Gx8009",
+    "CCR1009-7G-1C-1S+PC": "Tilera TILE-Gx8009",
+    "CCR1009-7G-1C-PC": "Tilera TILE-Gx8009",
+    "CCR1009-8G-1S-1S+": "Tilera TILE-Gx8009",
+    "CCR1009-8G-1S-1S+PC": "Tilera TILE-Gx8009",
+    "CCR1016-12G": "Tilera TILE-Gx8016",
+    "CCR1016-12S-1S+": "Tilera TILE-Gx8016",
+    "CCR1036-12G-4S": "Tilera TILE-Gx8036",
+    "CCR1036-12G-4S-EM": "Tilera TILE-Gx8036",
+    "CCR1036-8G-2S+": "Tilera TILE-Gx8036",
+    "CCR1036-8G-2S+EM": "Tilera TILE-Gx8036",
+    "CCR1072-1G-8S+": "Tilera TILE-Gx8072",
+    "CCR2004-1G-12S+2XS": "AL32400",
+    "CCR2004-16G-2S+": "AL32400",
+    "CCR2004-1G-2XS-PCIe": "AL32400",
+    "CCR2116-12G-4S+": "AL73400",
+    "CCR2216-1G-12XS-2XQ": "AL73400",
     # --- Wi-Fi 7 -----------------------------------------------------------
     "MA53UG+HbeH": "IPQ-5322",          # hAP be3 Media (reports "ipq5300")
     # --- Wi-Fi 6 -----------------------------------------------------------
@@ -64,12 +82,31 @@ SOC_BY_PRODUCT_CODE: Dict[str, str] = {
     # --- Wi-Fi 5 and earlier -----------------------------------------------
     "RBD53iG-5HacD2HnD": "IPQ-4019",    # hAP ac3
     "RBD52G-5HacD2HnD-TC": "IPQ-4018",  # hAP ac2
-    # --- wired -------------------------------------------------------------
+    "RB952Ui-5ac2nD": "QCA9531",        # hAP ac lite
+    "RB941-2nD": "QCA9533",             # hAP lite
+    "RBcAPGi-5acD2nD": "IPQ-4018",      # cAP ac
+    "RBwAPG-5HacT2HnD": "IPQ-4018",     # wAP ac
+    # --- wired & switches --------------------------------------------------
     "RB5009UG+S+IN": "Marvell 88F7040",
+    "RB5009UPr+S+IN": "Marvell 88F7040",
+    "RB5009UPr+S+OUT": "Marvell 88F7040",
     "L009UiGS-RM": "IPQ-5018",
+    "L009UiGS-2HaxD-IN": "IPQ-5018",
     "RB4011iGS+RM": "AL21400",
+    "RB4011iGS+5HacQ2HnD-IN": "AL21400",
+    "RB3011UiAS-RM": "IPQ-8064",
+    "RB1100AHx4": "AL21400",
+    "RB1100AHx4 Dude Edition": "AL21400",
     "RB750Gr3": "MT7621A",              # hEX
     "RB760iGS": "MT7621A",              # hEX S
+    "RB960PGS": "QCA9557",              # hEX PoE
+    "CRS305-1G-4S+IN": "98DX3236",
+    "CRS309-1G-8S+IN": "98DX8216",
+    "CRS317-1G-16S+RM": "98DX8216",
+    "CRS326-24G-2S+IN": "98DX3236",
+    "CRS326-24G-2S+RM": "98DX3236",
+    "CRS328-24P-4S+RM": "98DX3236",
+    "CRS354-48G-4S+2Q+RM": "QCA9531",
 }
 
 # Fallback key for a board that reports a blank ``model``. Deliberately sparse:
@@ -78,6 +115,7 @@ SOC_BY_PRODUCT_CODE: Dict[str, str] = {
 # exactly the confidently-wrong answer this module exists to remove.
 SOC_BY_BOARD_NAME: Dict[str, str] = {
     "hAP be^3 Media": "IPQ-5322",
+    "CCR1009-7G-1C-1S+": "Tilera TILE-Gx8009",
 }
 
 
@@ -108,6 +146,18 @@ def resolve_cpu_identity(
     exact = SOC_BY_PRODUCT_CODE.get(_norm(product_code))
     if not exact:
         exact = SOC_BY_BOARD_NAME.get(_norm(board_name))
+    if not exact and product_code:
+        norm_code = _norm(product_code)
+        for k, v in SOC_BY_PRODUCT_CODE.items():
+            if norm_code.startswith(k) or k.startswith(norm_code):
+                exact = v
+                break
+    if not exact and board_name:
+        norm_bn = _norm(board_name)
+        for k, v in SOC_BY_PRODUCT_CODE.items():
+            if norm_bn.startswith(k) or k.startswith(norm_bn):
+                exact = v
+                break
     if exact:
         return CpuIdentity(model=exact, exact=True, platform=platform)
 

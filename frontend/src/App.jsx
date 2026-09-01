@@ -10,14 +10,14 @@ import { DeviceInbox } from './components/DeviceInbox';
 import { MetricCharts } from './components/MetricCharts';
 import { TrafficAnalytics } from './components/TrafficAnalytics';
 import { SettingsModal } from './components/SettingsModal';
+import { TrafficHistoryModal } from './components/TrafficHistoryModal';
 import { formatBytes } from './utils/formatters';
 import { mergeTelemetryIntoUsers } from './utils/telemetryMerge';
 import { SetupWizard } from './components/SetupWizard';
 import { AppFooter } from './components/AppFooter';
 import { QuotaStrip } from './components/QuotaStrip';
 import { ContainersPage } from './components/ContainersPage';
-import { Users, Laptop, Activity, BarChart2, Plus, AlertCircle, EyeOff, ChevronDown, ChevronRight, AlertTriangle, Container } from 'lucide-react';
-
+import { Users, Laptop, Activity, BarChart2, Plus, AlertCircle, EyeOff, ChevronDown, ChevronRight, AlertTriangle, Container, ArrowUpDown } from 'lucide-react';
 export function App() {
   const { t } = useI18n();
 
@@ -31,32 +31,58 @@ export function App() {
   const [isLoading, setIsLoading] = useState(true);
   const [isScanning, setIsScanning] = useState(false);
   const [showHiddenDevices, setShowHiddenDevices] = useState(false);
+  const [autoSortActivity, setAutoSortActivity] = useState(() => {
+    return localStorage.getItem('mikroman_auto_sort_activity') === 'true';
+  });
 
-  // Modals state
+  useEffect(() => {
+    localStorage.setItem('mikroman_auto_sort_activity', autoSortActivity ? 'true' : 'false');
+  }, [autoSortActivity]);
+
   const [userModalOpen, setUserModalOpen] = useState(false);
   const [editingUser, setEditingUser] = useState(null);
   const [settingsModalOpen, setSettingsModalOpen] = useState(false);
+  const [settingsInitialTab, setSettingsInitialTab] = useState('general');
+  const [settingsAutoAddRouter, setSettingsAutoAddRouter] = useState(false);
+  const [trafficHistoryTarget, setTrafficHistoryTarget] = useState(null);
+
+  const handleOpenSettings = (tab = 'general', autoAdd = false) => {
+    setSettingsInitialTab(tab);
+    setSettingsAutoAddRouter(autoAdd);
+    setSettingsModalOpen(true);
+  };
 
   // Hook up WebSocket telemetry with active router ID
   const { telemetry, isConnected } = useWebSocketTelemetry(activeRouter?.id);
 
-  const loadData = async () => {
+  const loadData = async (routerIdOverride = null) => {
     try {
-      const [routersRes, usersRes, devsRes, ifacesRes, alertsRes] = await Promise.all([
-        api.getRouters().catch(() => ({ data: [] })),
-        api.getUsers().catch(() => ({ data: [] })),
-        api.getDevices(true).catch(() => ({ data: [] })),
-        api.getInterfaces().catch(() => ({ data: [] })),
-        api.getAlerts().catch(() => ({ data: [] }))
-      ]);
-
+      const routersRes = await api.getRouters().catch(() => ({ data: [] }));
       const routerList = routersRes.data || [];
       setRouters(routerList);
 
-      if (!activeRouter && routerList.length > 0) {
-        const currentDefault = routerList.find(r => r.is_default) || routerList[0] || null;
-        setActiveRouter(currentDefault);
+      let current = activeRouter;
+      if (routerIdOverride != null) {
+        current = routerList.find(r => r.id === routerIdOverride) || current;
+      } else if (!current && routerList.length > 0) {
+        current = routerList.find(r => r.is_default) || routerList[0] || null;
+      } else if (current && routerList.length > 0) {
+        // Refresh activeRouter properties from the updated list
+        current = routerList.find(r => r.id === current.id) || current;
       }
+
+      if (current && (!activeRouter || activeRouter.id !== current.id || activeRouter.is_online !== current.is_online)) {
+        setActiveRouter(current);
+      }
+
+      const targetRouterId = routerIdOverride ?? current?.id ?? null;
+
+      const [usersRes, devsRes, ifacesRes, alertsRes] = await Promise.all([
+        api.getUsers(targetRouterId).catch(() => ({ data: [] })),
+        api.getDevices(true, showHiddenDevices, 'client', targetRouterId).catch(() => ({ data: [] })),
+        api.getInterfaces(targetRouterId).catch(() => ({ data: [] })),
+        api.getAlerts(targetRouterId).catch(() => ({ data: [] }))
+      ]);
 
       setUsers(usersRes.data || []);
       setUnassignedDevices(devsRes.data || []);
@@ -76,7 +102,7 @@ export function App() {
       loadData();
     }, 6000);
     return () => clearInterval(pollInterval);
-  }, []);
+  }, [activeRouter?.id]);
 
   const [interfacesOpen, setInterfacesOpen] = useState(false);
   const [draggedUserId, setDraggedUserId] = useState(null);
@@ -152,15 +178,25 @@ export function App() {
     setUsers(prevUsers => mergeTelemetryIntoUsers(prevUsers, telemetry.users));
   }, [telemetry]);
 
-  const handleSelectRouter = (router) => {
-    setActiveRouter(router);
+  const handleSelectRouter = async (routerOrId) => {
+    const routerObj = typeof routerOrId === 'object' && routerOrId !== null
+      ? routerOrId
+      : (routers.find(r => r.id === routerOrId) || null);
+    if (!routerObj) return;
+    setActiveRouter(routerObj);
+    try {
+      await api.activateRouter(routerObj.id);
+    } catch (err) {
+      console.error('Failed to activate router on backend:', err);
+    }
+    await loadData(routerObj.id);
   };
 
   const handleScan = async () => {
     setIsScanning(true);
     try {
-      await api.scanNetwork();
-      await loadData();
+      await api.scanNetwork(activeRouter?.id);
+      await loadData(activeRouter?.id);
     } catch (err) {
       console.error('Scan error:', err);
     } finally {
@@ -172,15 +208,15 @@ export function App() {
     if (editingUser) {
       await api.updateUser(editingUser.id, userData);
     } else {
-      await api.createUser(userData);
+      await api.createUser({ ...userData, router_id: activeRouter?.id });
     }
-    await loadData();
+    await loadData(activeRouter?.id);
   };
 
   const handleDeleteUser = async (userId) => {
     if (window.confirm(t('confirm_delete_user'))) {
       await api.deleteUser(userId);
-      await loadData();
+      await loadData(activeRouter?.id);
     }
   };
 
@@ -196,7 +232,7 @@ export function App() {
 
   const handleAssignDevice = async (deviceId, userId) => {
     await api.updateDevice(deviceId, { user_id: userId });
-    await loadData();
+    await loadData(activeRouter?.id);
   };
 
   const handleReboot = async () => {
@@ -217,10 +253,9 @@ export function App() {
         isConnected={isConnected}
         routerInfo={telemetry?.router}
         routers={routers}
-        activeRouter={activeRouter}
         onSelectRouter={handleSelectRouter}
-        onOpenSettings={() => setSettingsModalOpen(true)}
-        onAddRouter={() => setSettingsModalOpen(true)}
+        onOpenSettings={() => handleOpenSettings('general', false)}
+        onAddRouter={() => handleOpenSettings('routers', true)}
         onRouterCommentSaved={(comment) => {
           setActiveRouter(prev => (prev ? { ...prev, comment } : prev));
           setRouters(prev => prev.map(r => (r.id === activeRouter?.id ? { ...r, comment } : r)));
@@ -241,7 +276,7 @@ export function App() {
         {/* ISP billing-cycle allowance - shows on every tab, only when set. */}
         <QuotaStrip
           activeRouterId={activeRouter?.id}
-          onOpenSettings={() => setSettingsModalOpen(true)}
+          onOpenSettings={() => handleOpenSettings('general', false)}
         />
 
         {/* Tab Navigation */}
@@ -319,9 +354,20 @@ export function App() {
                   Organize network clients into users with per-user bandwidth limiting and instant pause controls.
                 </p>
               </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                {/* Show Hidden Devices Checkbox */}
-                <label className="toggle-pill">
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                {/* Auto-Sort by Activity Toggle */}
+                <label className="toggle-pill" style={{ cursor: 'pointer', userSelect: 'none', display: 'flex', alignItems: 'center', gap: 6, fontSize: 'var(--fs-xs)' }}>
+                  <input
+                    type="checkbox"
+                    checked={autoSortActivity}
+                    onChange={e => setAutoSortActivity(e.target.checked)}
+                  />
+                  <ArrowUpDown size={13} style={{ color: autoSortActivity ? 'var(--color-primary)' : 'var(--text-muted)' }} />
+                  {t('sort_by_activity')}
+                </label>
+
+                {/* Show Hidden Devices Toggle */}
+                <label className="toggle-pill" style={{ cursor: 'pointer', userSelect: 'none', display: 'flex', alignItems: 'center', gap: 6, fontSize: 'var(--fs-xs)' }}>
                   <input
                     type="checkbox"
                     checked={showHiddenDevices}
@@ -378,16 +424,18 @@ export function App() {
                   >
                   <UserCard
                     user={user}
+                    users={users}
                     dragIndex={index}
                     showHidden={showHiddenDevices}
+                    autoSortActivity={autoSortActivity}
                     onEdit={(u) => {
-                      setEditingUser(u);
                       setUserModalOpen(true);
                     }}
                     onDelete={handleDeleteUser}
                     onLimitChange={handleLimitChange}
                     onPauseToggle={handlePauseToggle}
                     onUpdate={loadData}
+                    onViewTrafficHistory={setTrafficHistoryTarget}
                     gatewayTotal={gatewayTodayTotal}
                     deviceGrandTotal={deviceGrandTotal}
                   />
@@ -416,6 +464,7 @@ export function App() {
             onAssign={handleAssignDevice}
             onScan={handleScan}
             isScanning={isScanning}
+            onViewTrafficHistory={setTrafficHistoryTarget}
           />
         )}
 
@@ -593,9 +642,19 @@ export function App() {
       {/* Settings Modal */}
       <SettingsModal
         isOpen={settingsModalOpen}
+        initialTab={settingsInitialTab}
+        autoOpenAddRouter={settingsAutoAddRouter}
         onClose={() => setSettingsModalOpen(false)}
         onReboot={handleReboot}
         onRoutersChanged={loadData}
+      />
+
+      {/* Traffic History Modal (User & Device) */}
+      <TrafficHistoryModal
+        isOpen={!!trafficHistoryTarget}
+        target={trafficHistoryTarget}
+        onClose={() => setTrafficHistoryTarget(null)}
+        onSelectTarget={setTrafficHistoryTarget}
       />
 
       <AppFooter />
