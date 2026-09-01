@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime
 from typing import List, Optional
 
 from pydantic import BaseModel, Field
@@ -21,6 +21,9 @@ class QuotaStatusDTO(BaseModel):
     used_pct: float = 0.0
     cycle_start: Optional[date] = None
     cycle_end: Optional[date] = None
+    # The exact router-local instant the current cycle resets. Lets the UI show
+    # a countdown finer than whole days when the reset is not at midnight.
+    cycle_end_at: Optional[datetime] = None
     days_remaining: int = 0
     # Average daily allowance for the rest of the cycle to stay within quota.
     projected_daily_budget: int = 0
@@ -63,8 +66,10 @@ class QuotaStatusDTO(BaseModel):
 
 
 class BillingCycleConfig(BaseModel):
-    """Configuration for ISP monthly billing cycle anchor day."""
+    """Configuration for the ISP monthly billing cycle: anchor day and, optionally, time of day."""
     anchor_day: int = Field(default=1, ge=1, le=31, description="Day of the month when ISP traffic counters reset (1-31)")
+    anchor_hour: int = Field(default=0, ge=0, le=23, description="Hour of the reset, router-local (0-23)")
+    anchor_minute: int = Field(default=0, ge=0, le=59, description="Minute of the reset (0-59)")
 
 
 class DailyTrafficPoint(BaseModel):
@@ -186,6 +191,7 @@ class TrafficAnalyticsResponse(BaseModel):
     end_date: date
     range_preset: str
     billing_anchor_day: int
+    billing_anchor_time: str = "00:00"  # "HH:MM", router-local; "00:00" = day-only
     gateway: GatewayTrafficSummary
     router_self: RouterSelfTrafficSummary = RouterSelfTrafficSummary()
     users: List[UserTrafficSummary]
