@@ -87,6 +87,29 @@ async def get_billing_cycle_config(
     ))
 
 
+@router.post("/history/reconcile-overcount")
+async def reconcile_history_overcount(
+    apply: bool = Query(False, description="Write the correction. Omitted or false = dry run."),
+    router_id: Optional[int] = Query(None, description="Limit to one router; omitted = all."),
+    db: AsyncSession = Depends(get_db),
+):
+    """Fold the historical LAN-to-LAN over-count out of the daily rollups.
+
+    Days where the summed device volume exceeds what the WAN interface carried
+    (minus the router's own traffic) are scaled down to match, and their
+    per-user rollups rebuilt from the corrected device rollups. This is a
+    one-off repair for data recorded before the per-device mangle rules were
+    scoped to the WAN; it only ever removes volume. **Back up `app.db` first.**
+    Call with `?apply=true` to write; without it you get a dry-run report.
+    """
+    from backend.app.services.history_reconcile import reconcile_overcounted_history
+
+    summary = await reconcile_overcounted_history(
+        db, router_id=router_id, dry_run=not apply
+    )
+    return APIResponse(data=summary)
+
+
 @router.get("/debug-state")
 async def get_debug_state(db: AsyncSession = Depends(get_db)):
     """Inspect raw queue counters, address-lists, firewall rules, and rollups."""
