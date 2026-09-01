@@ -277,16 +277,25 @@ function DeviceRow({ group, t, lang, grandTotal = 0, onOpen, onUpdate, onViewTra
 
       {/* Line 2 — address, vendor, and last active with tooltip datetime */}
       <div className="drow-sub">
+        {/* One greedy run: IP, vendor, hidden flag. It truncates. */}
         <span className="drow-facts">
           <span className="font-mono">{d.ip_address || d.mac_address}</span>
           {vendorLabel && <> · {vendorLabel}</>}
           {d.is_hidden && <> · {t('hidden_badge')}</>}
-          {(group.lastSeen || d.last_seen) && (
-            <span title={formatDateTime(group.lastSeen || d.last_seen, lang)}>
-              {" · "}{t('col_last_active')}: <span className="font-mono">{(group.isActive || d.is_active) ? (lang === 'ru' ? 'сейчас' : 'now') : formatLastActive(group.lastSeen || d.last_seen, lang)}</span>
-            </span>
-          )}
         </span>
+
+        {/* Last-active is pulled out of the truncating run - "5h" or "2d" is
+            meaningless clipped, and the label lives in the tooltip. */}
+        {(group.lastSeen || d.last_seen) && (
+          <span
+            className="drow-lastseen font-mono"
+            title={`${t('col_last_active')}: ${formatDateTime(group.lastSeen || d.last_seen, lang)}`}
+          >
+            {(group.isActive || d.is_active)
+              ? (lang === 'ru' ? 'сейчас' : 'now')
+              : formatLastActive(group.lastSeen || d.last_seen, lang)}
+          </span>
+        )}
 
         <span className="drow-actions">
           {onViewTrafficHistory && (
