@@ -24,6 +24,7 @@ from backend.app.schemas.analytics import (
     InterfaceTrafficSummary,
     RouterSelfTrafficSummary,
     TrafficAnalyticsResponse,
+    UnassignedTrafficSummary,
     UserTrafficSummary,
 )
 from backend.app.services import rollups
@@ -287,12 +288,38 @@ class AnalyticsEngine:
         # 2/3. Totals per owner, and 4. the same tables broken down per day.
         # All six go through rollups.sum_by so the date window and the router
         # filter cannot differ between them - they used to, silently.
-        user_totals = await rollups.sum_by(
-            session, TrafficRollup, TrafficRollup.user_id, start_date, end_date, router_id=router_id,
-        )
         dev_totals = await rollups.sum_by(
             session, DeviceTrafficRollup, DeviceTrafficRollup.device_id, start_date, end_date, router_id=router_id,
         )
+
+        def by_owner(per_device: dict) -> dict:
+            """Fold a ``{device_id: volume}`` map up to ``{user_id: volume}``.
+
+            Per-user volume is derived from the devices a profile owns *now*,
+            not read from the parallel ``traffic_rollups`` ledger. Both are
+            written from the same deltas, but they are keyed differently: the
+            device ledger follows the device, while the user ledger records
+            whoever happened to own it at the moment of each poll. Any change
+            of owner therefore makes the two disagree permanently, and nothing
+            ever reconciles them - on the developer's own install a laptop
+            reassigned mid-day left 1.2 GB booked to its previous owner and
+            0.4 GB (earned before anyone claimed it) booked to nobody, so the
+            "by user" and "by device" breakdowns of the same range differed by
+            25%. Deriving from devices makes a profile exactly the sum of the
+            devices it owns, by construction, and a correction to a wrong
+            assignment retroactively moves that device's history with it.
+            """
+            folded: dict = {}
+            for dev in all_devices:
+                if dev.user_id is None:
+                    continue
+                b_in, b_out = per_device.get(dev.id, (0, 0))
+                acc = folded.setdefault(dev.user_id, [0, 0])
+                acc[0] += b_in
+                acc[1] += b_out
+            return {uid: (v[0], v[1]) for uid, v in folded.items()}
+
+        user_totals = by_owner(dev_totals)
         # Extra columns: current-cycle and all-time volume per owner, and the
         # per-interface breakdown. Skipped entirely when the caller only wants
         # the gateway total and the timeline (the quota endpoint).
@@ -306,18 +333,15 @@ class AnalyticsEngine:
         if include_breakdown_extras:
             now_local = await router_local_now(session)
             cyc_start, cyc_end = get_billing_cycle_dates(anchor_day, now_local.date())
-            user_cycle = await rollups.sum_by(
-                session, TrafficRollup, TrafficRollup.user_id, cyc_start, cyc_end, router_id=router_id,
-            )
             dev_cycle = await rollups.sum_by(
                 session, DeviceTrafficRollup, DeviceTrafficRollup.device_id, cyc_start, cyc_end, router_id=router_id,
-            )
-            user_alltime = await rollups.sum_by(
-                session, TrafficRollup, TrafficRollup.user_id, _ALLTIME_START, _ALLTIME_END, router_id=router_id,
             )
             dev_alltime = await rollups.sum_by(
                 session, DeviceTrafficRollup, DeviceTrafficRollup.device_id, _ALLTIME_START, _ALLTIME_END, router_id=router_id,
             )
+            # Same derivation as the range figure, for the same reason.
+            user_cycle = by_owner(dev_cycle)
+            user_alltime = by_owner(dev_alltime)
             iface_range = await rollups.sum_by(
                 session, InterfaceTrafficRollup, InterfaceTrafficRollup.interface_name,
                 start_date, end_date, router_id=router_id,
@@ -333,7 +357,6 @@ class AnalyticsEngine:
 
         daily = await rollups.daily_totals(session, start_date, end_date, router_id=router_id)
         r_daily_map = daily["router"]
-        u_daily_map = daily["user"]
         d_daily_map = daily["device"]
         s_daily_map = daily["self"]
 
@@ -347,15 +370,20 @@ class AnalyticsEngine:
         r_gw_in = sum(v[0] for v in r_daily_map.values())
         r_gw_out = sum(v[1] for v in r_daily_map.values())
 
-        # Build full date timeline (fill missing dates with 0, taking daily maximum across interfaces/users/devices)
+        # Build the full date timeline, filling missing dates with 0. Each day
+        # takes whichever of the gateway and the per-device sum saw more: on a
+        # day before per-device accounting existed only the gateway has a
+        # figure, and on a day the router was unreachable only the device
+        # counters do. The per-user ledger is deliberately not in this max -
+        # it is a second, differently-keyed record of the same bytes (see
+        # ``by_owner``) and including it let a stale ledger inflate a day.
         timeline: List[DailyTrafficPoint] = []
         cur_d = start_date
         while cur_d <= end_date:
             r_in, r_out = r_daily_map.get(cur_d, (0, 0))
-            u_in, u_out = u_daily_map.get(cur_d, (0, 0))
             d_in, d_out = d_daily_map.get(cur_d, (0, 0))
-            day_in = max(r_in, u_in, d_in)
-            day_out = max(r_out, u_out, d_out)
+            day_in = max(r_in, d_in)
+            day_out = max(r_out, d_out)
             timeline.append(DailyTrafficPoint(
                 record_date=cur_d,
                 bytes_in=day_in,
@@ -374,13 +402,15 @@ class AnalyticsEngine:
         # that fact through accounting_health.
         sum_dev_in = sum(v[0] for v in dev_totals.values())
         sum_dev_out = sum(v[1] for v in dev_totals.values())
-        sum_user_in = sum(v[0] for v in user_totals.values())
-        sum_user_out = sum(v[1] for v in user_totals.values())
         # The router's own traffic is attributed volume like any other: it is
         # measured, and it belongs to something. Leaving it out of the numerator
         # would report a coverage gap that has in fact been closed.
-        accounted_in = max(sum_dev_in, sum_user_in) + self_in
-        accounted_out = max(sum_dev_out, sum_user_out) + self_out
+        #
+        # The per-device sum alone is the accounted figure - it used to be
+        # max(devices, user ledger), which quietly papered over exactly the
+        # divergence ``by_owner`` now removes.
+        accounted_in = sum_dev_in + self_in
+        accounted_out = sum_dev_out + self_out
 
         has_gateway_sample = (r_gw_in + r_gw_out) > 0
         if has_gateway_sample:
@@ -405,13 +435,12 @@ class AnalyticsEngine:
         if started is not None and has_gateway_sample:
             measured_gateway = rollups.sum_window(r_daily_map, after=started)
             pre_bytes = rollups.sum_window(r_daily_map) - measured_gateway
-            # Users can hold volume devices no longer do (a deleted device keeps
-            # its owner's totals), so take whichever level saw more, exactly as
-            # the range totals above do.
-            measured_accounted = max(
-                rollups.sum_window(d_daily_map, after=started),
-                rollups.sum_window(u_daily_map, after=started),
-            ) + rollups.sum_window(s_daily_map, after=started)
+            # Per-device volume plus the router's own, matching the range
+            # totals above.
+            measured_accounted = (
+                rollups.sum_window(d_daily_map, after=started)
+                + rollups.sum_window(s_daily_map, after=started)
+            )
             # The remainder of the range total, rather than an independent sum
             # of the earlier days. The two figures then always add back up to
             # the number the user and device tables show, which is what lets a
@@ -432,27 +461,18 @@ class AnalyticsEngine:
         # 6. Build User Traffic Summaries
         user_summaries: List[UserTrafficSummary] = []
         for u in all_users:
+            # All three windows come from the same per-device fold, so a
+            # profile's figure is always exactly the sum of its devices' rows
+            # in the table below it. No fall-through is needed any more: the
+            # old "if the user ledger reads zero, sum the children instead"
+            # branch existed only to paper over the two ledgers disagreeing.
             u_in, u_out = user_totals.get(u.id, (0, 0))
-            # Also sum child device totals if user rollup is 0
-            if u_in == 0 and u_out == 0:
-                child_devs = [d.id for d in u.devices]
-                u_in = sum(dev_totals.get(did, (0, 0))[0] for did in child_devs)
-                u_out = sum(dev_totals.get(did, (0, 0))[1] for did in child_devs)
-
             u_total = u_in + u_out
             pct = round((u_total / gateway_total * 100), 2) if gateway_total > 0 else 0.0
 
             seens = [d.last_seen for d in u.devices if d.last_seen]
             uc_in, uc_out = user_cycle.get(u.id, (0, 0))
             ua_in, ua_out = user_alltime.get(u.id, (0, 0))
-            # Same fall-through as the range figure: if the user rollup is empty
-            # (older installs stored volume per device only) sum the children.
-            if uc_in == 0 and uc_out == 0:
-                uc_in = sum(dev_cycle.get(d.id, (0, 0))[0] for d in u.devices)
-                uc_out = sum(dev_cycle.get(d.id, (0, 0))[1] for d in u.devices)
-            if ua_in == 0 and ua_out == 0:
-                ua_in = sum(dev_alltime.get(d.id, (0, 0))[0] for d in u.devices)
-                ua_out = sum(dev_alltime.get(d.id, (0, 0))[1] for d in u.devices)
 
             user_summaries.append(UserTrafficSummary(
                 user_id=u.id,
@@ -520,6 +540,36 @@ class AnalyticsEngine:
             pct_of_total=round((self_total / gateway_total * 100), 2) if gateway_total > 0 else 0.0,
         )
 
+        # Volume on devices nobody has claimed yet. It is real, measured
+        # traffic and it is part of the gateway total, but it belongs to no
+        # profile - so without a figure of its own the per-user breakdown can
+        # never add up to the range total, and the difference reads as a
+        # counting fault. On a network with a busy unclaimed device it is the
+        # single largest missing piece.
+        unassigned_in = sum(
+            dev_totals.get(d.id, (0, 0))[0] for d in all_devices if d.user_id is None
+        )
+        unassigned_out = sum(
+            dev_totals.get(d.id, (0, 0))[1] for d in all_devices if d.user_id is None
+        )
+        unassigned_total = unassigned_in + unassigned_out
+        unassigned = UnassignedTrafficSummary(
+            device_count=sum(1 for d in all_devices if d.user_id is None),
+            bytes_in=unassigned_in,
+            bytes_out=unassigned_out,
+            total_bytes=unassigned_total,
+            pct_of_total=round((unassigned_total / gateway_total * 100), 2) if gateway_total > 0 else 0.0,
+        )
+
+        # What the WAN measured but no counter could attribute, and the reverse.
+        # Only one of the two is ever non-zero. An over-count is not noise: the
+        # per-device rules match the forward chain by address with no WAN
+        # constraint, so traffic between two local subnets is counted for both
+        # ends without ever crossing the gateway.
+        residual = gateway_total - (accounted_total)
+        unaccounted_bytes = max(0, residual)
+        over_accounted_bytes = max(0, -residual)
+
         gateway_summary = GatewayTrafficSummary(
             total_bytes_in=gateway_in,
             total_bytes_out=gateway_out,
@@ -557,10 +607,13 @@ class AnalyticsEngine:
             billing_anchor_day=anchor_day,
             gateway=gateway_summary,
             router_self=router_self,
+            unassigned=unassigned,
             users=user_summaries,
             devices=device_summaries,
             interfaces=interface_summaries,
             timeline=timeline,
+            unaccounted_bytes=unaccounted_bytes,
+            over_accounted_bytes=over_accounted_bytes,
             accounting_health=accounting_health
         )
 

@@ -43,14 +43,41 @@ function toDonutSegments(rows, labelOf, otherLabel, topN = 6) {
  * the analytics response; the sorting and filtering state belongs to the
  * sibling tabs, so this one takes no callbacks.
  */
-export function OverviewTab({ gateway, timeline, users, devices, routerSelf }) {
+export function OverviewTab({
+  gateway,
+  timeline,
+  users,
+  devices,
+  routerSelf,
+  unassigned,
+  unaccountedBytes = 0,
+  overAccountedBytes = 0,
+}) {
   const { t } = useI18n();
 
   // Biggest few by volume, the rest folded into one "Other" slice.
-  const userSegments = toDonutSegments(users, u => u.user_name, t('donut_other'));
   const deviceSegments = toDonutSegments(
     devices, d => d.custom_name || d.hostname || d.mac_address, t('donut_other')
   );
+
+  // The "by user" donut is drawn against the gateway total, so it has to
+  // account for every byte of it — otherwise the ring visibly falls short of
+  // the figure printed in its own centre and the whole page looks like it is
+  // losing traffic. Three things are part of the total but belong to no
+  // profile, and each gets its own slice:
+  //   • devices nobody has claimed yet,
+  //   • what the router moved for itself (DNS, NTP, updates, containers),
+  //   • whatever the WAN measured that no counter could attribute.
+  const remainderSegments = [
+    { label: t('donut_unassigned'), value: unassigned?.total_bytes || 0, color: '#f59e0b' },
+    { label: t('router_self_traffic'), value: routerSelf?.total_bytes || 0, color: '#a855f7' },
+    { label: t('donut_unaccounted'), value: unaccountedBytes || 0, color: DONUT_OTHER_COLOR },
+  ].filter(s => s.value > 0);
+
+  const userSegments = [
+    ...toDonutSegments(users, u => u.user_name, t('donut_other')),
+    ...remainderSegments,
+  ];
 
   // Bar scale for the daily timeline. Floored at 1 MB so a near-idle day does
   // not render as a full-height bar out of a rounding artefact.
@@ -84,6 +111,17 @@ export function OverviewTab({ gateway, timeline, users, devices, routerSelf }) {
               centerSub={t('range_total_short')}
               formatValue={formatBytes}
             />
+            {/* Per-device counters match the forward chain by address with no
+                WAN constraint, so traffic between two local subnets is counted
+                for both ends without ever crossing the gateway. When that
+                happens the attributed sum exceeds the WAN total and the ring
+                cannot be drawn to scale — say so rather than silently
+                rescaling and implying the total is something it is not. */}
+            {overAccountedBytes > 0 && (
+              <div style={{ marginTop: 8, fontSize: 'var(--fs-2xs)', color: 'var(--color-warning)' }}>
+                {t('donut_over_accounted', { bytes: formatBytes(overAccountedBytes) })}
+              </div>
+            )}
           </div>
           <div>
             <h4 style={{ fontSize: 'var(--fs-md)', fontWeight: 700, marginBottom: 12, display: 'flex', alignItems: 'center', gap: 6 }}>

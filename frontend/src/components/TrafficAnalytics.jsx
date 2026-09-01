@@ -453,6 +453,9 @@ export function TrafficAnalytics({ activeRouter, initialBreakdownTab = 'overview
               users={users}
               devices={devices}
               routerSelf={routerSelf}
+              unassigned={data?.unassigned}
+              unaccountedBytes={data?.unaccounted_bytes || 0}
+              overAccountedBytes={data?.over_accounted_bytes || 0}
             />
           )}
 

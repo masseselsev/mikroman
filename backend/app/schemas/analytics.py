@@ -214,18 +214,51 @@ class RouterSelfTrafficSummary(BaseModel):
     pct_of_total: float = 0.0
 
 
+class UnassignedTrafficSummary(BaseModel):
+    """Volume on devices that belong to no profile yet.
+
+    Real, measured traffic that is part of the gateway total but belongs to
+    nobody. Without a figure of its own the per-user breakdown cannot add up to
+    the range total, and the difference reads as a counting fault rather than
+    as "you have not sorted these devices yet".
+    """
+    device_count: int = 0
+    bytes_in: int = 0
+    bytes_out: int = 0
+    total_bytes: int = 0
+    pct_of_total: float = 0.0
+
+
 class TrafficAnalyticsResponse(BaseModel):
-    """Comprehensive historical traffic accounting across Gateway, Users, and Devices."""
+    """Comprehensive historical traffic accounting across Gateway, Users, and Devices.
+
+    The range reconciles as::
+
+        gateway = Σ users + unassigned + router_self + unaccounted_bytes
+                                                     - over_accounted_bytes
+
+    Each profile's figure is the sum of the devices it currently owns, so the
+    "by user" and "by device" views of the same range always agree.
+    """
     start_date: date
     end_date: date
     range_preset: str
     billing_anchor_day: int
     gateway: GatewayTrafficSummary
     router_self: RouterSelfTrafficSummary = RouterSelfTrafficSummary()
+    unassigned: UnassignedTrafficSummary = UnassignedTrafficSummary()
     users: List[UserTrafficSummary]
     devices: List[DeviceTrafficSummary]
     interfaces: List[InterfaceTrafficSummary] = []
     timeline: List[DailyTrafficPoint]
+    # Gateway volume no counter could attribute (framing overhead, a device
+    # discovered mid-range, a window that predates the accounting rules).
+    unaccounted_bytes: int = 0
+    # The reverse: per-device counters saw MORE than the WAN did, because they
+    # match the forward chain by address with no WAN constraint and therefore
+    # also count traffic between two local subnets. Only one of the two is ever
+    # non-zero.
+    over_accounted_bytes: int = 0
     accounting_health: AccountingHealth = AccountingHealth()
 
 
