@@ -34,6 +34,9 @@ export function SettingsModal({
   // Routers list
   const [routers, setRouters] = useState(initialRouters || []);
   const [loadingRouters, setLoadingRouters] = useState(false);
+  // Whether the "add a router" form is expanded on the Routers tab. Opened
+  // automatically when the modal is launched via the "connect a router" prompt.
+  const [showAddRouter, setShowAddRouter] = useState(false);
   // Which router's connection details are open for editing, if any. The form
   // itself owns the field state; this only decides whose details it is showing.
   const [editingRouterId, setEditingRouterId] = useState(null);
@@ -71,6 +74,10 @@ export function SettingsModal({
       if (res?.data) {
         setQuota({
           limit_gb: Math.round((res.data.limit_bytes || 0) / (1024 ** 3)),
+          // Carried through explicitly: a setQuota that omits it leaves
+          // `thresholds` undefined, and the threshold picker below calls
+          // `.includes` on it and takes the whole modal to a blank screen.
+          thresholds: Array.isArray(res.data.thresholds) ? res.data.thresholds : [],
           // Read back rather than assumed: assuming true meant that turning
           // Telegram alerts off survived the save but not the next page load,
           notify_telegram: res.data.notify_telegram ?? true,

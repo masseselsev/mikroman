@@ -92,13 +92,14 @@ export function TrafficHistoryModal({ isOpen, target, onClose, onSelectTarget })
     }
   }, [isOpen, target, preset, preset === 'custom' ? `${startDate}:${endDate}` : null]);
 
-  if (!isOpen || !target) return null;
-
+  // Hooks must run on every render, so the "closed" guard sits *below* them.
   const timeline = data?.timeline || [];
   const maxDailyBytes = useMemo(() => {
     if (!timeline.length) return 1024 * 1024;
     return Math.max(...timeline.map(p => p.total_bytes), 1024 * 1024);
   }, [timeline]);
+
+  if (!isOpen || !target) return null;
 
   const activePoint = hoveredPoint || (timeline.length > 0 ? timeline[timeline.length - 1] : null);
 
