@@ -38,7 +38,7 @@ const PRESETS = [
 // staying silenced forever on data we cannot reconstruct.
 const COVERAGE_DISMISS_KEY = 'mm_coverage_notice_dismissed';
 
-export function TrafficAnalytics({ activeRouter }) {
+export function TrafficAnalytics({ activeRouter, initialBreakdownTab = 'overview' }) {
   const { t } = useI18n();
   const [preset, setPreset] = useState('7d');
   const [coverageDismissed, setCoverageDismissed] = useState(() => {
@@ -48,9 +48,8 @@ export function TrafficAnalytics({ activeRouter }) {
   const [customEnd, setCustomEnd] = useState('');
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [breakdownTab, setBreakdownTab] = useState('overview'); // 'overview' | 'users' | 'devices' | 'interfaces'
-  const [searchTerm, setSearchTerm] = useState('');
-  const [userFilter, setUserFilter] = useState('all');
+  const [breakdownTab, setBreakdownTab] = useState(initialBreakdownTab);
+
   const [showHidden, setShowHidden] = useState(false);
   // Table sort state. Default to heaviest consumer first, which is the
   // question these tables are usually opened to answer.

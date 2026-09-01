@@ -18,7 +18,6 @@ from backend.app.services.analytics_engine import (
     inclusive_end_date,
     resolve_date_range,
 )
-from backend.app.services.interface_rollups import recompute_recent
 from backend.app.services.quota import (
     QuotaConfig,
     get_quota_config,
@@ -41,12 +40,6 @@ async def get_traffic_analytics(
     db: AsyncSession = Depends(get_db)
 ):
     """Retrieve historical traffic metrics across Gateway, Users, Devices, and Timeline."""
-    # Fold the newest samples into the recent rollups so an open dashboard sees
-    # near-live figures without waiting for the next background tick.
-    try:
-        await recompute_recent(db, router_id or 1)
-    except Exception:
-        pass
 
     anchor_day = await AnalyticsEngine.get_billing_anchor_day(db)
     anchor_hour, anchor_minute = await AnalyticsEngine.get_billing_anchor_time(db)

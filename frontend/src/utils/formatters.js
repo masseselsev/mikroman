@@ -22,6 +22,24 @@ export function formatGbWhole(bytes) {
   return Math.round(bytes / (1024 ** 3));
 }
 
+/**
+ * Compact byte volume readout with short metric units (K, M, G, T), e.g. "0B",
+ * "450K", "4.2M", "16M", "13G", "1.5T".
+ * For dense device rows where full units ("13.4 GB") are too wide, but raw numbers
+ * without units ("13") are ambiguous.
+ */
+export function formatBytesCompact(bytes) {
+  if (!bytes || bytes <= 0) return '0B';
+  const k = 1024;
+  const sizes = ['B', 'K', 'M', 'G', 'T', 'P'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  if (i === 0) return `${Math.round(bytes)}B`;
+  const val = bytes / Math.pow(k, i);
+  // If val is less than 10, keep 1 decimal (e.g. 4.2M, 1.5T), otherwise round to integer (e.g. 16M, 250K)
+  const formatted = val < 10 ? val.toFixed(1).replace(/\.0$/, '') : Math.round(val);
+  return `${formatted}${sizes[i]}`;
+}
+
 export function formatSpeed(bps) {
   if (!bps || bps === 0) return '0 bps';
   if (bps < 1000) return `${bps} bps`;
