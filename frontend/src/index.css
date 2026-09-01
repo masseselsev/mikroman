@@ -1143,19 +1143,40 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
   font-size: var(--fs-2xs);
 }
 
-.drow-adapter-name {
+.drow-adapter-ident {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 5px;
   min-width: 0;
   overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* The MAC leads and does not shrink: it is the only field that distinguishes
+   two adapters with the same name and interface. */
+.drow-adapter-mac {
+  flex-shrink: 0;
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+.drow-adapter-primary {
+  flex-shrink: 0;
+  font-size: var(--fs-3xs);
+  padding: 0 5px;
 }
 
 .drow-adapter-meta {
   color: var(--text-muted);
-  font-family: var(--font-mono);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.drow-adapter-primary-note {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  font-style: italic;
 }
 
 .drow-adapter-unlink {
