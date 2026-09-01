@@ -243,8 +243,17 @@ export function TelemetryBar({ router, activeRouter, interfaces = [], onNavigate
   };
 
   const handleSelectWanOnly = () => {
-    const wan = availableIfaces.filter(i => /ether1|wan|pppoe|sfp/i.test(i.name)).map(i => i.name);
-    setSelectedIfaces(wan.length > 0 ? wan : (availableIfaces[0] ? [availableIfaces[0].name] : []));
+    // The interfaces the router actually routes the internet out of, resolved
+    // from its default route by the backend.
+    const flagged = availableIfaces.filter(i => i.is_wan).map(i => i.name);
+    if (flagged.length > 0) {
+      setSelectedIfaces(flagged);
+      return;
+    }
+    // No default route came back (router offline, or upstream-routed). Fall
+    // back to a name guess so the button still does something.
+    const guess = availableIfaces.filter(i => /ether1|wan|pppoe|sfp/i.test(i.name)).map(i => i.name);
+    setSelectedIfaces(guess.length > 0 ? guess : (availableIfaces[0] ? [availableIfaces[0].name] : []));
   };
 
   const handleSave = async () => {
@@ -316,12 +325,18 @@ export function TelemetryBar({ router, activeRouter, interfaces = [], onNavigate
     onNavigate ? t('open_health_hint') : null,
   ].filter(Boolean).join('\n') || undefined;
 
-  const monitored = router.monitored_interfaces || selectedIfaces || [];
+  const monitored = (router.monitored_interfaces && router.monitored_interfaces.length)
+    ? router.monitored_interfaces
+    : (selectedIfaces || []);
   const monitoredShort = monitored.length === 0
-    ? 'none'
-    : monitored.length === 1
-      ? monitored[0]
-      : `${monitored.length} ifaces`;
+    ? t('ifaces_none')
+    : monitored.length <= 2
+      ? monitored.join(', ')
+      : `${monitored.slice(0, 2).join(', ')} +${monitored.length - 2}`;
+  // The two bandwidth tiles are measured across exactly these interfaces, so
+  // they carry a WAN marker and the full list is in their tooltip.
+  const wanSub = `${t('wan_label')} · ${monitoredShort}`;
+  const wanTileTitle = `${t('configure_interfaces_hint')}\n${t('wan_label')}: ${monitored.join(', ') || t('ifaces_none')}`;
 
   return (
     <>
@@ -337,10 +352,10 @@ export function TelemetryBar({ router, activeRouter, interfaces = [], onNavigate
           tone="var(--color-success)"
           label={t('total_rx')}
           value={formatSpeed(router.wan_rx_bps)}
-          sub={monitoredShort}
+          sub={wanSub}
           history={rxHistory}
           onClick={openConfigModal}
-          title={t('configure_interfaces_hint')}
+          title={wanTileTitle}
         />
 
         <Tile
@@ -348,10 +363,10 @@ export function TelemetryBar({ router, activeRouter, interfaces = [], onNavigate
           tone="var(--color-primary)"
           label={t('total_tx')}
           value={formatSpeed(router.wan_tx_bps)}
-          sub={monitoredShort}
+          sub={wanSub}
           history={txHistory}
           onClick={openConfigModal}
-          title={t('configure_interfaces_hint')}
+          title={wanTileTitle}
         />
 
         <Tile
@@ -499,6 +514,15 @@ export function TelemetryBar({ router, activeRouter, interfaces = [], onNavigate
                             flexShrink: 0
                           }} />
                           <span className="truncate" style={{ fontWeight: isChecked ? 700 : 500 }}>{iface.name}</span>
+                          {iface.is_wan && (
+                            <span
+                              className="badge badge-primary"
+                              style={{ fontSize: 'var(--fs-3xs)', padding: '1px 5px', flexShrink: 0 }}
+                              title={t('wan_iface_hint')}
+                            >
+                              {t('wan_label')}
+                            </span>
+                          )}
                         </div>
                         <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', flexShrink: 0 }}>
                           {iface.type || 'interface'}

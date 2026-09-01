@@ -122,6 +122,10 @@ class InterfaceDTO(BaseModel):
     tx_drop: int = 0
     mac_address: Optional[str] = None
     mtu: Optional[str] = None
+    # True when this interface carries a default route - the real "which links
+    # face the internet" answer, filled in by the interfaces endpoint from
+    # ``/ip/route`` rather than guessed from the name.
+    is_wan: bool = False
 
 
 # WiFiRegistrationDTO references WiFiLinkDTO before it is declared.

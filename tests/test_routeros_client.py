@@ -187,3 +187,35 @@ async def test_device_manager_sync(mock_settings):
             assert dev2.vendor == "Sony Interactive (PlayStation)"
 
     await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_get_wan_interfaces_reads_the_default_route(mock_settings):
+    """WAN is whatever carries 0.0.0.0/0, resolved from the next hop rather
+    than guessed from the name: a '%iface' suffix for a routed link, a bare
+    interface for PPPoE, and dual-WAN yields both. Non-default and inactive
+    routes are ignored."""
+    client = RouterOSClient(mock_settings)
+
+    with respx.mock(base_url="https://192.168.88.1:443/rest") as respx_mock:
+        respx_mock.get("/ip/route").respond(200, json=[
+            {"dst-address": "0.0.0.0/0", "gateway": "10.0.0.1",
+             "immediate-gw": "10.0.0.1%ether1", "active": "true"},
+            {"dst-address": "0.0.0.0/0", "gateway": "pppoe-out1",
+             "immediate-gw": "pppoe-out1", "active": "true"},
+            {"dst-address": "0.0.0.0/0", "gateway": "10.9.9.1%ether5", "active": "false"},
+            {"dst-address": "192.168.88.0/24", "gateway": "bridge", "active": "true"},
+        ])
+        wan = await client.get_wan_interfaces()
+
+    assert wan == ["ether1", "pppoe-out1"]
+
+
+@pytest.mark.asyncio
+async def test_get_wan_interfaces_empty_when_no_default_route(mock_settings):
+    client = RouterOSClient(mock_settings)
+    with respx.mock(base_url="https://192.168.88.1:443/rest") as respx_mock:
+        respx_mock.get("/ip/route").respond(200, json=[
+            {"dst-address": "192.168.88.0/24", "gateway": "bridge", "active": "true"},
+        ])
+        assert await client.get_wan_interfaces() == []
