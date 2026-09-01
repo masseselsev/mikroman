@@ -92,7 +92,21 @@ export function QuotaStrip({ activeRouterId, onOpenSettings }) {
       <span className="quota-strip-main font-mono">
         {formatBytes(q.used_bytes)} / {formatBytes(q.limit_bytes)}
         <span className="quota-strip-sep">·</span>
-        {t('quota_days_left', { days: q.days_remaining })}
+        {(() => {
+          // A non-midnight reset carries a precise instant; show days + hours.
+          if (q.cycle_end_at) {
+            const ms = new Date(q.cycle_end_at).getTime() - Date.now();
+            if (ms > 0) {
+              const totalHours = Math.floor(ms / 3_600_000);
+              const d = Math.floor(totalHours / 24);
+              const h = totalHours % 24;
+              if (h !== 0 || d === 0) {
+                return t('quota_time_left', { d, h });
+              }
+            }
+          }
+          return t('quota_days_left', { days: q.days_remaining });
+        })()}
       </span>
 
       <span className="quota-strip-forecast">
