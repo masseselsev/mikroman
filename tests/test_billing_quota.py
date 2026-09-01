@@ -6,11 +6,12 @@ once per billing cycle: re-alerting on every poll would be noise, and the cycle
 reset must re-arm them so the next month warns again.
 """
 from datetime import date, datetime
+from datetime import time as dtime
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from backend.app.db.models import AppSetting, Base
+from backend.app.db.models import AppSetting, Base, InterfaceMetric
 from backend.app.services.analytics_engine import (
     AnalyticsEngine,
     get_billing_cycle_bounds,
@@ -23,6 +24,7 @@ from backend.app.services.quota import (
     parse_thresholds,
     save_quota_config,
 )
+from backend.app.services.rollups import resolve_monitored_interfaces, slice_of_day_bytes
 
 
 @pytest.fixture
@@ -195,3 +197,83 @@ async def test_billing_anchor_time_round_trips_with_clamping_and_defaults(sessio
     # out-of-range values are clamped, not rejected
     assert await AnalyticsEngine.set_billing_anchor_time(session, 99, -5) == (23, 0)
     assert await AnalyticsEngine.get_billing_anchor_time(session) == (23, 0)
+
+
+class TestSliceOfDayBytes:
+    async def _seed(self, session, samples, interface="ether1", router_id=1):
+        """samples: list of (datetime, rx_total, tx_total)."""
+        for ts, rx, tx in samples:
+            session.add(InterfaceMetric(
+                router_id=router_id, interface_name=interface,
+                rx_rate_bps=0.0, tx_rate_bps=0.0,
+                rx_bytes_total=rx, tx_bytes_total=tx, timestamp=ts,
+            ))
+        await session.commit()
+
+    @pytest.mark.asyncio
+    async def test_clean_partial_day_is_a_forward_counter_delta(self, session):
+        day = date(2026, 9, 5)
+        await self._seed(session, [
+            (datetime(2026, 9, 5, 0, 0), 1_000, 100),
+            (datetime(2026, 9, 5, 12, 0), 5_000, 300),
+            (datetime(2026, 9, 5, 14, 30), 9_000, 800),
+            (datetime(2026, 9, 5, 23, 0), 20_000, 2_000),
+        ])
+        # 00:00 -> 14:30 : (9_000 - 1_000, 800 - 100)
+        got = await slice_of_day_bytes(session, 1, day, None, dtime(14, 30), ["ether1"])
+        assert got == (8_000, 700)
+
+    @pytest.mark.asyncio
+    async def test_a_reboot_mid_slice_drops_only_the_backwards_step(self, session):
+        day = date(2026, 9, 5)
+        await self._seed(session, [
+            (datetime(2026, 9, 5, 0, 0), 10_000, 1_000),
+            (datetime(2026, 9, 5, 4, 0), 30_000, 3_000),   # +20_000 / +2_000
+            (datetime(2026, 9, 5, 5, 0), 200, 50),          # reboot: counter reset
+            (datetime(2026, 9, 5, 10, 0), 7_000, 900),      # +6_800 / +850
+        ])
+        got = await slice_of_day_bytes(session, 1, day, None, None, ["ether1"])
+        assert got == (20_000 + 6_800, 2_000 + 850)
+
+    @pytest.mark.asyncio
+    async def test_multiple_interfaces_are_summed(self, session):
+        day = date(2026, 9, 5)
+        await self._seed(session, [
+            (datetime(2026, 9, 5, 0, 0), 0, 0),
+            (datetime(2026, 9, 5, 6, 0), 1_000, 100),
+        ], interface="ether1")
+        await self._seed(session, [
+            (datetime(2026, 9, 5, 0, 0), 0, 0),
+            (datetime(2026, 9, 5, 6, 0), 4_000, 400),
+        ], interface="pppoe-out1")
+        got = await slice_of_day_bytes(session, 1, day, None, None, ["ether1", "pppoe-out1"])
+        assert got == (5_000, 500)
+
+    @pytest.mark.asyncio
+    async def test_a_day_with_no_samples_returns_none(self, session):
+        got = await slice_of_day_bytes(session, 1, date(2026, 1, 1), None, None, ["ether1"])
+        assert got is None
+
+    @pytest.mark.asyncio
+    async def test_from_time_bound_excludes_earlier_samples(self, session):
+        day = date(2026, 9, 5)
+        await self._seed(session, [
+            (datetime(2026, 9, 5, 8, 0), 1_000, 100),
+            (datetime(2026, 9, 5, 14, 30), 9_000, 800),
+            (datetime(2026, 9, 5, 20, 0), 12_000, 1_100),
+        ])
+        # 14:30 -> end : (12_000 - 9_000, 1_100 - 800)
+        got = await slice_of_day_bytes(session, 1, day, dtime(14, 30), None, ["ether1"])
+        assert got == (3_000, 300)
+
+
+@pytest.mark.asyncio
+async def test_resolve_monitored_interfaces_reads_the_setting_or_defaults(session):
+    assert await resolve_monitored_interfaces(session, 1) == ["ether1"]
+    session.add(AppSetting(key="monitored_interfaces_1", value='["ether1", "pppoe-out1"]'))
+    await session.commit()
+    assert await resolve_monitored_interfaces(session, 1) == ["ether1", "pppoe-out1"]
+    # router_id None uses the _default key
+    session.add(AppSetting(key="monitored_interfaces_default", value='["wan"]'))
+    await session.commit()
+    assert await resolve_monitored_interfaces(session, None) == ["wan"]

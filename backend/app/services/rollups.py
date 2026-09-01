@@ -11,14 +11,17 @@ produces a wrong number rather than an error.
 ``sum_by`` is the single query. Everything else here is a thin, named wrapper so
 call sites read as what they mean rather than as SQL.
 """
-from datetime import date
-from typing import Any, Dict, Optional, Tuple
+import json
+from datetime import date, datetime, time
+from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.db.models import (
+    AppSetting,
     DeviceTrafficRollup,
+    InterfaceMetric,
     RouterSelfTrafficRollup,
     RouterTrafficRollup,
     TrafficRollup,
@@ -129,3 +132,76 @@ def sum_window(per_day: Dict[date, Volume], *, after: Optional[date] = None) -> 
         for day, (day_in, day_out) in per_day.items()
         if after is None or day > after
     )
+
+
+async def resolve_monitored_interfaces(
+    session: AsyncSession, router_id: Optional[int]
+) -> List[str]:
+    """WAN interface names for a router, from the same setting the gateway
+    rollups are measured on, so a slice and the daily total describe the same
+    link. Defaults to ``["ether1"]`` when nothing is configured."""
+    key = f"monitored_interfaces_{router_id}" if router_id else "monitored_interfaces_default"
+    setting = await session.get(AppSetting, key)
+    if setting and setting.value:
+        try:
+            names = json.loads(setting.value)
+            if isinstance(names, list) and names:
+                return [str(n) for n in names]
+        except (json.JSONDecodeError, TypeError):
+            pass
+    return ["ether1"]
+
+
+async def slice_of_day_bytes(
+    session: AsyncSession,
+    router_id: Optional[int],
+    day: date,
+    from_time: Optional[time],
+    to_time: Optional[time],
+    interfaces: List[str],
+) -> Optional[Tuple[int, int]]:
+    """Bytes transferred on ``day`` between two clock times, from the sampled
+    WAN interface counters.
+
+    ``interface_metrics`` records each interface's *cumulative* rx/tx byte
+    counter about every 1.5 s. Walking every sample in the window and summing
+    ``max(0, curr - prev)`` per interface means an intermediate router reboot
+    shows up as one negative step that is dropped, rather than corrupting the
+    whole slice. Bytes between a window edge and the nearest sample are
+    unattributed - at ~1.5 s spacing that is a couple of seconds per edge, far
+    below the rounding in every GB figure.
+
+    Returns ``None`` when no interface has a sample in the window (the samples
+    have been pruned - retention is 30 days), so the caller can fall back to the
+    whole-day rollup.
+    """
+    if not interfaces:
+        return None
+    lo = datetime.combine(day, from_time or time(0, 0, 0))
+    hi = datetime.combine(day, to_time or time(23, 59, 59, 999999))
+
+    stmt = (
+        select(InterfaceMetric)
+        .where(InterfaceMetric.interface_name.in_(interfaces))
+        .where(InterfaceMetric.timestamp >= lo)
+        .where(InterfaceMetric.timestamp <= hi)
+        .order_by(InterfaceMetric.interface_name, InterfaceMetric.timestamp)
+    )
+    if router_id is not None:
+        stmt = stmt.where(
+            (InterfaceMetric.router_id == router_id) | (InterfaceMetric.router_id.is_(None))
+        )
+
+    rows = (await session.execute(stmt)).scalars().all()
+    if not rows:
+        return None
+
+    total_in = total_out = 0
+    prev: Dict[str, Tuple[int, int]] = {}
+    for row in rows:
+        last = prev.get(row.interface_name)
+        if last is not None:
+            total_in += max(0, row.rx_bytes_total - last[0])
+            total_out += max(0, row.tx_bytes_total - last[1])
+        prev[row.interface_name] = (row.rx_bytes_total, row.tx_bytes_total)
+    return (total_in, total_out)
