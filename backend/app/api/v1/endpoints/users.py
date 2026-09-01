@@ -8,8 +8,10 @@ from backend.app.db.models import Device, DeviceTrafficRollup, User
 from backend.app.db.session import get_db
 from backend.app.schemas.common import APIResponse
 from backend.app.schemas.user import UserCreate, UserDTO, UserReorderRequest, UserUpdate
+from backend.app.services.analytics_engine import AnalyticsEngine, get_billing_cycle_dates
 from backend.app.services.device_manager import detach_device_traffic_from_user
 from backend.app.services.router_manager import router_manager
+from backend.app.services.router_time import router_local_now
 from backend.app.services.traffic_controller import TrafficController
 
 router = APIRouter(prefix="/users", tags=["Users"])
@@ -44,6 +46,22 @@ async def list_users(
     )).all()
     totals_map = {r[0]: (int(r[1] or 0), int(r[2] or 0)) for r in totals_rows}
 
+    # The same, restricted to the current ISP billing cycle.
+    anchor_day = await AnalyticsEngine.get_billing_anchor_day(db)
+    today_local = (await router_local_now(db)).date()
+    cyc_start, cyc_end = get_billing_cycle_dates(anchor_day, today_local)
+    cycle_rows = (await db.execute(
+        select(
+            DeviceTrafficRollup.device_id,
+            func.sum(DeviceTrafficRollup.bytes_in),
+            func.sum(DeviceTrafficRollup.bytes_out),
+        )
+        .where(DeviceTrafficRollup.record_date >= cyc_start)
+        .where(DeviceTrafficRollup.record_date <= cyc_end)
+        .group_by(DeviceTrafficRollup.device_id)
+    )).all()
+    cycle_map = {r[0]: (int(r[1] or 0), int(r[2] or 0)) for r in cycle_rows}
+
     user_dtos = []
     for u in users:
         dto = UserDTO.model_validate(u)
@@ -58,6 +76,8 @@ async def list_users(
         # the specific device consuming bandwidth rather than its owner. The
         # all-time total is attached even when the user has no live metrics.
         per_device = (m or {}).get("devices", {})
+        u_total_in = u_total_out = 0
+        u_cycle_in = u_cycle_out = 0
         for device_dto in dto.devices:
             dm = per_device.get(device_dto.id)
             if dm:
@@ -68,6 +88,20 @@ async def list_users(
             t_in, t_out = totals_map.get(device_dto.id, (0, 0))
             device_dto.bytes_total_in = t_in
             device_dto.bytes_total_out = t_out
+            c_in, c_out = cycle_map.get(device_dto.id, (0, 0))
+            device_dto.bytes_cycle_in = c_in
+            device_dto.bytes_cycle_out = c_out
+            u_total_in += t_in
+            u_total_out += t_out
+            u_cycle_in += c_in
+            u_cycle_out += c_out
+
+        dto.bytes_total_in = u_total_in
+        dto.bytes_total_out = u_total_out
+        dto.bytes_cycle_in = u_cycle_in
+        dto.bytes_cycle_out = u_cycle_out
+        seens = [d.last_seen for d in u.devices if d.last_seen]
+        dto.last_seen = max(seens) if seens else None
         user_dtos.append(dto)
 
     return APIResponse(data=user_dtos)

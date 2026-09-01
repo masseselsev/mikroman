@@ -10,7 +10,7 @@ from backend.app.db.models import (
     AppSetting,
     Device,
     DeviceTrafficRollup,
-    RouterTrafficRollup,
+    InterfaceTrafficRollup,
     TrafficRollup,
     User,
 )
@@ -19,12 +19,16 @@ from backend.app.schemas.analytics import (
     DailyTrafficPoint,
     DeviceTrafficSummary,
     GatewayTrafficSummary,
+    InterfaceTrafficSummary,
     RouterSelfTrafficSummary,
     TrafficAnalyticsResponse,
     UserTrafficSummary,
 )
 from backend.app.services import rollups
-from backend.app.services.router_time import router_local_date
+from backend.app.services.interface_rollups import is_tunnel_interface, recompute_recent
+from backend.app.services.rollups import ALLTIME_END as _ALLTIME_END
+from backend.app.services.rollups import ALLTIME_START as _ALLTIME_START
+from backend.app.services.router_time import router_local_now
 
 logger = logging.getLogger("mikroman.analytics_engine")
 
@@ -232,9 +236,16 @@ class AnalyticsEngine:
         end_date: date,
         router_id: Optional[int] = None,
         range_preset: str = "7d",
-        anchor_day: int = 1
+        anchor_day: int = 1,
+        include_breakdown_extras: bool = True,
     ) -> TrafficAnalyticsResponse:
-        """Query and aggregate traffic metrics across Gateway, Users, Devices, and Timeline."""
+        """Query and aggregate traffic metrics across Gateway, Users, Devices, and Timeline.
+
+        ``include_breakdown_extras`` adds the per-entity last-seen, current-cycle
+        and all-time columns plus the per-interface breakdown. The quota
+        endpoint calls this only for the gateway total and the timeline, so it
+        turns the extras off to skip four aggregate queries per call.
+        """
 
         # 1. Fetch User Profiles and Devices
         users_query = select(User)
@@ -261,6 +272,44 @@ class AnalyticsEngine:
         dev_totals = await rollups.sum_by(
             session, DeviceTrafficRollup, DeviceTrafficRollup.device_id, start_date, end_date
         )
+
+        # Extra columns: current-cycle and all-time volume per owner, and the
+        # per-interface breakdown. Skipped entirely when the caller only wants
+        # the gateway total and the timeline (the quota endpoint).
+        user_cycle: dict = {}
+        dev_cycle: dict = {}
+        user_alltime: dict = {}
+        dev_alltime: dict = {}
+        iface_range: dict = {}
+        iface_cycle: dict = {}
+        iface_alltime: dict = {}
+        if include_breakdown_extras:
+            now_local = await router_local_now(session)
+            cyc_start, cyc_end = get_billing_cycle_dates(anchor_day, now_local.date())
+            user_cycle = await rollups.sum_by(
+                session, TrafficRollup, TrafficRollup.user_id, cyc_start, cyc_end
+            )
+            dev_cycle = await rollups.sum_by(
+                session, DeviceTrafficRollup, DeviceTrafficRollup.device_id, cyc_start, cyc_end
+            )
+            user_alltime = await rollups.sum_by(
+                session, TrafficRollup, TrafficRollup.user_id, _ALLTIME_START, _ALLTIME_END
+            )
+            dev_alltime = await rollups.sum_by(
+                session, DeviceTrafficRollup, DeviceTrafficRollup.device_id, _ALLTIME_START, _ALLTIME_END
+            )
+            iface_range = await rollups.sum_by(
+                session, InterfaceTrafficRollup, InterfaceTrafficRollup.interface_name,
+                start_date, end_date, router_id=router_id,
+            )
+            iface_cycle = await rollups.sum_by(
+                session, InterfaceTrafficRollup, InterfaceTrafficRollup.interface_name,
+                cyc_start, cyc_end, router_id=router_id,
+            )
+            iface_alltime = await rollups.sum_by(
+                session, InterfaceTrafficRollup, InterfaceTrafficRollup.interface_name,
+                _ALLTIME_START, _ALLTIME_END, router_id=router_id,
+            )
 
         daily = await rollups.daily_totals(session, start_date, end_date, router_id=router_id)
         r_daily_map = daily["router"]
@@ -373,6 +422,18 @@ class AnalyticsEngine:
             u_total = u_in + u_out
             pct = round((u_total / gateway_total * 100), 2) if gateway_total > 0 else 0.0
 
+            seens = [d.last_seen for d in u.devices if d.last_seen]
+            uc_in, uc_out = user_cycle.get(u.id, (0, 0))
+            ua_in, ua_out = user_alltime.get(u.id, (0, 0))
+            # Same fall-through as the range figure: if the user rollup is empty
+            # (older installs stored volume per device only) sum the children.
+            if uc_in == 0 and uc_out == 0:
+                uc_in = sum(dev_cycle.get(d.id, (0, 0))[0] for d in u.devices)
+                uc_out = sum(dev_cycle.get(d.id, (0, 0))[1] for d in u.devices)
+            if ua_in == 0 and ua_out == 0:
+                ua_in = sum(dev_alltime.get(d.id, (0, 0))[0] for d in u.devices)
+                ua_out = sum(dev_alltime.get(d.id, (0, 0))[1] for d in u.devices)
+
             user_summaries.append(UserTrafficSummary(
                 user_id=u.id,
                 user_name=u.name,
@@ -381,7 +442,10 @@ class AnalyticsEngine:
                 bytes_out=u_out,
                 total_bytes=u_total,
                 pct_of_total=pct,
-                device_count=len(u.devices)
+                device_count=len(u.devices),
+                last_seen=max(seens) if seens else None,
+                cycle_bytes=uc_in + uc_out,
+                all_time_bytes=ua_in + ua_out,
             ))
         user_summaries.sort(key=lambda x: x.total_bytes, reverse=True)
 
@@ -392,6 +456,9 @@ class AnalyticsEngine:
             d_total = d_in + d_out
             pct = round((d_total / gateway_total * 100), 2) if gateway_total > 0 else 0.0
             parent_user = user_map.get(d.user_id) if d.user_id else None
+
+            dc_in, dc_out = dev_cycle.get(d.id, (0, 0))
+            da_in, da_out = dev_alltime.get(d.id, (0, 0))
 
             device_summaries.append(DeviceTrafficSummary(
                 device_id=d.id,
@@ -408,7 +475,10 @@ class AnalyticsEngine:
                 pct_of_total=pct,
                 speed_limit=d.speed_limit,
                 is_paused=d.is_paused,
-                is_hidden=d.is_hidden
+                is_hidden=d.is_hidden,
+                last_seen=d.last_seen,
+                cycle_bytes=dc_in + dc_out,
+                all_time_bytes=da_in + da_out,
             ))
         device_summaries.sort(key=lambda x: x.total_bytes, reverse=True)
 
@@ -437,6 +507,29 @@ class AnalyticsEngine:
             monitored_interfaces=monitored_ifaces
         )
 
+        # 8. Per-interface breakdown. Union the three windows' interface names
+        # so a tunnel that carried traffic this cycle but nothing in the last
+        # seven days still gets a row.
+        monitored_set = set(monitored_ifaces)
+        iface_names = set(iface_range) | set(iface_cycle) | set(iface_alltime)
+        interface_summaries: List[InterfaceTrafficSummary] = []
+        for name in iface_names:
+            r_in, r_out = iface_range.get(name, (0, 0))
+            r_total = r_in + r_out
+            interface_summaries.append(InterfaceTrafficSummary(
+                interface_name=name,
+                is_tunnel=is_tunnel_interface(name),
+                is_monitored=name in monitored_set,
+                bytes_in=r_in,
+                bytes_out=r_out,
+                total_bytes=r_total,
+                pct_of_total=round((r_total / gateway_total * 100), 2) if gateway_total > 0 else 0.0,
+                cycle_bytes=sum(iface_cycle.get(name, (0, 0))),
+                all_time_bytes=sum(iface_alltime.get(name, (0, 0))),
+            ))
+        # Tunnels first (the point of the tab), then heaviest in the range.
+        interface_summaries.sort(key=lambda x: (0 if x.is_tunnel else 1, -x.total_bytes, x.interface_name))
+
         return TrafficAnalyticsResponse(
             start_date=start_date,
             end_date=end_date,
@@ -446,6 +539,7 @@ class AnalyticsEngine:
             router_self=router_self,
             users=user_summaries,
             devices=device_summaries,
+            interfaces=interface_summaries,
             timeline=timeline,
             accounting_health=accounting_health
         )
@@ -533,37 +627,6 @@ class AnalyticsEngine:
 
         return AccountingHealth(**common, status="ok")
 
-    @classmethod
-    async def _get_baselines(cls, session: AsyncSession) -> dict:
-        """Fetch saved counter baselines from app settings."""
-        setting = await session.get(AppSetting, "traffic_counter_baselines")
-        if setting and setting.value:
-            try:
-                import json
-                return json.loads(setting.value)
-            except Exception:
-                return {}
-        return {}
-
-    @classmethod
-    async def _save_baselines(cls, session: AsyncSession, baselines: dict) -> None:
-        """Persist counter baselines to app settings."""
-        import json
-        raw_val = json.dumps(baselines)
-        setting = await session.get(AppSetting, "traffic_counter_baselines")
-        if setting:
-            setting.value = raw_val
-        else:
-            session.add(AppSetting(
-                key="traffic_counter_baselines",
-                value=raw_val,
-                description="Live counter baselines for delta traffic accumulation"
-            ))
-
-    # A drop of more than this in router uptime between two polls is a reboot,
-    # not clock jitter.
-    _REBOOT_SLACK_SECONDS = 90
-
     @staticmethod
     def _compute_delta(curr: int, prev: Optional[int], *, reset: bool = False) -> int:
         """Compute delta between current monotonic counter and previous reading.
@@ -584,111 +647,25 @@ class AnalyticsEngine:
         cls,
         session: AsyncSession,
         router_id: int,
-        client: Any,
+        client: Any = None,
         router_uptime_seconds: Optional[int] = None,
     ) -> None:
-        """Accumulate daily gateway rollups from the monitored WAN interface counters.
+        """Refresh the recent gateway / per-interface rollups from the samples.
 
-        Per-user and per-device volume is NOT derived here. Simple Queue byte
-        counters were measured to stay frozen at zero on RouterOS 7.25 while
-        traffic flowed, so that accounting lives in
-        ``backend.app.services.traffic_accounting`` which reads firewall mangle
-        counters instead. This method owns the gateway level only.
+        The gateway figure used to be a live counter delta accumulated here on
+        every poll. That misfiled a whole evening of traffic onto the next day
+        whenever a poll resumed after an outage that ran past local midnight,
+        and it lost the pre-reboot tail on a restart. It is now derived from
+        ``interface_metrics`` instead - see
+        :mod:`backend.app.services.interface_rollups` - which attributes each
+        byte to the day it moved and is restart-proof.
 
-        ``router_uptime_seconds`` running backwards between polls means the
-        router rebooted and the interface counters reset; this tick then credits
-        the bytes since the reboot instead of differencing against a baseline
-        that no longer exists. A plain network outage is not a reboot and needs
-        no special handling - ordinary differencing on reconnect covers the gap.
+        ``client`` and ``router_uptime_seconds`` are accepted for call-site
+        compatibility and ignored: the samples already carry everything needed.
+        Per-user / per-device volume is still owned by
+        :mod:`backend.app.services.traffic_accounting`.
         """
-        # Keyed to the router's date: a UTC container files the router's
-        # evening traffic under the previous day.
-        today = await router_local_date(session)
-        today_str = str(today)
-
         try:
-            baselines = await cls._get_baselines(session)
-            r_baselines = baselines.setdefault("router", {})
-
-            # 1. Router WAN Interface Totals
-            monitored_setting = await session.get(AppSetting, f"monitored_interfaces_{router_id}" if router_id else "monitored_interfaces_default")
-            monitored = []
-            if monitored_setting and monitored_setting.value:
-                import json
-                try:
-                    monitored = json.loads(monitored_setting.value)
-                except Exception:
-                    monitored = []
-            if not monitored:
-                monitored = ["ether1"]
-
-            ifaces = await client.get_interfaces()
-            r_rx = 0
-            r_tx = 0
-            for iface in ifaces:
-                i_name = getattr(iface, "name", iface.get("name") if isinstance(iface, dict) else "")
-                if i_name in monitored or (not monitored and "ether1" in i_name):
-                    r_rx += getattr(iface, "rx_byte", iface.get("rx_byte", 0) if isinstance(iface, dict) else 0)
-                    r_tx += getattr(iface, "tx_byte", iface.get("tx_byte", 0) if isinstance(iface, dict) else 0)
-
-            r_key = str(router_id)
-            prev_r = r_baselines.get(r_key)
-            # Uptime is stored per router inside its own baseline entry, so a
-            # reboot of one router in a multi-router setup does not disturb the
-            # others' accounting.
-            prev_uptime = prev_r.get("uptime_s") if isinstance(prev_r, dict) else None
-            rebooted = (
-                router_uptime_seconds is not None
-                and isinstance(prev_uptime, int)
-                and router_uptime_seconds + cls._REBOOT_SLACK_SECONDS < prev_uptime
-            )
-            if rebooted:
-                logger.info(
-                    f"Router {router_id} uptime dropped {prev_uptime}s -> "
-                    f"{router_uptime_seconds}s: crediting gateway bytes since the reboot"
-                )
-            new_entry = {"rx": r_rx, "tx": r_tx, "last_date": today_str}
-            if router_uptime_seconds is not None:
-                new_entry["uptime_s"] = router_uptime_seconds
-
-            if prev_r is None:
-                r_baselines[r_key] = new_entry
-                r_stmt = select(RouterTrafficRollup).where(
-                    RouterTrafficRollup.router_id == router_id,
-                    RouterTrafficRollup.record_date == today
-                )
-                r_res = await session.execute(r_stmt)
-                if not r_res.scalar_one_or_none():
-                    session.add(RouterTrafficRollup(
-                        router_id=router_id,
-                        record_date=today,
-                        bytes_in=0,
-                        bytes_out=0
-                    ))
-            else:
-                d_rx = cls._compute_delta(r_rx, prev_r.get("rx"), reset=rebooted)
-                d_tx = cls._compute_delta(r_tx, prev_r.get("tx"), reset=rebooted)
-                r_baselines[r_key] = new_entry
-
-                r_stmt = select(RouterTrafficRollup).where(
-                    RouterTrafficRollup.router_id == router_id,
-                    RouterTrafficRollup.record_date == today
-                )
-                r_res = await session.execute(r_stmt)
-                r_rollup = r_res.scalar_one_or_none()
-                if r_rollup:
-                    r_rollup.bytes_in += d_rx
-                    r_rollup.bytes_out += d_tx
-                else:
-                    session.add(RouterTrafficRollup(
-                        router_id=router_id,
-                        record_date=today,
-                        bytes_in=d_rx,
-                        bytes_out=d_tx
-                    ))
-
-            # Persist updated baselines
-            await cls._save_baselines(session, baselines)
-            await session.commit()
+            await recompute_recent(session, router_id)
         except Exception as e:
-            logger.debug(f"Failed to record traffic snapshot: {e}")
+            logger.warning(f"Interface rollup refresh failed for router {router_id}: {e}")
