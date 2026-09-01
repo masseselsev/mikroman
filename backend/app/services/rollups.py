@@ -12,7 +12,7 @@ produces a wrong number rather than an error.
 call sites read as what they mean rather than as SQL.
 """
 import json
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy import func, select
@@ -26,6 +26,7 @@ from backend.app.db.models import (
     RouterTrafficRollup,
     TrafficRollup,
 )
+from backend.app.services.router_time import get_router_offset
 
 # (bytes_in, bytes_out)
 Volume = Tuple[int, int]
@@ -163,6 +164,13 @@ async def slice_of_day_bytes(
     """Bytes transferred on ``day`` between two clock times, from the sampled
     WAN interface counters.
 
+    ``day`` and ``from_time`` / ``to_time`` are interpreted **router-local** -
+    they come straight from :func:`get_billing_cycle_bounds`. The samples in
+    ``interface_metrics.timestamp`` are stored as naive **UTC**, so the window
+    is converted into that UTC frame (``utc = router_local - offset``) before it
+    is queried; on any router not at UTC+0 comparing the two frames directly
+    hits the wrong rows.
+
     ``interface_metrics`` records each interface's *cumulative* rx/tx byte
     counter about every 1.5 s. Walking every sample in the window and summing
     ``max(0, curr - prev)`` per interface means an intermediate router reboot
@@ -180,6 +188,11 @@ async def slice_of_day_bytes(
     lo = datetime.combine(day, from_time or time(0, 0, 0))
     hi = datetime.combine(day, to_time or time(23, 59, 59, 999999))
 
+    # Shift the router-local window back into the UTC frame the samples carry.
+    offset = await get_router_offset(session) or 0
+    lo -= timedelta(minutes=offset)
+    hi -= timedelta(minutes=offset)
+
     stmt = (
         select(InterfaceMetric)
         .where(InterfaceMetric.interface_name.in_(interfaces))
@@ -188,6 +201,8 @@ async def slice_of_day_bytes(
         .order_by(InterfaceMetric.interface_name, InterfaceMetric.timestamp)
     )
     if router_id is not None:
+        # Single-router installs leave interface_metrics.router_id NULL, so those
+        # rows must match too (the same IS NULL idiom as _add_rollup).
         stmt = stmt.where(
             (InterfaceMetric.router_id == router_id) | (InterfaceMetric.router_id.is_(None))
         )

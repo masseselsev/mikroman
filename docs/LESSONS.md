@@ -435,3 +435,14 @@ surfaced a latent bug: `get_billing_cycle_dates` returned an end date in the
 *next* month for `anchor_day == 1`, giving the default config a two-month
 window. Lesson: "we only store daily totals" is not the end of the question -
 check whether a finer-grained series exists for the one figure that needs it.
+
+**[2026-09-01] Problem:** The same rework surfaced a second latent bug in the
+old `get_billing_cycle_dates`. For a clamped anchor - `anchor_day = 31` in a
+short month - `get_billing_cycle_dates(31, <a Feb date>)` returned
+`Jan 31 … Feb 28`: 29 *inclusive* days. Feb 28 was both the current cycle's
+last day and the next cycle's first, so its whole-day rollup was double-counted
+and the cycle "rolled over" a day late. **Solution:** the datetime-bounds shim
+makes the interval half-open - `Jan 31 00:00 … Feb 28 00:00`, inclusive last
+date `Feb 27` - so Feb 28 belongs cleanly to the new cycle and the count is a
+correct 28 days. Lesson: an off-by-one in an *inclusive* date range only bites
+at the clamp; test the February-31 case explicitly, not just mid-month anchors.

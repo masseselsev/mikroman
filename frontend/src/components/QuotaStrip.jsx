@@ -95,6 +95,10 @@ export function QuotaStrip({ activeRouterId, onOpenSettings }) {
         {(() => {
           // A non-midnight reset carries a precise instant; show days + hours.
           if (q.cycle_end_at) {
+            // cycle_end_at is a naive router-local instant, parsed here in the
+            // browser's own zone. That is correct when the two match - the
+            // LAN-admin common case. Do not "fix" this by appending 'Z': that
+            // would wrongly assume the router runs on UTC.
             const ms = new Date(q.cycle_end_at).getTime() - Date.now();
             if (ms > 0) {
               const totalHours = Math.floor(ms / 3_600_000);

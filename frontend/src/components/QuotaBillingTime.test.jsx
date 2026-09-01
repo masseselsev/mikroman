@@ -61,7 +61,9 @@ describe('QuotaStrip countdown', () => {
     cycle_start: '2026-09-05', cycle_end: '2026-10-04',
   };
 
-  it('shows whole days when the reset is at midnight (no cycle_end_at)', () => {
+  it('shows whole days for a midnight anchor (backend returns cycle_end_at null)', () => {
+    // A midnight anchor makes build_quota_status return cycle_end_at: null, so
+    // the strip falls through to the plain "N days left" label.
     vi.spyOn(api, 'getQuota').mockResolvedValue({ data: { ...base, cycle_end_at: null } });
     renderWithProviders(<QuotaStrip activeRouterId={1} onOpenSettings={() => {}} />);
     return screen.findByText(/3 days left/i);

@@ -191,7 +191,6 @@ class TrafficAnalyticsResponse(BaseModel):
     end_date: date
     range_preset: str
     billing_anchor_day: int
-    billing_anchor_time: str = "00:00"  # "HH:MM", router-local; "00:00" = day-only
     gateway: GatewayTrafficSummary
     router_self: RouterSelfTrafficSummary = RouterSelfTrafficSummary()
     users: List[UserTrafficSummary]

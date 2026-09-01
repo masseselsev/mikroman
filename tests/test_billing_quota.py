@@ -255,6 +255,25 @@ class TestSliceOfDayBytes:
         assert got is None
 
     @pytest.mark.asyncio
+    async def test_window_is_router_local_and_shifted_into_the_utc_sample_frame(self, session):
+        """The window comes in router-local (from get_billing_cycle_bounds) but
+        interface_metrics.timestamp is naive UTC. At offset +180 a "before 14:30
+        local" window is UTC "before 11:30", so it must sum the h=0..11 rows,
+        not the naive h=0..14 rows."""
+        session.add(AppSetting(key="router_gmt_offset_minutes", value="180"))
+        await session.commit()
+        day = date(2026, 9, 5)
+        # Hourly cumulative counter in the stored (UTC) frame: +1000 rx / +100 tx
+        # on every whole hour.
+        await self._seed(session, [
+            (datetime(2026, 9, 5, h, 0), 1_000 * h, 100 * h) for h in range(24)
+        ])
+        # Router-local 00:00 -> 14:30 == UTC 21:00(prev day) -> 11:30, so the
+        # matching rows are h=0..11: delta (1000*11, 100*11).
+        got = await slice_of_day_bytes(session, 1, day, None, dtime(14, 30), ["ether1"])
+        assert got == (11_000, 1_100)
+
+    @pytest.mark.asyncio
     async def test_from_time_bound_excludes_earlier_samples(self, session):
         day = date(2026, 9, 5)
         await self._seed(session, [
