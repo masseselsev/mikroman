@@ -148,3 +148,38 @@ async def test_lan_clients_on_other_interfaces_are_still_ingested(session):
 
     rows = (await session.execute(Device.__table__.select())).fetchall()
     assert {r.mac_address for r in rows} == {"74:D4:DD:C6:51:73", "00:11:22:33:44:55"}
+
+
+@pytest.mark.asyncio
+async def test_a_deleted_device_comes_back_when_its_mac_is_seen_again(session):
+    """Soft delete is not permanent: the same MAC reappearing clears the flag
+    and the device returns with the traffic history it kept while gone."""
+    session.add(AppSetting(key="monitored_interfaces_1", value='["ether1"]'))
+    session.add(Device(
+        router_id=1, mac_address="AA:BB:CC:DD:EE:99", ip_address=None,
+        custom_name="Retired-NAS", hostname="Retired-NAS",
+        is_active=False, is_deleted=True,
+    ))
+    await session.commit()
+
+    router = FakeRouter(
+        leases=[DHCPLeaseDTO(
+            address="192.168.88.50", mac_address="AA:BB:CC:DD:EE:99",
+            host_name="Retired-NAS", status="bound",
+        )],
+        arps=[
+            ARPTableEntry(address="192.168.88.50", mac_address="AA:BB:CC:DD:EE:99",
+                          interface="bridge", complete=True),
+        ],
+    )
+
+    mgr = DeviceManager(router, router_id=1)
+    await mgr.sync_devices_from_router(session)
+
+    row = (await session.execute(
+        Device.__table__.select().where(Device.mac_address == "AA:BB:CC:DD:EE:99")
+    )).fetchone()
+    assert row is not None
+    assert row.is_deleted is False
+    assert row.is_active is True
+    assert row.ip_address == "192.168.88.50"

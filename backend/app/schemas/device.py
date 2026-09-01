@@ -28,6 +28,9 @@ class DeviceBase(BaseModel):
     last_wifi_signal: Optional[int] = None
     is_active: bool = True
     is_hidden: bool = False
+    # Removed by the operator. The row and its traffic rollups are kept so the
+    # bytes stay attributed to the profile; every live view filters it out.
+    is_deleted: bool = False
     # A workload on the router itself, seen on a veth interface, rather than a
     # client on the network. Kept out of the unassigned inbox and the household
     # breakdown - nobody owns it.

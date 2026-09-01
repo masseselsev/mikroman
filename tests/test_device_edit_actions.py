@@ -2,7 +2,8 @@
 for good, move one back to unassigned, and split a wrongly-merged MAC.
 
 The traffic rules are the point:
-  * delete  -> the device is gone but its bytes stay counted for the profile
+  * delete  -> the row is soft-deleted: it leaves every live view but keeps
+               its rollups, so its bytes stay counted for the profile
   * unassign -> the device's recorded share is taken back out of the profile
   * split   -> past (coalesced) traffic cannot be divided; only future traffic
                on the split-off address is tracked separately
@@ -105,18 +106,54 @@ async def test_deleting_a_device_keeps_its_traffic_on_the_profile(api_client):
     assert res.status_code == 200
 
     async with api_client.session_factory() as s:
-        assert await s.get(Device, dev_id) is None
-        # device rollups gone with it...
+        # The row stays, flagged deleted, its IP released and its owner kept.
+        gone = await s.get(Device, dev_id)
+        assert gone is not None
+        assert gone.is_deleted is True
+        assert gone.is_active is False
+        assert gone.ip_address is None
+        assert gone.user_id == user_id
+
+        # Its daily rollups are retained - that is how the bytes stay on the
+        # profile through the analytics fold.
         dev_rolls = (await s.execute(
             select(DeviceTrafficRollup).where(DeviceTrafficRollup.device_id == dev_id)
         )).scalars().all()
-        assert dev_rolls == []
-        # ...but the profile's own totals are untouched.
-        user_rolls = {r.record_date: (r.bytes_in, r.bytes_out) for r in (await s.execute(
-            select(TrafficRollup).where(TrafficRollup.user_id == user_id)
-        )).scalars().all()}
-        assert user_rolls[date(2026, 8, 20)] == (1_500, 300)
-        assert user_rolls[date(2026, 8, 21)] == (4_000, 800)
+        assert len(dev_rolls) == 2
+
+    # It no longer appears in any live device list.
+    listing = (await api_client.get("/api/v1/devices")).json()["data"]
+    assert all(d["id"] != dev_id for d in listing)
+
+
+@pytest.mark.asyncio
+async def test_analytics_pools_a_deleted_device_into_old_devices(api_client):
+    """After a delete the profile total is unchanged; the device's bytes move
+    into a single synthetic 'Old devices' row rather than vanishing."""
+    from datetime import date as _date
+
+    from backend.app.services.analytics_engine import AnalyticsEngine
+
+    async with api_client.session_factory() as s:
+        user, dev = await _seed_user_device(s)
+        user_id, dev_id = user.id, dev.id
+
+    assert (await api_client.delete(f"/api/v1/devices/{dev_id}")).status_code == 200
+
+    async with api_client.session_factory() as s:
+        s.expire_all()
+        resp = await AnalyticsEngine.get_historical_traffic(
+            session=s, start_date=_date(2026, 8, 20), end_date=_date(2026, 8, 21),
+            router_id=None,
+        )
+
+    mark = next(u for u in resp.users if u.user_name == "Mark")
+    assert mark.total_bytes == 6_000  # 1000+200 + 4000+800, still attributed
+    pool = [d for d in resp.devices if d.is_retired_pool]
+    assert len(pool) == 1
+    assert pool[0].user_id == user_id
+    assert pool[0].total_bytes == 6_000
+    assert all(not d.is_retired_pool or d.device_id < 0 for d in resp.devices)
 
 
 @pytest.mark.asyncio

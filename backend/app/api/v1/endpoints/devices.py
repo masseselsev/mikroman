@@ -76,6 +76,9 @@ async def list_devices(
             eff_router_id = active_r.id
 
     query = select(Device).options(selectinload(Device.history))
+    # A soft-deleted device keeps its row for the traffic history but never
+    # shows in a live list.
+    query = query.where(Device.is_deleted.is_(False))
     if eff_router_id is not None:
         query = query.where((Device.router_id == eff_router_id) | (Device.router_id.is_(None)))
     if unassigned_only:
@@ -369,14 +372,18 @@ async def delete_device(
     db: AsyncSession = Depends(get_db),
     traffic_ctrl: TrafficController = Depends(get_traffic_controller),
 ):
-    """Delete a device record for good.
+    """Delete a device from the operator's view, keeping its traffic.
 
-    The profile's traffic totals are **not** touched: a deleted device's bytes
-    stay counted for whoever owned it (the per-user ``TrafficRollup`` is a
-    separate table). Only the device row and its own history / daily rollups
-    go. Any adapter that pointed at this device as its primary is detached, and
-    the router-side accounting rule and managed queue are cleared on the next
-    background sync.
+    This is a soft delete. The row and its daily ``DeviceTrafficRollup`` rows
+    stay, so every byte the device moved remains attributed to the profile that
+    owned it - the analytics fold those retired devices into a single
+    "Old devices" line per profile. The row is hidden from every live view
+    (user cards, the unassigned inbox, the per-device breakdown), its IP is
+    released, and its router-side accounting rule and managed queue are pruned
+    on the next background sync because it is no longer active. Discovery seeing
+    the same MAC again clears the flag and the device comes back.
+
+    Any adapter that pointed at this device as its primary is detached.
     """
     device = await db.get(
         Device, device_id,
@@ -405,7 +412,13 @@ async def delete_device(
         ),
     ))
 
-    await db.delete(device)  # cascade removes DeviceHistory + DeviceTrafficRollup
+    # Soft delete: keep the row and its rollups, drop it out of every live view
+    # and free the IP so the next accounting sync prunes its mangle rule.
+    device.is_deleted = True
+    device.is_active = False
+    device.is_paused = False
+    device.ip_address = None
+    device.linked_to_device_id = None
     await db.commit()
 
     if owner_id:

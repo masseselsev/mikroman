@@ -78,7 +78,10 @@ async def list_users(
     user_dtos = []
     for u in users:
         dto = UserDTO.model_validate(u)
-        # Filter devices to those belonging to this router
+        # Drop soft-deleted devices, then narrow to this router. Their traffic
+        # still counts for the profile via the analytics fold; they just never
+        # appear as a live device row.
+        dto.devices = [d for d in dto.devices if not getattr(d, "is_deleted", False)]
         if eff_router_id is not None:
             dto.devices = [d for d in dto.devices if d.router_id == eff_router_id or d.router_id is None]
 

@@ -101,13 +101,17 @@ export function DevicesTab({
                 </tr>
               ) : (
                 sortRows(filteredDevices, deviceSort).map(d => (
-                  <tr key={d.device_id} style={{ borderBottom: '1px solid var(--border-color)', fontSize: 'var(--fs-sm)' }}>
+                  <tr key={d.device_id} style={{ borderBottom: '1px solid var(--border-color)', fontSize: 'var(--fs-sm)', opacity: d.is_retired_pool ? 0.75 : 1 }}>
                     <td style={{ padding: '10px 12px' }}>
-                      <div style={{ fontWeight: 700 }}>{d.custom_name || d.hostname || `${t('table_device')} ${d.device_id}`}</div>
-                      <div style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)' }}>{d.vendor || t('unknown_vendor')}</div>
+                      <div style={{ fontWeight: 700, fontStyle: d.is_retired_pool ? 'italic' : 'normal' }}>
+                        {d.is_retired_pool ? t('old_devices') : (d.custom_name || d.hostname || `${t('table_device')} ${d.device_id}`)}
+                      </div>
+                      <div style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)' }}>
+                        {d.is_retired_pool ? t('delete_device_hint') : (d.vendor || t('unknown_vendor'))}
+                      </div>
                     </td>
                     <td style={{ padding: '10px 12px', fontSize: 'var(--fs-xs)' }} className="font-mono">
-                      <div>{d.ip_address || '—'}</div>
+                      <div>{d.is_retired_pool ? '—' : (d.ip_address || '—')}</div>
                       <div style={{ color: 'var(--text-muted)' }}>{d.mac_address}</div>
                     </td>
                     <td style={{ padding: '10px 12px' }}>

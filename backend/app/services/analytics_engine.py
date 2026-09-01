@@ -1,7 +1,7 @@
 import calendar
 import logging
 from datetime import date, datetime, timedelta
-from typing import Any, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import HTTPException
 from sqlalchemy import func, select
@@ -490,15 +490,33 @@ class AnalyticsEngine:
         user_summaries.sort(key=lambda x: x.total_bytes, reverse=True)
 
         # 7. Build Device Traffic Summaries
+        #
+        # Deleted devices are not listed one by one - the operator removed them
+        # on purpose - but their bytes are still part of their profile's total
+        # (``by_owner`` folds every owned device, deleted included), so hiding
+        # them outright would make the per-device rows fall short of the
+        # per-user figure. Each profile's deleted devices are pooled into one
+        # synthetic "Old devices" row instead.
         device_summaries: List[DeviceTrafficSummary] = []
+        # owner_id -> [range_in, range_out, cycle, all_time, count]
+        retired_pool: Dict[Optional[int], List[int]] = {}
         for d in all_devices:
             d_in, d_out = dev_totals.get(d.id, (0, 0))
+            dc_in, dc_out = dev_cycle.get(d.id, (0, 0))
+            da_in, da_out = dev_alltime.get(d.id, (0, 0))
+
+            if getattr(d, "is_deleted", False):
+                acc = retired_pool.setdefault(d.user_id, [0, 0, 0, 0, 0])
+                acc[0] += d_in
+                acc[1] += d_out
+                acc[2] += dc_in + dc_out
+                acc[3] += da_in + da_out
+                acc[4] += 1
+                continue
+
             d_total = d_in + d_out
             pct = round((d_total / gateway_total * 100), 2) if gateway_total > 0 else 0.0
             parent_user = user_map.get(d.user_id) if d.user_id else None
-
-            dc_in, dc_out = dev_cycle.get(d.id, (0, 0))
-            da_in, da_out = dev_alltime.get(d.id, (0, 0))
 
             device_summaries.append(DeviceTrafficSummary(
                 device_id=d.id,
@@ -519,6 +537,27 @@ class AnalyticsEngine:
                 last_seen=d.last_seen,
                 cycle_bytes=dc_in + dc_out,
                 all_time_bytes=da_in + da_out,
+            ))
+
+        for owner_id, (p_in, p_out, p_cycle, p_all, p_count) in retired_pool.items():
+            if p_in + p_out + p_cycle + p_all == 0:
+                continue
+            p_total = p_in + p_out
+            parent_user = user_map.get(owner_id) if owner_id else None
+            device_summaries.append(DeviceTrafficSummary(
+                device_id=-(owner_id or 0),
+                mac_address="",
+                custom_name="Old devices",
+                user_id=owner_id,
+                user_name=parent_user.name if parent_user else None,
+                bytes_in=p_in,
+                bytes_out=p_out,
+                total_bytes=p_total,
+                pct_of_total=round((p_total / gateway_total * 100), 2) if gateway_total > 0 else 0.0,
+                last_seen=None,
+                cycle_bytes=p_cycle,
+                all_time_bytes=p_all,
+                is_retired_pool=True,
             ))
         device_summaries.sort(key=lambda x: x.total_bytes, reverse=True)
 
@@ -819,9 +858,16 @@ class AnalyticsEngine:
         )
         dev_res = await session.execute(dev_stmt)
         device_summaries: List[DeviceTrafficSummary] = []
+        # Deleted devices are pooled into one "Old devices" row, as in the
+        # range breakdown, so this list still sums to the user's total.
+        retired = [0, 0]
         for dev, d_in, d_out in dev_res.all():
             d_in_int = int(d_in or 0)
             d_out_int = int(d_out or 0)
+            if getattr(dev, "is_deleted", False):
+                retired[0] += d_in_int
+                retired[1] += d_out_int
+                continue
             d_total = d_in_int + d_out_int
             pct = round((d_total / total_bytes * 100), 1) if total_bytes > 0 else 0.0
             device_summaries.append(DeviceTrafficSummary(
@@ -839,6 +885,21 @@ class AnalyticsEngine:
                 percentage_of_total=pct,
                 is_active=dev.is_active,
                 last_active=dev.last_seen,
+            ))
+        if retired[0] + retired[1] > 0:
+            r_total = retired[0] + retired[1]
+            device_summaries.append(DeviceTrafficSummary(
+                device_id=-(user.id or 0),
+                mac_address="",
+                custom_name="Old devices",
+                user_id=user.id,
+                user_name=user.name,
+                bytes_in=retired[0],
+                bytes_out=retired[1],
+                total_bytes=r_total,
+                percentage_of_total=round((r_total / total_bytes * 100), 1) if total_bytes > 0 else 0.0,
+                is_active=False,
+                is_retired_pool=True,
             ))
         device_summaries.sort(key=lambda d: d.total_bytes, reverse=True)
 

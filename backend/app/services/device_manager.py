@@ -526,6 +526,19 @@ class DeviceManager(DeviceConsolidationMixin):
             device.is_active = (mac in active_macs)
             if device.is_active:
                 device.last_seen = now_utc
+                # The same MAC turning up again undoes a soft delete: the
+                # operator removed it, the device is back, so it returns with
+                # the traffic history it kept while it was gone.
+                if device.is_deleted:
+                    device.is_deleted = False
+                    session.add(DeviceHistory(
+                        device_id=device.id,
+                        mac_address=mac,
+                        hostname=device.hostname,
+                        ip_address=device.ip_address,
+                        event_type="reactivated",
+                        details="Seen on the network again after being deleted; traffic history retained",
+                    ))
 
         # Flag whatever answered on a veth interface as a container. Done in one
         # pass at the end rather than at each creation site: a device can be
