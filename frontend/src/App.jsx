@@ -356,7 +356,11 @@ export function App() {
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
                 {/* Auto-Sort by Activity Toggle */}
-                <label className="toggle-pill" style={{ cursor: 'pointer', userSelect: 'none', display: 'flex', alignItems: 'center', gap: 6, fontSize: 'var(--fs-xs)' }}>
+                <label
+                  className="toggle-pill"
+                  style={{ cursor: 'pointer', userSelect: 'none', display: 'flex', alignItems: 'center', gap: 6, fontSize: 'var(--fs-xs)' }}
+                  title={t('sort_by_activity_hint')}
+                >
                   <input
                     type="checkbox"
                     checked={autoSortActivity}
