@@ -385,12 +385,29 @@ export function DeviceInbox({ devices = [], users = [], onAssign, onScan, isScan
                       </div>
                     )}
 
-                    {/* Volume consumed today by an as-yet unidentified device. */}
+                    {/* Volume consumed by an as-yet unidentified device: today,
+                        this billing cycle, and all time. A device sitting idle
+                        today but with gigabytes all-time is a different story
+                        from one that has genuinely moved nothing. */}
                     <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                       <span style={{ color: 'var(--text-muted)' }}>{t('today_label')}:</span>
                       <span className="font-mono" style={{ display: 'flex', gap: 8 }}>
                         <span style={{ color: 'var(--color-success)' }}>↓ {formatBytes(device.bytes_today_in || 0)}</span>
                         <span style={{ color: 'var(--color-primary)' }}>↑ {formatBytes(device.bytes_today_out || 0)}</span>
+                      </span>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                      <span style={{ color: 'var(--text-muted)' }}>{t('cycle_scope')}:</span>
+                      <span className="font-mono" style={{ display: 'flex', gap: 8 }}>
+                        <span style={{ color: 'var(--color-success)' }}>↓ {formatBytes(device.bytes_cycle_in || 0)}</span>
+                        <span style={{ color: 'var(--color-primary)' }}>↑ {formatBytes(device.bytes_cycle_out || 0)}</span>
+                      </span>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                      <span style={{ color: 'var(--text-muted)' }}>{t('all_time_label')}:</span>
+                      <span className="font-mono" style={{ display: 'flex', gap: 8 }}>
+                        <span style={{ color: 'var(--color-success)' }}>↓ {formatBytes(device.bytes_total_in || 0)}</span>
+                        <span style={{ color: 'var(--color-primary)' }}>↑ {formatBytes(device.bytes_total_out || 0)}</span>
                       </span>
                     </div>
                   </div>

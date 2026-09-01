@@ -100,6 +100,12 @@ class UserTrafficSummary(BaseModel):
     total_bytes: int = 0
     pct_of_total: float = 0.0
     device_count: int = 0
+    # Most recent moment any of this user's devices was seen on the network.
+    last_seen: Optional[datetime] = None
+    # Combined volume over the current ISP billing cycle, and over all of
+    # recorded history - shown beside the selected-range figure.
+    cycle_bytes: int = 0
+    all_time_bytes: int = 0
 
 
 class DeviceTrafficSummary(BaseModel):
@@ -119,6 +125,28 @@ class DeviceTrafficSummary(BaseModel):
     speed_limit: str = "default"
     is_paused: bool = False
     is_hidden: bool = False
+    last_seen: Optional[datetime] = None
+    cycle_bytes: int = 0
+    all_time_bytes: int = 0
+
+
+class InterfaceTrafficSummary(BaseModel):
+    """One interface's volume: selected range, current cycle, and all time.
+
+    Feeds the per-interface breakdown tab, whose reason to exist is watching a
+    WireGuard / ZeroTier / tunnel link separately from the physical WAN. Tunnel
+    interfaces sort to the top; ``is_monitored`` marks the ones that make up
+    the gateway (WAN) total so a reader knows not to double-count them.
+    """
+    interface_name: str
+    is_tunnel: bool = False
+    is_monitored: bool = False
+    bytes_in: int = 0
+    bytes_out: int = 0
+    total_bytes: int = 0
+    pct_of_total: float = 0.0
+    cycle_bytes: int = 0
+    all_time_bytes: int = 0
 
 
 class AccountingHealth(BaseModel):
@@ -195,5 +223,6 @@ class TrafficAnalyticsResponse(BaseModel):
     router_self: RouterSelfTrafficSummary = RouterSelfTrafficSummary()
     users: List[UserTrafficSummary]
     devices: List[DeviceTrafficSummary]
+    interfaces: List[InterfaceTrafficSummary] = []
     timeline: List[DailyTrafficPoint]
     accounting_health: AccountingHealth = AccountingHealth()

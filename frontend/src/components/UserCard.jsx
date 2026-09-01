@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useI18n } from '../context/I18nContext';
 import { api } from '../api/client';
-import { formatSpeed, formatSpeedShort, formatBytes, formatGbWhole, formatRelativeTime } from '../utils/formatters';
+import { formatSpeed, formatSpeedShort, formatBytes, formatGbWhole, formatRelativeTime, formatLastActive, formatDateTime } from '../utils/formatters';
 import { displayVendor } from '../utils/deviceLabels';
 import { DeviceModal } from './DeviceModal';
 import {
@@ -105,6 +105,8 @@ export function groupDevices(devices) {
       bytesOut: sum('bytes_today_out'),
       bytesTotalIn: sum('bytes_total_in'),
       bytesTotalOut: sum('bytes_total_out'),
+      bytesCycleIn: sum('bytes_cycle_in'),
+      bytesCycleOut: sum('bytes_cycle_out'),
     };
   });
 }
@@ -193,6 +195,7 @@ function DeviceRow({ group, t, lang, grandTotal = 0, onOpen, onUpdate }) {
   const volTitle =
     `${t('device_volume_legend')}\n` +
     `${t('today_scope')}: ↓ ${formatBytes(group.bytesIn)} · ↑ ${formatBytes(group.bytesOut)}\n` +
+    `${t('cycle_scope')}: ↓ ${formatBytes(group.bytesCycleIn)} · ↑ ${formatBytes(group.bytesCycleOut)}\n` +
     `${t('all_time_label')}: ↓ ${formatBytes(group.bytesTotalIn)} · ↑ ${formatBytes(group.bytesTotalOut)}`;
 
   const volumeNote = `${t('today_scope')}: ↓ ${formatBytes(group.bytesIn)} · ↑ ${formatBytes(group.bytesOut)}`;
@@ -362,6 +365,8 @@ export function UserCard({ user, onEdit, onDelete, onLimitChange, onPauseToggle,
 
   const todayTotal = (user.bytes_today_in || 0) + (user.bytes_today_out || 0);
   const sharePct = gatewayTotal > 0 ? (todayTotal / gatewayTotal) * 100 : 0;
+  const cycleTotal = (user.bytes_cycle_in || 0) + (user.bytes_cycle_out || 0);
+  const allTimeTotal = (user.bytes_total_in || 0) + (user.bytes_total_out || 0);
 
   const currentLimit = user.speed_limit || 'unlimited';
   const isKnownPreset = SPEED_PRESETS.some(p => p.value === currentLimit);
@@ -527,6 +532,31 @@ export function UserCard({ user, onEdit, onDelete, onLimitChange, onPauseToggle,
               {gatewayTotal > 0 ? `${t('today_scope')} · ${sharePct.toFixed(1)}%` : t('today_scope')}
             </div>
           </div>
+        </div>
+
+        {/* Reference strip: this user's volume over the billing cycle and over
+            all recorded history, plus how long since any of their devices was
+            last seen. The panel above is "right now / today"; this is the
+            longer view, kept deliberately small. */}
+        <div style={{
+          marginTop: 8,
+          display: 'flex',
+          flexWrap: 'wrap',
+          gap: '4px 14px',
+          fontSize: 'var(--fs-2xs)',
+          color: 'var(--text-muted)'
+        }}>
+          <span>
+            {t('col_cycle')}: <span className="font-mono" style={{ color: 'var(--text-secondary)' }}>{formatBytes(cycleTotal)}</span>
+          </span>
+          <span>
+            {t('all_time_label')}: <span className="font-mono" style={{ color: 'var(--text-secondary)' }}>{formatBytes(allTimeTotal)}</span>
+          </span>
+          <span title={user.last_seen ? formatDateTime(user.last_seen, lang) : t('last_active_never')}>
+            {t('col_last_active')}: <span className="font-mono" style={{ color: 'var(--text-secondary)' }}>
+              {user.last_seen ? formatLastActive(user.last_seen, lang) : t('last_active_never')}
+            </span>
+          </span>
         </div>
 
         {/* Associated devices — two lines each, see DeviceRow */}

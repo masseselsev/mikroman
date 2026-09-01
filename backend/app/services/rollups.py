@@ -31,6 +31,12 @@ from backend.app.services.router_time import get_router_offset
 # (bytes_in, bytes_out)
 Volume = Tuple[int, int]
 
+# A window wide enough to mean "every rollup row there is", for all-time
+# totals. SQLite compares DATE values lexically, so these literal bounds sort
+# correctly against any real ``record_date``.
+ALLTIME_START = date(1970, 1, 1)
+ALLTIME_END = date(2999, 12, 31)
+
 
 async def sum_by(
     session: AsyncSession,
@@ -119,6 +125,59 @@ async def daily_totals(
             start_date, end_date, router_id=router_id,
         ),
     }
+
+
+def split_bytes_by_day(
+    start_dt: datetime,
+    end_dt: datetime,
+    bytes_in: int,
+    bytes_out: int,
+) -> List[Tuple[date, int, int]]:
+    """Apportion a volume measured over ``[start_dt, end_dt]`` across the
+    calendar days it spans, in proportion to how much of the interval fell on
+    each day.
+
+    Both accounting paths accumulate a counter delta between two polls and
+    credit the whole of it to one date. When the two polls sit on different
+    router-local dates - a poll that resumed after an outage that ran past
+    midnight, or simply the first poll after 00:00 - that dumps a full evening
+    of traffic onto the wrong day. Splitting by clock time is an approximation
+    (traffic is not uniform through the night) but it is a far smaller error
+    than mis-filing the entire amount, and for the overwhelmingly common
+    same-day case it returns a single unchanged entry.
+
+    ``start_dt``/``end_dt`` are naive router-local datetimes. The returned
+    per-day integers always sum back to the inputs - the rounding remainder is
+    put on the last day.
+    """
+    if end_dt <= start_dt:
+        return [(start_dt.date(), bytes_in, bytes_out)]
+    if start_dt.date() == end_dt.date():
+        return [(start_dt.date(), bytes_in, bytes_out)]
+
+    total = (end_dt - start_dt).total_seconds()
+    spans: List[Tuple[date, float]] = []
+    cursor = start_dt
+    while cursor < end_dt:
+        next_midnight = datetime.combine(cursor.date() + timedelta(days=1), time())
+        chunk_end = min(next_midnight, end_dt)
+        spans.append((cursor.date(), (chunk_end - cursor).total_seconds()))
+        cursor = chunk_end
+
+    out: List[Tuple[date, int, int]] = []
+    acc_in = acc_out = 0
+    for idx, (day, seconds) in enumerate(spans):
+        if idx == len(spans) - 1:
+            day_in = bytes_in - acc_in
+            day_out = bytes_out - acc_out
+        else:
+            frac = seconds / total
+            day_in = int(bytes_in * frac)
+            day_out = int(bytes_out * frac)
+            acc_in += day_in
+            acc_out += day_out
+        out.append((day, day_in, day_out))
+    return out
 
 
 def sum_window(per_day: Dict[date, Volume], *, after: Optional[date] = None) -> int:

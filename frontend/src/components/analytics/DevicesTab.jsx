@@ -1,6 +1,6 @@
 import React from 'react';
 import { useI18n } from '../../context/I18nContext';
-import { formatBytes } from '../../utils/formatters';
+import { formatBytes, formatLastActive, formatDateTime } from '../../utils/formatters';
 import { ShareBar, SortHeader, sortRows } from './tableParts';
 import {
   EyeOff,
@@ -27,7 +27,7 @@ export function DevicesTab({
   showHidden,
   setShowHidden,
 }) {
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
 
   return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
@@ -85,6 +85,9 @@ export function DevicesTab({
                 <SortHeader label={t('download_rx')} field="bytes_in" sort={deviceSort} onSort={toggleDeviceSort} />
                 <SortHeader label={t('upload_tx')} field="bytes_out" sort={deviceSort} onSort={toggleDeviceSort} />
                 <SortHeader label={t('table_total')} field="total_bytes" sort={deviceSort} onSort={toggleDeviceSort} />
+                <SortHeader label={t('col_cycle')} field="cycle_bytes" sort={deviceSort} onSort={toggleDeviceSort} />
+                <SortHeader label={t('col_all_time')} field="all_time_bytes" sort={deviceSort} onSort={toggleDeviceSort} />
+                <SortHeader label={t('col_last_active')} field="last_seen" sort={deviceSort} onSort={toggleDeviceSort} />
                 <SortHeader label={t('table_share')} field="pct_of_total" sort={deviceSort} onSort={toggleDeviceSort} />
                 <SortHeader label={t('table_speed_limit')} field="speed_limit" sort={deviceSort} onSort={toggleDeviceSort} />
               </tr>
@@ -92,7 +95,7 @@ export function DevicesTab({
             <tbody>
               {filteredDevices.length === 0 ? (
                 <tr>
-                  <td colSpan={8} style={{ padding: 20, textAlign: 'center', color: 'var(--text-muted)', fontSize: 'var(--fs-sm)' }}>
+                  <td colSpan={11} style={{ padding: 20, textAlign: 'center', color: 'var(--text-muted)', fontSize: 'var(--fs-sm)' }}>
                     {t('no_devices_matching')}
                   </td>
                 </tr>
@@ -124,6 +127,19 @@ export function DevicesTab({
                     </td>
                     <td style={{ padding: '10px 12px', fontWeight: 800 }} className="font-mono">
                       {formatBytes(d.total_bytes)}
+                    </td>
+                    <td style={{ padding: '10px 12px', color: 'var(--text-secondary)' }} className="font-mono" title={t('cycle_scope')}>
+                      {formatBytes(d.cycle_bytes)}
+                    </td>
+                    <td style={{ padding: '10px 12px', color: 'var(--text-secondary)' }} className="font-mono" title={t('col_all_time')}>
+                      {formatBytes(d.all_time_bytes)}
+                    </td>
+                    <td
+                      style={{ padding: '10px 12px', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}
+                      className="font-mono"
+                      title={d.last_seen ? formatDateTime(d.last_seen, lang) : t('last_active_never')}
+                    >
+                      {d.last_seen ? formatLastActive(d.last_seen, lang) : t('last_active_never')}
                     </td>
                     <td style={{ padding: '10px 12px', minWidth: 130 }}>
                       <ShareBar pct={d.pct_of_total} />

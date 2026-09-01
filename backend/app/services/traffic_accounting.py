@@ -28,7 +28,7 @@ as the interface counters are handled.
 import json
 import logging
 import time
-from datetime import date
+from datetime import date, datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy import select
@@ -41,7 +41,8 @@ from backend.app.db.models import (
     RouterSelfTrafficRollup,
     TrafficRollup,
 )
-from backend.app.services.router_time import router_local_date
+from backend.app.services.rollups import split_bytes_by_day
+from backend.app.services.router_time import router_local_date, router_local_now
 
 logger = logging.getLogger("mikroman.traffic_accounting")
 
@@ -64,6 +65,13 @@ STARTED_SETTING_KEY = "accounting_started_at"
 # the last successful collection. If uptime has gone backwards since, the router
 # rebooted and every byte counter reset to zero at that moment.
 UPTIME_BASELINE_KEY = "__router_uptime_s__"
+# Reserved key inside the baselines blob holding the router-local wall-clock
+# time (ISO string) of the last successful collection. When the current tick
+# lands on a later date, the counter delta accumulated since then is spread
+# across the days it spans instead of being credited whole to the current date
+# - otherwise a poll that resumes after an outage running past midnight files
+# a full evening of traffic under the wrong day.
+LAST_COLLECT_KEY = "__last_collect_local__"
 # Uptime may appear to dip by a few seconds between polls from rounding and tick
 # jitter; only a drop larger than this is treated as a reboot.
 REBOOT_SLACK_SECONDS = 90
@@ -545,7 +553,8 @@ class TrafficAccountingService:
         """
         # Rollups are keyed by the router's date, not the container's: a UTC
         # container files the router's evening under the previous day.
-        today = await router_local_date(session)
+        now_local = await router_local_now(session)
+        today = now_local.date()
 
         try:
             rules = await self.router_client.get_mangle_rules()
@@ -574,6 +583,21 @@ class TrafficAccountingService:
             return {"devices": 0, "bytes_in": 0, "bytes_out": 0}
 
         baselines = await self._load_baselines(session)
+
+        # When the last successful collection was on an earlier router-local
+        # date, this tick's counter delta covers more than one day and is
+        # apportioned across them by clock time. ``None`` means same-day (the
+        # overwhelmingly common case) and the delta is credited whole to today.
+        span_start: Optional[datetime] = None
+        prev_raw = baselines.get(LAST_COLLECT_KEY)
+        if isinstance(prev_raw, str):
+            try:
+                parsed_prev = datetime.fromisoformat(prev_raw)
+                if parsed_prev < now_local and parsed_prev.date() < today:
+                    span_start = parsed_prev
+            except ValueError:
+                pass
+        baselines[LAST_COLLECT_KEY] = now_local.isoformat()
 
         # Did the router reboot since the last collection? Uptime running
         # backwards is proof; a first run (no stored uptime) is not.
@@ -619,23 +643,47 @@ class TrafficAccountingService:
         if router_uptime_seconds is not None:
             baselines[UPTIME_BASELINE_KEY] = router_uptime_seconds
 
-        total_in, total_out = await self._flush_deltas(session, today, per_device)
+        total_in, total_out = await self._flush_deltas(
+            session, today, per_device, span_start=span_start, span_end=now_local
+        )
         if self_down or self_up:
-            await self._add_rollup(
-                session, RouterSelfTrafficRollup, "router_id", self.router_id,
-                today, self_down, self_up,
-            )
+            for day, d_in, d_out in self._spread(span_start, now_local, today, self_down, self_up):
+                await self._add_rollup(
+                    session, RouterSelfTrafficRollup, "router_id", self.router_id,
+                    day, d_in, d_out,
+                )
 
         await self._save_baselines(session, baselines)
         await session.commit()
 
         return {"devices": len(per_device), "bytes_in": total_in, "bytes_out": total_out}
 
+    @staticmethod
+    def _spread(
+        span_start: Optional[datetime],
+        span_end: datetime,
+        today: date,
+        down: int,
+        up: int,
+    ) -> List[Tuple[date, int, int]]:
+        """``[(date, down, up)]`` for one delta.
+
+        A single ``(today, down, up)`` entry when the tick did not cross a
+        local midnight; otherwise the amount apportioned across the spanned
+        days by clock time. The per-day parts always sum back to the input.
+        """
+        if span_start is None:
+            return [(today, down, up)]
+        return split_bytes_by_day(span_start, span_end, down, up)
+
     async def _flush_deltas(
         self,
         session: AsyncSession,
         today: date,
         per_device: Dict[int, Tuple[int, int]],
+        *,
+        span_start: Optional[datetime] = None,
+        span_end: Optional[datetime] = None,
     ) -> Tuple[int, int]:
         """Credit accumulated ``{device_id: (down, up)}`` deltas to the rollups.
 
@@ -643,13 +691,20 @@ class TrafficAccountingService:
         user's devices, computed here, so the two levels can never disagree.
         Returns the ``(total_in, total_out)`` actually written.
 
+        When ``span_start`` is given and sits on an earlier date than
+        ``span_end``, each device's delta is spread across the days it spans
+        (see :meth:`_spread`) rather than all landing on ``today``. The user
+        rollups are aggregated per day from the same split.
+
         A reading for a device row that no longer exists is redirected to its
         successor when one was recorded (a consolidated rotation or a manual
         merge). Only a device that was genuinely deleted has nowhere to go, and
         its last few seconds of counter are then correctly discarded.
         """
+        span_end = span_end or datetime.combine(today, datetime.min.time())
         total_in = total_out = 0
-        user_totals: Dict[int, Tuple[int, int]] = {}
+        # (user_id, date) -> (down, up)
+        user_totals: Dict[Tuple[int, date], Tuple[int, int]] = {}
         successors: Optional[Dict[str, int]] = None
 
         for device_id, (down, up) in per_device.items():
@@ -668,19 +723,19 @@ class TrafficAccountingService:
                     continue
                 device_id = device.id
 
-            await self._add_rollup(
-                session, DeviceTrafficRollup, "device_id", device_id, today, down, up
-            )
+            for day, d_in, d_out in self._spread(span_start, span_end, today, down, up):
+                await self._add_rollup(
+                    session, DeviceTrafficRollup, "device_id", device_id, day, d_in, d_out
+                )
+                if device.user_id:
+                    prev = user_totals.get((device.user_id, day), (0, 0))
+                    user_totals[(device.user_id, day)] = (prev[0] + d_in, prev[1] + d_out)
             total_in += down
             total_out += up
 
-            if device.user_id:
-                prev = user_totals.get(device.user_id, (0, 0))
-                user_totals[device.user_id] = (prev[0] + down, prev[1] + up)
-
-        for user_id, (down, up) in user_totals.items():
+        for (user_id, day), (down, up) in user_totals.items():
             await self._add_rollup(
-                session, TrafficRollup, "user_id", user_id, today, down, up
+                session, TrafficRollup, "user_id", user_id, day, down, up
             )
 
         return total_in, total_out

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { formatBytes, formatGbWhole, formatRelativeTime, formatSpeed, formatSpeedShort, formatUptime } from './formatters';
+import { formatBytes, formatDateTime, formatGbWhole, formatLastActive, formatRelativeTime, formatSpeed, formatSpeedShort, formatUptime } from './formatters';
 
 /**
  * These decide what every figure on the dashboard actually reads as, so their
@@ -131,6 +131,54 @@ describe('formatRelativeTime', () => {
     at('2026-08-31T12:00:00Z');
     expect(formatRelativeTime('2026-08-31T09:00:00Z', 'ru')).toBe('3ч');
     expect(formatRelativeTime('2026-08-31T11:59:30Z', 'ru')).toBe('сейчас');
+  });
+});
+
+describe('formatLastActive', () => {
+  afterEach(() => vi.useRealTimers());
+  const at = (isoNow) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(isoNow));
+  };
+
+  it('is empty for missing or unparseable input', () => {
+    expect(formatLastActive(null)).toBe('');
+    expect(formatLastActive('not a date')).toBe('');
+  });
+
+  it('rounds UP to the coarsest unit, unlike formatRelativeTime', () => {
+    at('2026-08-31T12:00:00Z');
+    // 90 minutes -> "2h", not "1h"
+    expect(formatLastActive('2026-08-31T10:30:00Z')).toBe('2h');
+    // 25 hours -> "2d", not "1d"
+    expect(formatLastActive('2026-08-30T11:00:00Z')).toBe('2d');
+    // a bare minute over the hour still rounds to the next hour
+    expect(formatLastActive('2026-08-31T10:59:00Z')).toBe('2h');
+    // exactly on a boundary does not round past it
+    expect(formatLastActive('2026-08-31T11:00:00Z')).toBe('1h');
+  });
+
+  it('treats the last ~minute as "now" and never goes negative', () => {
+    at('2026-08-31T12:00:00Z');
+    expect(formatLastActive('2026-08-31T11:59:40Z')).toBe('now');
+    expect(formatLastActive('2026-08-31T12:05:00Z')).toBe('now');
+  });
+
+  it('localises the suffix', () => {
+    at('2026-08-31T12:00:00Z');
+    expect(formatLastActive('2026-08-31T10:30:00Z', 'ru')).toBe('2ч');
+  });
+});
+
+describe('formatDateTime', () => {
+  it('is empty for missing or unparseable input', () => {
+    expect(formatDateTime(null)).toBe('');
+    expect(formatDateTime('not a date')).toBe('');
+  });
+
+  it('renders a fixed-width local date and time', () => {
+    // en-GB: dd/mm/yyyy, 24h
+    expect(formatDateTime('2026-09-01T14:32:00Z', 'en')).toMatch(/01\/09\/2026/);
   });
 });
 

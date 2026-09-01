@@ -204,6 +204,41 @@ class RouterTrafficRollup(Base):
     bytes_out: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)  # Upload
 
 
+class InterfaceTrafficRollup(Base):
+    """Per-interface daily volume, rebuilt from the sampled interface counters.
+
+    ``interface_metrics`` records every interface's cumulative rx/tx counter
+    about every few seconds but is pruned after 30 days. This table is the
+    durable form: one row per (router, interface, router-local date), summed
+    from the samples that fall in that date. It is what the WireGuard /
+    ZeroTier / tunnel breakdown reads, and it is also where the gateway rollup
+    (:class:`RouterTrafficRollup`) is now derived from - walking the samples
+    splits a counter delta at the local midnight and survives a container
+    restart, neither of which the old live-accumulator did.
+
+    Recomputed rather than accumulated: each pass overwrites the rows for the
+    days it covers, so a correction to a wrongly-attributed day propagates on
+    its own the next time the collector runs.
+    """
+    __tablename__ = "interface_traffic_rollups"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    router_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("routers.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    interface_name: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    record_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    bytes_in: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)   # Download
+    bytes_out: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)  # Upload
+
+    __table_args__ = (
+        UniqueConstraint(
+            "router_id", "interface_name", "record_date",
+            name="uq_interface_traffic_rollup_day",
+        ),
+    )
+
+
 class RouterSelfTrafficRollup(Base):
     """Traffic the router generated or received on its own behalf, per day.
 
