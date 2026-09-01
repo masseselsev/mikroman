@@ -1,6 +1,6 @@
 import calendar
 import logging
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any, List, Optional, Tuple
 
 from sqlalchemy import select
@@ -29,56 +29,79 @@ from backend.app.services.router_time import router_local_date
 logger = logging.getLogger("mikroman.analytics_engine")
 
 
-def get_billing_cycle_dates(anchor_day: int, reference_date: Optional[date] = None, previous: bool = False) -> Tuple[date, date]:
-    """Calculate the start and end dates of an ISP billing cycle based on an anchor renewal day.
+def inclusive_end_date(end_dt: datetime) -> date:
+    """Last calendar date a half-open cycle bound touches.
 
-    Args:
-        anchor_day: Day of month when traffic resets (1-31).
-        reference_date: Reference date (defaults to today).
-        previous: If True, returns the previous billing cycle window.
-
-    Returns:
-        Tuple of (start_date, end_date).
+    Shared with the analytics endpoint, hence no leading underscore: turning the
+    exclusive ``end_dt`` of ``get_billing_cycle_bounds`` into an inclusive
+    ``date`` is done in several places and must be done the same way each time.
     """
-    ref = reference_date or date.today()
-    # Bound anchor day to valid month range
+    return (end_dt - timedelta(microseconds=1)).date()
+
+
+def get_billing_cycle_bounds(
+    anchor_day: int,
+    anchor_hour: int,
+    anchor_minute: int,
+    ref_dt: datetime,
+    previous: bool = False,
+) -> Tuple[datetime, datetime]:
+    """Router-local start (inclusive) and end (exclusive) of an ISP billing cycle.
+
+    ``end_dt`` is the next cycle's reset instant, so the current cycle is the
+    half-open interval ``[start_dt, end_dt)``. Unlike the date-only
+    :func:`get_billing_cycle_dates`, this is time-aware: on the anchor day
+    itself the cycle you are in depends on whether ``ref_dt`` has passed the
+    reset time yet.
+    """
     day = max(1, min(anchor_day, 31))
+    hh = max(0, min(anchor_hour, 23))
+    mm = max(0, min(anchor_minute, 59))
 
-    if ref.day >= day:
-        # We are currently in the cycle that started this month on anchor_day
-        max_days = calendar.monthrange(ref.year, ref.month)[1]
-        actual_start_day = min(day, max_days)
-        start_date = date(ref.year, ref.month, actual_start_day)
+    def reset_on(year: int, month: int) -> datetime:
+        last = calendar.monthrange(year, month)[1]
+        return datetime(year, month, min(day, last), hh, mm)
 
-        # Cycle ends on (anchor_day - 1) of next month
-        if ref.month == 12:
-            next_year, next_month = ref.year + 1, 1
-        else:
-            next_year, next_month = ref.year, ref.month + 1
-        next_max_days = calendar.monthrange(next_year, next_month)[1]
-        end_date = date(next_year, next_month, min(day - 1 if day > 1 else next_max_days, next_max_days))
+    this_month = reset_on(ref_dt.year, ref_dt.month)
+    if ref_dt >= this_month:
+        start = this_month
+    elif ref_dt.month == 1:
+        start = reset_on(ref_dt.year - 1, 12)
     else:
-        # We are in the cycle that started last month on anchor_day
-        if ref.month == 1:
-            prev_year, prev_month = ref.year - 1, 12
-        else:
-            prev_year, prev_month = ref.year, ref.month - 1
-        prev_max_days = calendar.monthrange(prev_year, prev_month)[1]
-        start_date = date(prev_year, prev_month, min(day, prev_max_days))
-        end_date = date(ref.year, ref.month, min(day - 1 if day > 1 else calendar.monthrange(ref.year, ref.month)[1], calendar.monthrange(ref.year, ref.month)[1]))
+        start = reset_on(ref_dt.year, ref_dt.month - 1)
+
+    if start.month == 12:
+        end = reset_on(start.year + 1, 1)
+    else:
+        end = reset_on(start.year, start.month + 1)
 
     if previous:
-        # Shift back by one full billing cycle
-        if start_date.month == 1:
-            prev_start_year, prev_start_month = start_date.year - 1, 12
+        prev_end = start
+        if start.month == 1:
+            prev_start = reset_on(start.year - 1, 12)
         else:
-            prev_start_year, prev_start_month = start_date.year, start_date.month - 1
-        p_max_days = calendar.monthrange(prev_start_year, prev_start_month)[1]
-        prev_start = date(prev_start_year, prev_start_month, min(day, p_max_days))
-        prev_end = start_date - timedelta(days=1)
+            prev_start = reset_on(start.year, start.month - 1)
         return (prev_start, prev_end)
 
-    return (start_date, end_date)
+    return (start, end)
+
+
+def get_billing_cycle_dates(
+    anchor_day: int, reference_date: Optional[date] = None, previous: bool = False
+) -> Tuple[date, date]:
+    """Inclusive first and last *calendar dates* an ISP billing cycle touches.
+
+    A thin date-granular view of :func:`get_billing_cycle_bounds` at midnight.
+    Retained purely as a convenience for the handful of callers (and tests) that
+    only ever think in whole days. Everything that has to respect the reset time
+    - the quota's "used" figure, its countdown, the range presets - now calls
+    ``get_billing_cycle_bounds`` directly with the real anchor time.
+    """
+    ref = reference_date or date.today()
+    start_dt, end_dt = get_billing_cycle_bounds(
+        anchor_day, 0, 0, datetime.combine(ref, datetime.min.time()), previous
+    )
+    return (start_dt.date(), inclusive_end_date(end_dt))
 
 
 def resolve_date_range(
@@ -86,7 +109,10 @@ def resolve_date_range(
     start_date: Optional[date] = None,
     end_date: Optional[date] = None,
     anchor_day: int = 1,
-    today: Optional[date] = None
+    anchor_hour: int = 0,
+    anchor_minute: int = 0,
+    today: Optional[date] = None,
+    now_dt: Optional[datetime] = None,
 ) -> Tuple[date, date, str]:
     """Resolve a date range preset or explicit custom dates into concrete dates.
 
@@ -106,12 +132,15 @@ def resolve_date_range(
     elif preset == "30d":
         return (today - timedelta(days=29), today, "30d")
     elif preset == "billing_current":
-        s, e = get_billing_cycle_dates(anchor_day, today, previous=False)
+        ref = now_dt or datetime.combine(today, datetime.min.time())
+        s_dt, e_dt = get_billing_cycle_bounds(anchor_day, anchor_hour, anchor_minute, ref, previous=False)
+        e_date = inclusive_end_date(e_dt)
         # Cap current cycle view to today for live measurement
-        return (s, min(e, today), "billing_current")
+        return (s_dt.date(), min(e_date, today), "billing_current")
     elif preset == "billing_previous":
-        s, e = get_billing_cycle_dates(anchor_day, today, previous=True)
-        return (s, e, "billing_previous")
+        ref = now_dt or datetime.combine(today, datetime.min.time())
+        s_dt, e_dt = get_billing_cycle_bounds(anchor_day, anchor_hour, anchor_minute, ref, previous=True)
+        return (s_dt.date(), inclusive_end_date(e_dt), "billing_previous")
     elif preset == "custom" and start_date and end_date:
         return (min(start_date, end_date), max(start_date, end_date), "custom")
     else:
@@ -145,6 +174,55 @@ class AnalyticsEngine:
             session.add(setting)
         await session.commit()
         return day
+
+    @staticmethod
+    async def get_billing_anchor_time(session: AsyncSession) -> Tuple[int, int]:
+        """The configured reset time of day as ``(hour, minute)``.
+
+        Defaults to midnight, which reproduces the pre-existing date-only
+        behaviour exactly, so an install that never set a time is unaffected.
+        A stored value that is not a valid integer falls back to 0 rather than
+        raising, matching how ``get_billing_anchor_day`` handles corruption.
+        """
+        hour = 0
+        minute = 0
+        h_setting = await session.get(AppSetting, "billing_cycle_anchor_hour")
+        m_setting = await session.get(AppSetting, "billing_cycle_anchor_minute")
+        if h_setting and h_setting.value:
+            try:
+                hour = max(0, min(int(h_setting.value), 23))
+            except ValueError:
+                hour = 0
+        if m_setting and m_setting.value:
+            try:
+                minute = max(0, min(int(m_setting.value), 59))
+            except ValueError:
+                minute = 0
+        return (hour, minute)
+
+    @staticmethod
+    async def set_billing_anchor_time(session: AsyncSession, hour: int, minute: int) -> Tuple[int, int]:
+        """Persist the reset time of day as two app settings.
+
+        ``hour`` is clamped to 0-23 and ``minute`` to 0-59 rather than rejected,
+        matching ``get_billing_anchor_time`` and ``set_billing_anchor_day``. The
+        hour and minute rows are written and committed together, so a reader can
+        never observe a half-updated time. Returns the clamped ``(hour, minute)``
+        actually stored.
+        """
+        hh = max(0, min(hour, 23))
+        mm = max(0, min(minute, 59))
+        for key, value, desc in (
+            ("billing_cycle_anchor_hour", hh, "ISP billing cycle reset hour (0-23), router-local"),
+            ("billing_cycle_anchor_minute", mm, "ISP billing cycle reset minute (0-59)"),
+        ):
+            setting = await session.get(AppSetting, key)
+            if setting:
+                setting.value = str(value)
+            else:
+                session.add(AppSetting(key=key, value=str(value), description=desc))
+        await session.commit()
+        return (hh, mm)
 
     @classmethod
     async def get_historical_traffic(

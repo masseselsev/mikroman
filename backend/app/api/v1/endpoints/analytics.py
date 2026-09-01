@@ -12,15 +12,21 @@ from backend.app.schemas.analytics import (
     TrafficAnalyticsResponse,
 )
 from backend.app.schemas.common import APIResponse
-from backend.app.services.analytics_engine import AnalyticsEngine, get_billing_cycle_dates, resolve_date_range
+from backend.app.services.analytics_engine import (
+    AnalyticsEngine,
+    get_billing_cycle_bounds,
+    inclusive_end_date,
+    resolve_date_range,
+)
 from backend.app.services.quota import (
     QuotaConfig,
     get_quota_config,
     save_quota_config,
     unfired_for_cycle,
 )
+from backend.app.services.rollups import resolve_monitored_interfaces, slice_of_day_bytes
 from backend.app.services.router_manager import router_manager
-from backend.app.services.router_time import router_local_date
+from backend.app.services.router_time import get_router_offset, router_local_now
 
 router = APIRouter(prefix="/analytics", tags=["Traffic Analytics"])
 
@@ -43,13 +49,20 @@ async def get_traffic_analytics(
         pass
 
     anchor_day = await AnalyticsEngine.get_billing_anchor_day(db)
+    anchor_hour, anchor_minute = await AnalyticsEngine.get_billing_anchor_time(db)
+    # Presets follow the router's calendar, not the container's UTC one; one
+    # clock read gives both the date and the instant the presets need.
+    now = await router_local_now(db)
+    today = now.date()
     resolved_start, resolved_end, range_label = resolve_date_range(
         preset=preset,
         start_date=start_date,
         end_date=end_date,
         anchor_day=anchor_day,
-        # Presets follow the router's calendar, not the container's UTC one.
-        today=await router_local_date(db)
+        anchor_hour=anchor_hour,
+        anchor_minute=anchor_minute,
+        today=today,
+        now_dt=now,
     )
 
     data = await AnalyticsEngine.get_historical_traffic(
@@ -67,9 +80,12 @@ async def get_traffic_analytics(
 async def get_billing_cycle_config(
     db: AsyncSession = Depends(get_db)
 ):
-    """Fetch the configured ISP billing cycle renewal day (1-31)."""
+    """The ISP billing cycle anchor: day of month, and time of day."""
     anchor_day = await AnalyticsEngine.get_billing_anchor_day(db)
-    return APIResponse(data=BillingCycleConfig(anchor_day=anchor_day))
+    anchor_hour, anchor_minute = await AnalyticsEngine.get_billing_anchor_time(db)
+    return APIResponse(data=BillingCycleConfig(
+        anchor_day=anchor_day, anchor_hour=anchor_hour, anchor_minute=anchor_minute,
+    ))
 
 
 @router.get("/debug-state")
@@ -118,21 +134,50 @@ async def set_billing_cycle_config(
     payload: BillingCycleConfig,
     db: AsyncSession = Depends(get_db)
 ):
-    """Save the ISP billing cycle renewal day (1-31)."""
+    """Save the ISP billing cycle renewal day and time of day."""
     saved_day = await AnalyticsEngine.set_billing_anchor_day(db, payload.anchor_day)
-    return APIResponse(data=BillingCycleConfig(anchor_day=saved_day), message=f"Billing cycle anchor set to day {saved_day}")
+    saved_hour, saved_minute = await AnalyticsEngine.set_billing_anchor_time(
+        db, payload.anchor_hour, payload.anchor_minute,
+    )
+    return APIResponse(
+        data=BillingCycleConfig(
+            anchor_day=saved_day, anchor_hour=saved_hour, anchor_minute=saved_minute,
+        ),
+        message=f"Billing cycle anchor set to day {saved_day} at {saved_hour:02d}:{saved_minute:02d}",
+    )
 
 
 async def build_quota_status(db: AsyncSession, router_id: Optional[int] = None) -> QuotaStatusDTO:
     """Consumption against the ISP allowance for the current billing cycle.
 
-    Usage is taken from the gateway figure for the cycle window, which is the
-    number an ISP actually bills on, rather than the per-device sum.
+    Usage is the gateway figure - the number an ISP bills on - for the cycle
+    window. When the anchor carries a time of day, the cycle-start date's
+    pre-reset slice is subtracted using the sampled WAN counters; if those
+    samples have been pruned, the whole start day is kept (documented fallback).
     """
     config = await get_quota_config(db)
     anchor_day = await AnalyticsEngine.get_billing_anchor_day(db)
-    today = await router_local_date(db)
-    cycle_start, cycle_end = get_billing_cycle_dates(anchor_day, today, previous=False)
+    anchor_hour, anchor_minute = await AnalyticsEngine.get_billing_anchor_time(db)
+    now = await router_local_now(db)
+    today = now.date()
+    non_midnight = anchor_hour != 0 or anchor_minute != 0
+
+    start_dt, end_dt = get_billing_cycle_bounds(
+        anchor_day, anchor_hour, anchor_minute, now, previous=False,
+    )
+    cycle_start = start_dt.date()
+    cycle_end = inclusive_end_date(end_dt)
+
+    # Both boundary slices below fire on exactly the same condition (a
+    # non-midnight reset) and need the same two lookups. Resolve them once:
+    # the offset is threaded into slice_of_day_bytes so it is not re-read per
+    # call, and prev_end_dt is this cycle's start instant so one interface list
+    # serves both.
+    slice_interfaces: list = []
+    slice_offset = 0
+    if non_midnight:
+        slice_interfaces = await resolve_monitored_interfaces(db, router_id)
+        slice_offset = await get_router_offset(db) or 0
 
     data = await AnalyticsEngine.get_historical_traffic(
         session=db,
@@ -143,24 +188,62 @@ async def build_quota_status(db: AsyncSession, router_id: Optional[int] = None) 
         anchor_day=anchor_day,
     )
     used = data.gateway.total_bytes
+
+    # Traffic on the cycle-start date that happened *before* the reset instant
+    # belongs to the previous cycle. Only the start day needs adjusting: we are
+    # always mid-cycle here, so "everything up to now" on any later day is
+    # already inside this cycle. A midnight anchor never enters this branch, so
+    # its "used" figure stays byte-for-byte the pre-change one.
+    if non_midnight:
+        pre = await slice_of_day_bytes(
+            db, router_id, cycle_start, None, start_dt.time(), slice_interfaces,
+            offset_minutes=slice_offset,
+        )
+        if pre is not None:
+            used = max(0, used - (pre[0] + pre[1]))
+
     limit = config.limit_bytes
-    # Inclusive of today: consuming the remainder over the rest of the cycle
-    # includes what is left of the current day.
-    days_remaining = max(0, (cycle_end - today).days + 1)
+
+    # Day counts are fractional so the projection eases across the reset instant
+    # rather than stepping a whole day. At a midnight anchor they collapse back
+    # to the original inclusive calendar-day counts: for anchor days 2-28 every
+    # derived figure is identical to the pre-change output. Anchor day 1 and a
+    # clamped short-month anchor (e.g. 31 in February) now differ on purpose -
+    # those are the two acknowledged latent-bug fixes the datetime bounds bring.
+    DAY = 86400.0
+    total_days = max(1e-9, (end_dt - start_dt).total_seconds() / DAY)
+    if anchor_hour == 0 and anchor_minute == 0:
+        elapsed_days = float(min(total_days, max(1, (today - cycle_start).days + 1)))
+    else:
+        # Mirror the legacy "the current day counts as one whole elapsed day"
+        # behaviour: floor at a full day (but never above total_days for a
+        # hypothetical sub-day cycle) so avg_per_day stays finite right after a
+        # reset instead of exploding on the first few minutes of traffic.
+        elapsed_days = min(
+            total_days,
+            max(min(1.0, total_days), (now - start_dt).total_seconds() / DAY),
+        )
+    days_left_after_today = max(0.0, total_days - elapsed_days)
+
+    remaining_seconds = max(0.0, (end_dt - now).total_seconds())
+    days_remaining = int(remaining_seconds // DAY) + (1 if remaining_seconds % DAY else 0)
 
     # --- end-of-cycle forecast ---------------------------------------------
-    cycle_days_total = max(1, (cycle_end - cycle_start).days + 1)
-    cycle_days_elapsed = min(cycle_days_total, max(1, (today - cycle_start).days + 1))
-    days_left_after_today = max(0, cycle_days_total - cycle_days_elapsed)
+    cycle_days_total = max(1, round(total_days))
+    cycle_days_elapsed = min(cycle_days_total, max(1, round(elapsed_days)))
 
     # Conservative: the average day so far, projected across the whole cycle.
-    avg_per_day = used / cycle_days_elapsed
-    projected_bytes_linear = int(avg_per_day * cycle_days_total)
+    avg_per_day = used / elapsed_days
+    projected_bytes_linear = int(avg_per_day * total_days)
 
     # Previous full billing cycle's daily average - the anchor that keeps the
     # "at current pace" figure from swinging wildly in the first days of a cycle,
     # when it would otherwise rest on one or two samples.
-    prev_start, prev_end = get_billing_cycle_dates(anchor_day, today, previous=True)
+    prev_start_dt, prev_end_dt = get_billing_cycle_bounds(
+        anchor_day, anchor_hour, anchor_minute, now, previous=True,
+    )
+    prev_start = prev_start_dt.date()
+    prev_end = inclusive_end_date(prev_end_dt)
     prev_data = await AnalyticsEngine.get_historical_traffic(
         session=db,
         start_date=prev_start,
@@ -170,6 +253,22 @@ async def build_quota_status(db: AsyncSession, router_id: Optional[int] = None) 
         anchor_day=anchor_day,
     )
     prev_cycle_bytes = prev_data.gateway.total_bytes
+
+    # The previous cycle ends at this cycle's start instant. When that is not at
+    # midnight, prev_end (its inclusive last date) is the very same calendar day
+    # as cycle_start, and that day's whole-day rollup is already counted in this
+    # cycle's "used". Subtract the post-reset slice of that day so it is not
+    # counted in both. If the samples are pruned (None) the whole day stands -
+    # the same documented fallback as the current-cycle start-day slice.
+    if non_midnight:
+        s = await slice_of_day_bytes(
+            db, router_id, prev_end_dt.date(),
+            from_time=prev_end_dt.time(), to_time=None, interfaces=slice_interfaces,
+            offset_minutes=slice_offset,
+        )
+        if s is not None:
+            prev_cycle_bytes = max(0, prev_cycle_bytes - (s[0] + s[1]))
+
     prev_cycle_days = max(1, (prev_end - prev_start).days + 1)
     prev_per_day = (prev_cycle_bytes / prev_cycle_days) if prev_cycle_bytes > 0 else None
 
@@ -204,6 +303,9 @@ async def build_quota_status(db: AsyncSession, router_id: Optional[int] = None) 
         used_pct=round((used / limit) * 100, 2) if limit else 0.0,
         cycle_start=cycle_start,
         cycle_end=cycle_end,
+        # Only carried for a non-midnight reset; a midnight anchor keeps the
+        # plain "N days left" label the UI has always shown for it.
+        cycle_end_at=end_dt if (anchor_hour or anchor_minute) else None,
         days_remaining=days_remaining,
         projected_daily_budget=(max(0, limit - used) // days_remaining) if (limit and days_remaining) else 0,
         cycle_days_total=cycle_days_total,

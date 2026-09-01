@@ -59,6 +59,8 @@ export function TrafficAnalytics({ activeRouter }) {
   // Billing Cycle Settings Modal
   const [billingModalOpen, setBillingModalOpen] = useState(false);
   const [anchorDay, setAnchorDay] = useState(1);
+  const [anchorHour, setAnchorHour] = useState(0);
+  const [anchorMinute, setAnchorMinute] = useState(0);
   const [isSavingBilling, setIsSavingBilling] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
 
@@ -68,6 +70,8 @@ export function TrafficAnalytics({ activeRouter }) {
       .then(res => {
         if (res?.data?.anchor_day) {
           setAnchorDay(res.data.anchor_day);
+          setAnchorHour(res.data.anchor_hour ?? 0);
+          setAnchorMinute(res.data.anchor_minute ?? 0);
         }
       })
       .catch(() => {});
@@ -110,7 +114,7 @@ export function TrafficAnalytics({ activeRouter }) {
   const handleSaveBillingCycle = async () => {
     setIsSavingBilling(true);
     try {
-      await api.saveBillingCycleConfig(anchorDay);
+      await api.saveBillingCycleConfig(anchorDay, anchorHour, anchorMinute);
       setSaveSuccess(true);
       setTimeout(() => {
         setBillingModalOpen(false);
@@ -202,7 +206,12 @@ export function TrafficAnalytics({ activeRouter }) {
             onClick={() => setBillingModalOpen(true)}
           >
             <Calendar size={14} style={{ color: 'var(--color-primary)' }} />
-            {t('billing_cycle')}: <strong style={{ color: 'var(--text-primary)' }}>Day {anchorDay}</strong>
+            {t('billing_cycle')}: <strong style={{ color: 'var(--text-primary)' }}>
+              {t('billing_summary_day', { day: anchorDay })}
+              {(anchorHour !== 0 || anchorMinute !== 0)
+                ? ` · ${String(anchorHour).padStart(2, '0')}:${String(anchorMinute).padStart(2, '0')}`
+                : ''}
+            </strong>
           </button>
         </div>
 
@@ -483,6 +492,26 @@ export function TrafficAnalytics({ activeRouter }) {
                   onChange={e => setAnchorDay(Math.max(1, minVal(Number(e.target.value), 31)))}
                   style={{ height: 38, fontSize: 'var(--fs-lg)' }}
                 />
+              </div>
+
+              <div className="form-group">
+                <label className="form-label" htmlFor="billing-reset-time">{t('billing_anchor_time')}</label>
+                <input
+                  id="billing-reset-time"
+                  type="time"
+                  aria-label={t('billing_anchor_time')}
+                  className="form-input font-mono"
+                  value={`${String(anchorHour).padStart(2, '0')}:${String(anchorMinute).padStart(2, '0')}`}
+                  onChange={e => {
+                    const [h, m] = e.target.value.split(':').map(Number);
+                    setAnchorHour(Number.isFinite(h) ? Math.min(23, Math.max(0, h)) : 0);
+                    setAnchorMinute(Number.isFinite(m) ? Math.min(59, Math.max(0, m)) : 0);
+                  }}
+                  style={{ height: 38, fontSize: 'var(--fs-lg)' }}
+                />
+                <p style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', marginTop: 4 }}>
+                  {t('billing_anchor_time_hint')}
+                </p>
               </div>
             </div>
 
