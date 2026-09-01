@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { formatBytes, formatDateTime, formatGbWhole, formatLastActive, formatRelativeTime, formatSpeed, formatSpeedShort, formatUptime } from './formatters';
-
+import { formatBytes, formatBytesCompact, formatDateTime, formatGbWhole, formatLastActive, formatRelativeTime, formatSpeed, formatSpeedShort, formatUptime } from './formatters';
 /**
  * These decide what every figure on the dashboard actually reads as, so their
  * unit boundaries are worth pinning: an off-by-one there turns 999 bps into
@@ -29,6 +28,24 @@ describe('formatBytes', () => {
 
   it('handles a realistic monthly figure', () => {
     expect(formatBytes(41_588_759_711)).toBe('38.7 GB');
+  });
+});
+
+describe('formatBytesCompact', () => {
+  it('handles zero or falsy bytes', () => {
+    expect(formatBytesCompact(0)).toBe('0B');
+    expect(formatBytesCompact(null)).toBe('0B');
+    expect(formatBytesCompact(-10)).toBe('0B');
+  });
+
+  it('formats byte sizes with compact single-letter units', () => {
+    expect(formatBytesCompact(450)).toBe('450B');
+    expect(formatBytesCompact(1024)).toBe('1K');
+    expect(formatBytesCompact(450 * 1024)).toBe('450K');
+    expect(formatBytesCompact(4.2 * 1024 * 1024)).toBe('4.2M');
+    expect(formatBytesCompact(16 * 1024 * 1024)).toBe('16M');
+    expect(formatBytesCompact(13.4 * 1024 * 1024 * 1024)).toBe('13G');
+    expect(formatBytesCompact(1.5 * 1024 * 1024 * 1024 * 1024)).toBe('1.5T');
   });
 });
 

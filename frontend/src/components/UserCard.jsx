@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useI18n } from '../context/I18nContext';
 import { api } from '../api/client';
-import { formatSpeed, formatSpeedShort, formatBytes, formatGbWhole, formatRelativeTime, formatLastActive, formatDateTime } from '../utils/formatters';
+import { formatSpeed, formatSpeedShort, formatBytes, formatBytesCompact, formatGbWhole, formatRelativeTime, formatLastActive, formatDateTime } from '../utils/formatters';
 import { displayVendor } from '../utils/deviceLabels';
 import { DeviceModal } from './DeviceModal';
 import {
@@ -107,6 +107,11 @@ export function groupDevices(devices) {
       bytesTotalOut: sum('bytes_total_out'),
       bytesCycleIn: sum('bytes_cycle_in'),
       bytesCycleOut: sum('bytes_cycle_out'),
+      lastSeen: adapters.reduce((latest, a) => {
+        if (!a.last_seen) return latest;
+        if (!latest) return a.last_seen;
+        return new Date(a.last_seen) > new Date(latest) ? a.last_seen : latest;
+      }, null),
     };
   });
 }
@@ -185,19 +190,16 @@ function DeviceRow({ group, t, lang, grandTotal = 0, onOpen, onUpdate }) {
   const vendorLabel = displayVendor(d.vendor);
   const deviceName = d.custom_name || d.hostname || d.vendor || 'Device';
 
-  // Compact volume readout shown beside the name: whole GB, "today / all-time /
-  // share of every device's all-time traffic". The exact bytes and the legend
-  // for the three fields are in the tooltip.
+  // Compact volume readout shown on the row: Today / Cycle / All-Time in compact K/M/G/T units.
   const volToday = group.bytesIn + group.bytesOut;
+  const volCycle = group.bytesCycleIn + group.bytesCycleOut;
   const volTotal = group.bytesTotalIn + group.bytesTotalOut;
-  const volShare = grandTotal > 0 ? Math.round((volTotal / grandTotal) * 100) : 0;
-  const showVolume = volTotal > 0 || volToday > 0;
+  const showVolume = volTotal > 0 || volCycle > 0 || volToday > 0;
   const volTitle =
     `${t('device_volume_legend')}\n` +
     `${t('today_scope')}: ↓ ${formatBytes(group.bytesIn)} · ↑ ${formatBytes(group.bytesOut)}\n` +
     `${t('cycle_scope')}: ↓ ${formatBytes(group.bytesCycleIn)} · ↑ ${formatBytes(group.bytesCycleOut)}\n` +
     `${t('all_time_label')}: ↓ ${formatBytes(group.bytesTotalIn)} · ↑ ${formatBytes(group.bytesTotalOut)}`;
-
   const volumeNote = `${t('today_scope')}: ↓ ${formatBytes(group.bytesIn)} · ↑ ${formatBytes(group.bytesOut)}`;
   const rowTitle = [
     t('device_row_hint'),
@@ -236,14 +238,13 @@ function DeviceRow({ group, t, lang, grandTotal = 0, onOpen, onUpdate }) {
       title={rowTitle}
       style={{ opacity: group.isPaused ? 0.55 : (offline ? 0.72 : 1) }}
     >
-      {/* Line 1 — identity and, when it is moving, the live rate. */}
+      {/* Line 1 — identity, live rate on the left, and volume stats on the right */}
       <div className="drow-main">
         <span
           className="status-dot"
           style={{
             width: 7,
             height: 7,
-            flexShrink: 0,
             background: group.isPaused ? 'var(--color-danger)' : (group.isActive ? 'var(--color-success)' : 'var(--text-muted)'),
             boxShadow: group.isActive && !group.isPaused ? '0 0 6px rgba(16, 185, 129, 0.5)' : 'none'
           }}
@@ -254,11 +255,11 @@ function DeviceRow({ group, t, lang, grandTotal = 0, onOpen, onUpdate }) {
         </span>
         <span className="drow-name" title={deviceName}>{deviceName}</span>
 
-        {showVolume && (
-          <span className="drow-vol font-mono" title={volTitle}>
-            {formatGbWhole(volToday)}<span className="drow-vol-sep">/</span>
-            {formatGbWhole(volTotal)}<span className="drow-vol-sep">/</span>
-            {volShare}%
+        {/* Live rate is placed on the left of volume stats to keep fixed statistics stable */}
+        {isMoving && (
+          <span className="drow-rate" style={{ flexShrink: 0 }}>
+            <span style={{ color: rateIn ? 'var(--color-success)' : 'var(--text-muted)' }}>↓ {formatSpeedShort(rateIn)}</span>
+            <span style={{ color: rateOut ? 'var(--color-primary)' : 'var(--text-muted)' }}>↑ {formatSpeedShort(rateOut)}</span>
           </span>
         )}
 
@@ -273,23 +274,25 @@ function DeviceRow({ group, t, lang, grandTotal = 0, onOpen, onUpdate }) {
           </span>
         )}
 
-        {isMoving && (
-          <span className="drow-rate">
-            <span style={{ color: rateIn ? 'var(--color-success)' : 'var(--text-muted)' }}>↓ {formatSpeedShort(rateIn)}</span>
-            <span style={{ color: rateOut ? 'var(--color-primary)' : 'var(--text-muted)' }}>↑ {formatSpeedShort(rateOut)}</span>
+        {showVolume && (
+          <span className="drow-vol font-mono" title={volTitle} style={{ marginLeft: 'auto' }}>
+            {formatBytesCompact(volToday)}<span className="drow-vol-sep">/</span>
+            {formatBytesCompact(volCycle)}<span className="drow-vol-sep">/</span>
+            {formatBytesCompact(volTotal)}
           </span>
         )}
       </div>
 
-      {/* Line 2 — address, vendor and staleness in one truncating run, then the
-          two actions pinned to the right where they cannot be clipped. */}
+      {/* Line 2 — address, vendor, and last active with tooltip datetime */}
       <div className="drow-sub">
         <span className="drow-facts">
           <span className="font-mono">{d.ip_address || d.mac_address}</span>
           {vendorLabel && <> · {vendorLabel}</>}
           {d.is_hidden && <> · {t('hidden_badge')}</>}
-          {offline && d.last_seen && (
-            <> · {t('last_seen_ago', { time: formatRelativeTime(d.last_seen, lang) })}</>
+          {(group.lastSeen || d.last_seen) && (
+            <span title={formatDateTime(group.lastSeen || d.last_seen, lang)}>
+              {" · "}{t('col_last_active')}: <span className="font-mono">{formatLastActive(group.lastSeen || d.last_seen, lang)}</span>
+            </span>
           )}
         </span>
 

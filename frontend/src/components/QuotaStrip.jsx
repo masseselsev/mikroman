@@ -85,8 +85,36 @@ export function QuotaStrip({ activeRouterId, onOpenSettings }) {
     >
       <Gauge size={14} className="quota-strip-icon" style={{ color: accent }} />
 
-      <div className="quota-strip-bar" aria-hidden="true">
-        <div className="quota-strip-bar-fill" style={{ width: `${usedPct}%`, background: accent }} />
+      {/* Progress bar expanded to ~50% width with threshold percentage notches and labels */}
+      <div className="quota-strip-bar-container">
+        <div className="quota-strip-bar" aria-hidden="true">
+          <div className="quota-strip-bar-fill" style={{ width: `${usedPct}%`, background: accent }} />
+          {((q.thresholds && q.thresholds.length > 0) ? q.thresholds : [50, 80, 100]).map((tPct) => {
+            const isReached = usedPct >= tPct;
+            return (
+              <div
+                key={tPct}
+                className={`quota-strip-notch ${isReached ? 'is-reached' : ''}`}
+                style={{ left: `${Math.min(100, Math.max(0, tPct))}%` }}
+                title={`${tPct}% alert threshold`}
+              />
+            );
+          })}
+        </div>
+        <div className="quota-strip-notches-labels" aria-hidden="true">
+          {((q.thresholds && q.thresholds.length > 0) ? q.thresholds : [50, 80, 100]).map((tPct) => {
+            const isReached = usedPct >= tPct;
+            return (
+              <span
+                key={tPct}
+                className={`quota-strip-notch-label ${isReached ? 'is-reached' : ''}`}
+                style={{ left: `${Math.min(100, Math.max(0, tPct))}%` }}
+              >
+                {tPct}%
+              </span>
+            );
+          })}
+        </div>
       </div>
 
       <span className="quota-strip-main font-mono">
