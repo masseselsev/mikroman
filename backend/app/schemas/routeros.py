@@ -126,6 +126,9 @@ class InterfaceDTO(BaseModel):
     # face the internet" answer, filled in by the interfaces endpoint from
     # ``/ip/route`` rather than guessed from the name.
     is_wan: bool = False
+    # The physical (or bridge) interface this one rides on, when it is a VLAN,
+    # a PPPoE client or a bridge port. Lets the picker show the nesting.
+    parent: Optional[str] = None
 
 
 # WiFiRegistrationDTO references WiFiLinkDTO before it is declared.

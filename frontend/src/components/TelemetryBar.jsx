@@ -234,27 +234,30 @@ export function TelemetryBar({ router, activeRouter, interfaces = [], onNavigate
     );
   };
 
-  const handleSelectAll = () => {
-    setSelectedIfaces(availableIfaces.map(i => i.name));
-  };
-
-  const handleClearAll = () => {
-    setSelectedIfaces([]);
-  };
-
-  const handleSelectWanOnly = () => {
-    // The interfaces the router actually routes the internet out of, resolved
-    // from its default route by the backend.
-    const flagged = availableIfaces.filter(i => i.is_wan).map(i => i.name);
-    if (flagged.length > 0) {
-      setSelectedIfaces(flagged);
-      return;
-    }
-    // No default route came back (router offline, or upstream-routed). Fall
-    // back to a name guess so the button still does something.
-    const guess = availableIfaces.filter(i => /ether1|wan|pppoe|sfp/i.test(i.name)).map(i => i.name);
-    setSelectedIfaces(guess.length > 0 ? guess : (availableIfaces[0] ? [availableIfaces[0].name] : []));
-  };
+  // Flatten the interface list into render order: each top-level interface
+  // followed by the VLANs / PPPoE clients / bridge ports that ride on it, with
+  // a depth for indentation. Anything whose parent is not itself in the list is
+  // treated as top-level.
+  const nestedIfaces = React.useMemo(() => {
+    const names = new Set(availableIfaces.map(i => i.name));
+    const childrenOf = (parent) =>
+      availableIfaces
+        .filter(i => i.parent === parent)
+        .sort((a, b) => a.name.localeCompare(b.name));
+    const out = [];
+    const walk = (iface, depth) => {
+      out.push({ iface, depth });
+      childrenOf(iface.name).forEach(c => walk(c, depth + 1));
+    };
+    availableIfaces
+      .filter(i => !i.parent || !names.has(i.parent))
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .forEach(root => walk(root, 0));
+    // Safety net for a parent cycle - never drop an interface from the list.
+    const shown = new Set(out.map(o => o.iface.name));
+    availableIfaces.forEach(i => { if (!shown.has(i.name)) out.push({ iface: i, depth: 0 }); });
+    return out;
+  }, [availableIfaces]);
 
   const handleSave = async () => {
     setIsSaving(true);
@@ -473,25 +476,14 @@ export function TelemetryBar({ router, activeRouter, interfaces = [], onNavigate
                 {t('gateway_ifaces_desc')}
               </p>
 
-              {/* Quick Preset Buttons */}
-              <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
-                <button type="button" className="btn btn-secondary btn-sm" onClick={handleSelectWanOnly}>
-                  {t('wan_only')}
-                </button>
-                <button type="button" className="btn btn-secondary btn-sm" onClick={handleSelectAll}>
-                  {t('select_all')}
-                </button>
-                <button type="button" className="btn btn-ghost btn-sm" onClick={handleClearAll}>
-                  {t('clear_all')}
-                </button>
-              </div>
-
-              {/* Interface Checkboxes List */}
-              <div className="list-box" style={{ maxHeight: 240 }}>
+              {/* Interface list. Tick the interface(s) that face the internet;
+                  a VLAN or PPPoE link is shown nested under the port it runs
+                  on. The selected set is what the WAN counters sum over. */}
+              <div className="list-box" style={{ maxHeight: 280 }}>
                 {availableIfaces.length === 0 ? (
                   <div className="empty-note">{t('loading_interfaces')}</div>
                 ) : (
-                  availableIfaces.map(iface => {
+                  nestedIfaces.map(({ iface, depth }) => {
                     const isChecked = selectedIfaces.includes(iface.name);
                     return (
                       <div
@@ -499,7 +491,10 @@ export function TelemetryBar({ router, activeRouter, interfaces = [], onNavigate
                         className={`list-row${isChecked ? ' is-selected' : ''}`}
                         onClick={() => handleToggleIface(iface.name)}
                       >
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0, paddingLeft: depth * 20 }}>
+                          {depth > 0 && (
+                            <span style={{ color: 'var(--text-muted)', flexShrink: 0, marginLeft: -14 }}>↳</span>
+                          )}
                           <input
                             type="checkbox"
                             checked={isChecked}
@@ -525,7 +520,7 @@ export function TelemetryBar({ router, activeRouter, interfaces = [], onNavigate
                           )}
                         </div>
                         <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', flexShrink: 0 }}>
-                          {iface.type || 'interface'}
+                          {iface.parent ? t('iface_on_parent', { parent: iface.parent }) : (iface.type || 'interface')}
                         </span>
                       </div>
                     );

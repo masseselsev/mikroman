@@ -97,8 +97,9 @@ async def list_available_interfaces(
     if not client:
         return APIResponse(data=[], message="Router not connected")
     ifaces = await client.get_interfaces()
-    # Flag the interfaces that carry a default route so the "WAN only" preset
-    # in the UI selects the real uplink(s) instead of matching on the name.
+    # Mark the interfaces carrying a default route, and the parent of each
+    # logical interface, so the picker can show which face the internet and how
+    # they nest. Both are best-effort - a failure just leaves the list flat.
     try:
         wan = set(await client.get_wan_interfaces())
         for iface in ifaces:
@@ -106,6 +107,12 @@ async def list_available_interfaces(
                 iface.is_wan = True
     except Exception:
         logger.debug("Could not resolve WAN interfaces from /ip/route", exc_info=True)
+    try:
+        parents = await client.get_interface_parents()
+        for iface in ifaces:
+            iface.parent = parents.get(iface.name)
+    except Exception:
+        logger.debug("Could not resolve interface parents", exc_info=True)
     return APIResponse(data=ifaces)
 
 

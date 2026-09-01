@@ -154,6 +154,38 @@ class ClientsMixin:
                 ))
             return results
 
+    async def get_interface_parents(self) -> dict:
+        """``{child_interface: parent_interface}`` for the logical interfaces
+        that ride on another one.
+
+        Covers the three common cases: a VLAN or a PPPoE client bound to a
+        physical port, and a bridge port's membership. Used only to show the
+        nesting in the "which interfaces to measure" picker; anything not found
+        here is simply shown at the top level.
+        """
+        parents: dict = {}
+        probes = (
+            ("/interface/vlan", "name", "interface"),
+            ("/interface/pppoe-client", "name", "interface"),
+            ("/interface/bridge/port", "interface", "bridge"),
+        )
+        for path, child_key, parent_key in probes:
+            try:
+                async with self._get_client() as client:
+                    resp = await client.get(path)
+                    resp.raise_for_status()
+                    rows = resp.json()
+            except Exception:
+                continue
+            if not isinstance(rows, list):
+                rows = [rows]
+            for r in rows:
+                child = r.get(child_key)
+                parent = r.get(parent_key)
+                if child and parent and child != parent:
+                    parents[str(child)] = str(parent)
+        return parents
+
     async def get_wan_interfaces(self) -> List[str]:
         """Interface names that carry a default route.
 
