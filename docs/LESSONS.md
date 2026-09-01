@@ -446,3 +446,27 @@ makes the interval half-open - `Jan 31 00:00 … Feb 28 00:00`, inclusive last
 date `Feb 27` - so Feb 28 belongs cleanly to the new cycle and the count is a
 correct 28 days. Lesson: an off-by-one in an *inclusive* date range only bites
 at the clamp; test the February-31 case explicitly, not just mid-month anchors.
+
+**[2026-09-01] Problem:** The daily traffic totals for the days around a
+development deploy looked scrambled - one day's gateway rollup read ~18 GB
+high, the neighbouring day ~13 GB low - and it read like "we lost 50 GB in
+three days". Nothing was lost. Both accounting paths (`traffic_accounting.collect`
+for per-device, `AnalyticsEngine.record_traffic_snapshot` for the gateway) did
+`rollup[today] += (current_counter - baseline)` with **no split at the local
+midnight**. When the collector was down across midnight - a 16-hour outage
+spanning the 29→30 boundary, plus a LAN renumber and RouterOS upgrade on the
+31st - the entire gap's bytes landed on whichever day the next poll happened
+on. On the one day the collector ran end to end, every level reconciled to
+~2%. **Solution:** two changes. (1) The gateway and per-interface rollups are
+now **recomputed from `interface_metrics`** rather than accumulated: walk the
+samples, bucket each `max(0, curr-prev)` by the router-local date of the later
+sample, and time-split any pair that straddles midnight (`rollups.split_bytes_by_day`).
+Each pass replaces the rows for the days it covers, so a misfiled day self-heals
+on the next run; a full 30-day rebuild runs once on startup. (2) The per-device
+path keeps its live counter but now stores the last collection's wall-clock
+time and, when a tick lands on a later date, apportions the delta across the
+spanned days with the same helper. Lesson: an accumulator keyed on "now" is
+only correct if it runs often enough to never straddle a boundary - and a
+process that can be restarted mid-day does not clear that bar. If a
+finer-grained series exists (here, the ~3 s interface samples), derive the
+rollup from it instead of trusting the accumulator.

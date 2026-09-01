@@ -6,6 +6,7 @@ import { StatTile } from './StatTile';
 import { OverviewTab } from './analytics/OverviewTab';
 import { UsersTab } from './analytics/UsersTab';
 import { DevicesTab } from './analytics/DevicesTab';
+import { InterfacesTab } from './analytics/InterfacesTab';
 import {
   Calendar,
   Clock,
@@ -15,6 +16,7 @@ import {
   Users,
   Smartphone,
   Layers,
+  Waypoints,
   X,
   Check,
   Activity,
@@ -46,7 +48,7 @@ export function TrafficAnalytics({ activeRouter }) {
   const [customEnd, setCustomEnd] = useState('');
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [breakdownTab, setBreakdownTab] = useState('overview'); // 'overview' | 'users' | 'devices'
+  const [breakdownTab, setBreakdownTab] = useState('overview'); // 'overview' | 'users' | 'devices' | 'interfaces'
   const [searchTerm, setSearchTerm] = useState('');
   const [userFilter, setUserFilter] = useState('all');
   const [showHidden, setShowHidden] = useState(false);
@@ -54,6 +56,7 @@ export function TrafficAnalytics({ activeRouter }) {
   // question these tables are usually opened to answer.
   const [userSort, setUserSort] = useState({ field: 'total_bytes', dir: 'desc' });
   const [deviceSort, setDeviceSort] = useState({ field: 'total_bytes', dir: 'desc' });
+  const [interfaceSort, setInterfaceSort] = useState({ field: 'total_bytes', dir: 'desc' });
 
 
   // Billing Cycle Settings Modal
@@ -136,6 +139,7 @@ export function TrafficAnalytics({ activeRouter }) {
       : { field, dir: 'desc' }));
   const toggleUserSort = makeSortToggle(setUserSort);
   const toggleDeviceSort = makeSortToggle(setDeviceSort);
+  const toggleInterfaceSort = makeSortToggle(setInterfaceSort);
 
   const gateway = data?.gateway || { total_bytes_in: 0, total_bytes_out: 0, total_bytes: 0, monitored_interfaces: [] };
   // Cross-check between WAN-measured gateway volume and per-device accounted volume.
@@ -149,6 +153,7 @@ export function TrafficAnalytics({ activeRouter }) {
   };
   const users = data?.users || [];
   const devices = data?.devices || [];
+  const interfaces = data?.interfaces || [];
   const timeline = data?.timeline || [];
   // What the router moved for itself: DNS, NTP, updates, its own containers.
   // Measured separately because per-device counters structurally cannot see it.
@@ -425,6 +430,14 @@ export function TrafficAnalytics({ activeRouter }) {
             <Smartphone size={15} />
             {t('breakdown_devices')} ({devices.length})
           </button>
+          <button
+            className={`nav-tab ${breakdownTab === 'interfaces' ? 'active' : ''}`}
+            onClick={() => setBreakdownTab('interfaces')}
+            style={{ fontSize: 'var(--fs-sm)', padding: '10px 18px', display: 'flex', alignItems: 'center', gap: 6 }}
+          >
+            <Waypoints size={15} />
+            {t('breakdown_interfaces')} ({interfaces.length})
+          </button>
         </div>
 
         <div style={{ padding: 20 }}>
@@ -457,6 +470,15 @@ export function TrafficAnalytics({ activeRouter }) {
               setUserFilter={setUserFilter}
               showHidden={showHidden}
               setShowHidden={setShowHidden}
+            />
+          )}
+
+          {/* TAB 4: BY INTERFACES */}
+          {breakdownTab === 'interfaces' && (
+            <InterfacesTab
+              interfaces={interfaces}
+              sort={interfaceSort}
+              toggleSort={toggleInterfaceSort}
             />
           )}
         </div>

@@ -18,6 +18,7 @@ from backend.app.services.analytics_engine import (
     inclusive_end_date,
     resolve_date_range,
 )
+from backend.app.services.interface_rollups import recompute_recent
 from backend.app.services.quota import (
     QuotaConfig,
     get_quota_config,
@@ -40,11 +41,10 @@ async def get_traffic_analytics(
     db: AsyncSession = Depends(get_db)
 ):
     """Retrieve historical traffic metrics across Gateway, Users, Devices, and Timeline."""
-    # Opportunistically capture live traffic snapshot from active router
+    # Fold the newest samples into the recent rollups so an open dashboard sees
+    # near-live figures without waiting for the next background tick.
     try:
-        r_client = await router_manager.get_client(router_id=router_id, session=db)
-        if r_client:
-            await AnalyticsEngine.record_traffic_snapshot(db, router_id=router_id or 1, client=r_client)
+        await recompute_recent(db, router_id or 1)
     except Exception:
         pass
 
@@ -186,6 +186,7 @@ async def build_quota_status(db: AsyncSession, router_id: Optional[int] = None) 
         router_id=router_id,
         range_preset="billing_current",
         anchor_day=anchor_day,
+        include_breakdown_extras=False,
     )
     used = data.gateway.total_bytes
 
@@ -251,6 +252,7 @@ async def build_quota_status(db: AsyncSession, router_id: Optional[int] = None) 
         router_id=router_id,
         range_preset="billing_previous",
         anchor_day=anchor_day,
+        include_breakdown_extras=False,
     )
     prev_cycle_bytes = prev_data.gateway.total_bytes
 

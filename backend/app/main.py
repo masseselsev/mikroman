@@ -76,8 +76,32 @@ async def check_quota_thresholds(session, router_id, tg_service) -> None:
             await tg_service.send_alert_to_admins(message, parse_mode="HTML")
 
 
+async def _backfill_interface_rollups_once():
+    """Rebuild the full retention window of per-interface / gateway rollups from
+    the samples, once, at startup.
+
+    The per-tick recompute only reaches a few days back, so a version that
+    misfiled older days - or simply days recorded before this table existed -
+    would never be corrected without this. Cheap enough to do inline: it reads
+    at most 30 days of samples per router and rewrites a few hundred rows.
+    """
+    try:
+        from backend.app.services.interface_rollups import recompute_interface_rollups
+        async with AsyncSessionLocal() as session:
+            for r in await router_manager.get_all_active_routers(session):
+                try:
+                    n = await recompute_interface_rollups(session, r.id)
+                    if n:
+                        logger.info(f"Backfilled interface rollups for router {r.id}: {n} day(s)")
+                except Exception as e:
+                    logger.warning(f"Interface rollup backfill failed for router {r.id}: {e}")
+    except Exception as e:
+        logger.warning(f"Interface rollup backfill skipped: {e}")
+
+
 async def background_sync_worker():
     """Periodic background discovery and health monitor for all configured active routers."""
+    await _backfill_interface_rollups_once()
     while True:
         try:
             async with AsyncSessionLocal() as session:
@@ -163,14 +187,16 @@ async def background_sync_worker():
                             except Exception as me:
                                 logger.debug(f"Metrics collection tick error for router {r.id}: {me}")
 
-                            # Record gateway-level rollups from WAN interface counters
+                            # Rebuild the recent gateway / per-interface rollups
+                            # from the samples just written above. Deriving them
+                            # from interface_metrics (rather than a live counter
+                            # delta) attributes each byte to the day it moved and
+                            # survives a restart.
                             try:
-                                from backend.app.services.analytics_engine import AnalyticsEngine
-                                await AnalyticsEngine.record_traffic_snapshot(
-                                    session, r.id, client, router_uptime_seconds=router_uptime_s
-                                )
+                                from backend.app.services.interface_rollups import recompute_recent
+                                await recompute_recent(session, r.id)
                             except Exception as te:
-                                logger.warning(f"Gateway rollup tick error for router {r.id}: {te}")
+                                logger.warning(f"Interface rollup tick error for router {r.id}: {te}")
 
                             # Quota thresholds for the ISP billing cycle. Checked
                             # here rather than on request so an alert fires even

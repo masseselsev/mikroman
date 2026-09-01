@@ -113,6 +113,10 @@ class DeviceDTO(DeviceBase):
     # share" readout beside the device name.
     bytes_total_in: int = 0     # bytes downloaded, all time
     bytes_total_out: int = 0    # bytes uploaded, all time
+    # Same, but only over the current ISP billing cycle - the window the quota
+    # is measured against.
+    bytes_cycle_in: int = 0     # bytes downloaded, this billing cycle
+    bytes_cycle_out: int = 0    # bytes uploaded, this billing cycle
 
     @computed_field
     @property
