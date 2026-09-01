@@ -429,6 +429,7 @@ export function App() {
                     showHidden={showHiddenDevices}
                     autoSortActivity={autoSortActivity}
                     onEdit={(u) => {
+                      setEditingUser(u);
                       setUserModalOpen(true);
                     }}
                     onDelete={handleDeleteUser}
