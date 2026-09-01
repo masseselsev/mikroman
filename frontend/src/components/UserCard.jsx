@@ -167,6 +167,10 @@ export function bandLabel(band) {
  */
 function DeviceRow({ group, t, lang, grandTotal = 0, onOpen, onUpdate, onViewTrafficHistory }) {
   const [busy, setBusy] = useState(false);
+  // The adapter list under the "N×" chip, for pulling an adapter back out of a
+  // bundle it was wrongly grouped into.
+  const [showAdapters, setShowAdapters] = useState(false);
+  const [unlinkingId, setUnlinkingId] = useState(null);
 
   const d = group.primary;
   const rateIn = group.rateIn;
@@ -206,6 +210,19 @@ function DeviceRow({ group, t, lang, grandTotal = 0, onOpen, onUpdate, onViewTra
     .flatMap(adapter =>
       connectionLinks(adapter).map((link, i) => ({ ...link, key: `${adapter.id}-${link.interface}-${i}` }))
     );
+
+  const unlinkAdapter = async (e, adapterId) => {
+    e.stopPropagation();
+    setUnlinkingId(adapterId);
+    try {
+      await api.unlinkDevice(adapterId);
+      if (onUpdate) onUpdate();
+    } catch (err) {
+      console.error('Failed to unlink adapter:', err);
+    } finally {
+      setUnlinkingId(null);
+    }
+  };
 
   const togglePause = async (e) => {
     e.stopPropagation();
@@ -256,9 +273,14 @@ function DeviceRow({ group, t, lang, grandTotal = 0, onOpen, onUpdate, onViewTra
         )}
 
         {multiHomed && (
-          <span className="badge badge-chip" title={t('multi_adapter_hint')}>
+          <button
+            type="button"
+            className="badge badge-chip drow-adapters-toggle"
+            title={t('multi_adapter_manage_hint')}
+            onClick={(e) => { e.stopPropagation(); setShowAdapters(v => !v); }}
+          >
             {group.adapters.length}×
-          </span>
+          </button>
         )}
         {hasCustomLimit && (
           <span className="badge badge-chip badge-chip-warn" title={`${t('table_speed_limit')}: ${d.speed_limit}`}>
@@ -274,6 +296,40 @@ function DeviceRow({ group, t, lang, grandTotal = 0, onOpen, onUpdate, onViewTra
           </span>
         )}
       </div>
+
+      {/* Adapter bundle manager — opened from the "N×" chip. Lists every
+          adapter in the machine; a secondary one wrongly folded in can be
+          detached back to its own device. */}
+      {multiHomed && showAdapters && (
+        <div className="drow-adapters" onClick={(e) => e.stopPropagation()}>
+          <div className="drow-adapters-head">{t('linked_adapters_title')}</div>
+          {group.adapters.map(a => {
+            const isPrimary = a.id === group.key;
+            return (
+              <div key={a.id} className="drow-adapter">
+                <span className="drow-adapter-name font-mono">
+                  {isPrimary ? <Cable size={10} /> : <Wifi size={10} />}
+                  {a.custom_name || a.hostname || a.mac_address}
+                  <span className="drow-adapter-meta">
+                    {a.last_interface || a.ip_address || a.mac_address}
+                    {isPrimary && <> · {t('primary_adapter')}</>}
+                  </span>
+                </span>
+                {!isPrimary && (
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-sm drow-adapter-unlink"
+                    disabled={unlinkingId === a.id}
+                    onClick={(e) => unlinkAdapter(e, a.id)}
+                  >
+                    {t('unlink_adapter')}
+                  </button>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       {/* Line 2 — address, vendor, and last active with tooltip datetime */}
       <div className="drow-sub">

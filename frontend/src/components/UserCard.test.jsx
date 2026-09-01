@@ -19,6 +19,7 @@ vi.mock('../api/client', () => ({
   api: {
     toggleDevicePause: vi.fn().mockResolvedValue({}),
     updateDevice: vi.fn().mockResolvedValue({}),
+    unlinkDevice: vi.fn().mockResolvedValue({}),
   },
 }));
 
@@ -235,6 +236,20 @@ describe('badges', () => {
     expect(screen.getByText('2×')).toBeInTheDocument();
     // One machine, one row - not two half-idle devices.
     expect(document.querySelectorAll('.device-row')).toHaveLength(1);
+  });
+
+  it('the N× chip opens the bundle and detaches a wrongly-grouped adapter', async () => {
+    renderCard([
+      device({ id: 10, custom_name: 'mpcX' }),
+      device({ id: 11, custom_name: 'mpcX-usb', linked_to_device_id: 10 }),
+    ]);
+
+    fireEvent.click(screen.getByText('2×'));
+    // The primary offers no detach; the secondary does.
+    const detach = screen.getByRole('button', { name: 'Detach' });
+    fireEvent.click(detach);
+
+    await waitFor(() => expect(api.unlinkDevice).toHaveBeenCalledWith(11));
   });
 });
 

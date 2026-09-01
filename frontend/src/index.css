@@ -1108,6 +1108,63 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
   gap: 3px;
 }
 
+/* The "N×" chip is a button when a machine has more than one adapter. */
+.drow-adapters-toggle {
+  border: none;
+  cursor: pointer;
+  font: inherit;
+}
+
+/* Adapter bundle manager, opened from that chip. Sits between line 1 and the
+   facts line, indented to match. */
+.drow-adapters {
+  margin: 4px 0 2px 15px;
+  padding: 6px 8px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--bg-secondary);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.drow-adapters-head {
+  font-size: var(--fs-3xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+.drow-adapter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: var(--fs-2xs);
+}
+
+.drow-adapter-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.drow-adapter-meta {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+}
+
+.drow-adapter-unlink {
+  flex-shrink: 0;
+  color: var(--color-danger);
+  padding: 1px 8px;
+  height: 22px;
+}
+
 /* Radio band tag - see --color-radio. */
 .band-tag {
   color: var(--color-radio);
