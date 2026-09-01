@@ -22,7 +22,7 @@ RUN npm run build
 # ==========================================
 FROM python:3.12-slim AS runtime
 
-LABEL maintainer="MikroMan Team" \
+LABEL maintainer="masseselsev" \
       description="Lightweight MikroTik RouterOS Companion Container"
 
 ENV PYTHONUNBUFFERED=1 \
