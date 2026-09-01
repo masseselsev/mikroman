@@ -29,58 +29,6 @@ from backend.app.services.router_time import router_local_date
 logger = logging.getLogger("mikroman.analytics_engine")
 
 
-def get_billing_cycle_dates(anchor_day: int, reference_date: Optional[date] = None, previous: bool = False) -> Tuple[date, date]:
-    """Calculate the start and end dates of an ISP billing cycle based on an anchor renewal day.
-
-    Args:
-        anchor_day: Day of month when traffic resets (1-31).
-        reference_date: Reference date (defaults to today).
-        previous: If True, returns the previous billing cycle window.
-
-    Returns:
-        Tuple of (start_date, end_date).
-    """
-    ref = reference_date or date.today()
-    # Bound anchor day to valid month range
-    day = max(1, min(anchor_day, 31))
-
-    if ref.day >= day:
-        # We are currently in the cycle that started this month on anchor_day
-        max_days = calendar.monthrange(ref.year, ref.month)[1]
-        actual_start_day = min(day, max_days)
-        start_date = date(ref.year, ref.month, actual_start_day)
-
-        # Cycle ends on (anchor_day - 1) of next month
-        if ref.month == 12:
-            next_year, next_month = ref.year + 1, 1
-        else:
-            next_year, next_month = ref.year, ref.month + 1
-        next_max_days = calendar.monthrange(next_year, next_month)[1]
-        end_date = date(next_year, next_month, min(day - 1 if day > 1 else next_max_days, next_max_days))
-    else:
-        # We are in the cycle that started last month on anchor_day
-        if ref.month == 1:
-            prev_year, prev_month = ref.year - 1, 12
-        else:
-            prev_year, prev_month = ref.year, ref.month - 1
-        prev_max_days = calendar.monthrange(prev_year, prev_month)[1]
-        start_date = date(prev_year, prev_month, min(day, prev_max_days))
-        end_date = date(ref.year, ref.month, min(day - 1 if day > 1 else calendar.monthrange(ref.year, ref.month)[1], calendar.monthrange(ref.year, ref.month)[1]))
-
-    if previous:
-        # Shift back by one full billing cycle
-        if start_date.month == 1:
-            prev_start_year, prev_start_month = start_date.year - 1, 12
-        else:
-            prev_start_year, prev_start_month = start_date.year, start_date.month - 1
-        p_max_days = calendar.monthrange(prev_start_year, prev_start_month)[1]
-        prev_start = date(prev_start_year, prev_start_month, min(day, p_max_days))
-        prev_end = start_date - timedelta(days=1)
-        return (prev_start, prev_end)
-
-    return (start_date, end_date)
-
-
 def get_billing_cycle_bounds(
     anchor_day: int,
     anchor_hour: int,
@@ -128,12 +76,33 @@ def get_billing_cycle_bounds(
     return (start, end)
 
 
+def get_billing_cycle_dates(
+    anchor_day: int, reference_date: Optional[date] = None, previous: bool = False
+) -> Tuple[date, date]:
+    """Inclusive first and last *calendar dates* an ISP billing cycle touches.
+
+    A thin date-granular view of :func:`get_billing_cycle_bounds` at midnight.
+    Kept for callers that only think in whole days (range presets, alert-state
+    keying). For anything that needs the reset time - the quota's "used" figure
+    and its countdown - use ``get_billing_cycle_bounds`` with the real anchor
+    time and ``router_local_now``.
+    """
+    ref = reference_date or date.today()
+    start_dt, end_dt = get_billing_cycle_bounds(
+        anchor_day, 0, 0, datetime.combine(ref, datetime.min.time()), previous
+    )
+    return (start_dt.date(), (end_dt - timedelta(microseconds=1)).date())
+
+
 def resolve_date_range(
     preset: str,
     start_date: Optional[date] = None,
     end_date: Optional[date] = None,
     anchor_day: int = 1,
-    today: Optional[date] = None
+    anchor_hour: int = 0,
+    anchor_minute: int = 0,
+    today: Optional[date] = None,
+    now_dt: Optional[datetime] = None,
 ) -> Tuple[date, date, str]:
     """Resolve a date range preset or explicit custom dates into concrete dates.
 
@@ -153,12 +122,15 @@ def resolve_date_range(
     elif preset == "30d":
         return (today - timedelta(days=29), today, "30d")
     elif preset == "billing_current":
-        s, e = get_billing_cycle_dates(anchor_day, today, previous=False)
+        ref = now_dt or datetime.combine(today, datetime.min.time())
+        s_dt, e_dt = get_billing_cycle_bounds(anchor_day, anchor_hour, anchor_minute, ref, previous=False)
+        e_date = (e_dt - timedelta(microseconds=1)).date()
         # Cap current cycle view to today for live measurement
-        return (s, min(e, today), "billing_current")
+        return (s_dt.date(), min(e_date, today), "billing_current")
     elif preset == "billing_previous":
-        s, e = get_billing_cycle_dates(anchor_day, today, previous=True)
-        return (s, e, "billing_previous")
+        ref = now_dt or datetime.combine(today, datetime.min.time())
+        s_dt, e_dt = get_billing_cycle_bounds(anchor_day, anchor_hour, anchor_minute, ref, previous=True)
+        return (s_dt.date(), (e_dt - timedelta(microseconds=1)).date(), "billing_previous")
     elif preset == "custom" and start_date and end_date:
         return (min(start_date, end_date), max(start_date, end_date), "custom")
     else:

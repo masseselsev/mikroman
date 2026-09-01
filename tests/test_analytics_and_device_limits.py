@@ -65,6 +65,33 @@ def test_billing_cycle_date_calculation():
     assert ny_start == date(2025, 12, 20)
     assert ny_end == date(2026, 1, 19)
 
+    # Regression: anchor_day 1 is a single calendar month, not two.
+    # (The pre-shim implementation returned end_date in the *next* month.)
+    m_start, m_end = get_billing_cycle_dates(anchor_day=1, reference_date=date(2026, 9, 15), previous=False)
+    assert m_start == date(2026, 9, 1)
+    assert m_end == date(2026, 9, 30)
+
+
+def test_resolve_date_range_billing_current_widens_to_the_reset_day():
+    from backend.app.services.analytics_engine import resolve_date_range
+
+    # anchor day 5 at 14:30, "today" is the 20th -> cycle Sep 5 .. Oct 5,
+    # widened so both partial boundary days are covered; capped at today.
+    s, e, lbl = resolve_date_range(
+        "billing_current", anchor_day=5, anchor_hour=14, anchor_minute=30,
+        today=date(2026, 9, 20),
+    )
+    assert lbl == "billing_current"
+    assert s == date(2026, 9, 5)
+    assert e == date(2026, 9, 20)  # min(Oct 5, today)
+
+    # Midnight anchor keeps the old inclusive-last-full-day end.
+    s2, e2, _ = resolve_date_range(
+        "billing_previous", anchor_day=15, today=date(2026, 8, 29),
+    )
+    assert s2 == date(2026, 7, 15)
+    assert e2 == date(2026, 8, 14)
+
 
 def test_resolve_date_range_presets():
     """Test date range resolution for presets."""
