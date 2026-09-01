@@ -277,3 +277,27 @@ async def test_resolve_monitored_interfaces_reads_the_setting_or_defaults(sessio
     session.add(AppSetting(key="monitored_interfaces_default", value='["wan"]'))
     await session.commit()
     assert await resolve_monitored_interfaces(session, None) == ["wan"]
+
+
+def test_billing_cycle_config_accepts_a_time_and_rejects_out_of_range():
+    from pydantic import ValidationError
+
+    from backend.app.schemas.analytics import BillingCycleConfig
+
+    # default is midnight
+    assert BillingCycleConfig(anchor_day=5).anchor_hour == 0
+    assert BillingCycleConfig(anchor_day=5).anchor_minute == 0
+
+    cfg = BillingCycleConfig(anchor_day=5, anchor_hour=14, anchor_minute=30)
+    assert (cfg.anchor_hour, cfg.anchor_minute) == (14, 30)
+
+    with pytest.raises(ValidationError):
+        BillingCycleConfig(anchor_day=5, anchor_hour=24)
+    with pytest.raises(ValidationError):
+        BillingCycleConfig(anchor_day=5, anchor_minute=60)
+
+
+def test_quota_status_dto_has_a_precise_reset_instant_field():
+    from backend.app.schemas.analytics import QuotaStatusDTO
+
+    assert QuotaStatusDTO().cycle_end_at is None
