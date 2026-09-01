@@ -20,7 +20,10 @@ import { api } from '../api/client';
  */
 
 vi.mock('../api/client', () => ({
-  api: { testRouterConnection: vi.fn() },
+  api: {
+    testRouterConnection: vi.fn(),
+    autoProvisionSslDirect: vi.fn(),
+  },
 }));
 
 const existing = {
@@ -174,5 +177,37 @@ describe('adding a router', () => {
     const inputs = [...document.querySelectorAll('input[type="text"]')];
     const usernameField = inputs[inputs.length - 1];
     expect(usernameField.value).toBe('');
+  });
+
+  it('offers 1-click Auto-SSL provisioning when connected over HTTP', async () => {
+    api.testRouterConnection.mockResolvedValue({
+      data: { success: true, board_name: 'CCR1009', ros_version: '7.24.1' }
+    });
+    api.autoProvisionSslDirect.mockResolvedValue({
+      data: { success: true, port: 443, message: 'SSL provisioned' }
+    });
+
+    renderWithProviders(
+      <RouterConnectionForm
+        mode="create"
+        initial={{ name: 'Test', host: '10.0.0.1', port: 80, use_ssl: false, username: 'rest' }}
+        onSubmit={() => {}}
+        onCancel={() => {}}
+      />
+    );
+
+    // Type password so test is enabled
+    fireEvent.change(screen.getByPlaceholderText(/password/i), { target: { value: 'secret' } });
+    fireEvent.click(screen.getByRole('button', { name: /test connection/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/Auto-Configure SSL/i)).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByText(/Auto-Configure SSL/i));
+
+    await waitFor(() => {
+      expect(api.autoProvisionSslDirect).toHaveBeenCalled();
+    });
   });
 });

@@ -20,8 +20,7 @@ from backend.app.services.analytics_engine import (
     get_billing_cycle_dates,
     resolve_date_range,
 )
-from backend.app.services.router_time import ROUTER_OFFSET_SETTING_KEY
-
+from backend.app.services.router_time import ROUTER_OFFSET_SETTING_KEY, router_local_now
 GB = 1024 ** 3
 
 
@@ -579,4 +578,82 @@ class TestQuotaBoundaryPrecision:
 
         got = (await api_client.get("/api/v1/analytics/billing-cycle")).json()["data"]
         assert (got["anchor_hour"], got["anchor_minute"]) == (14, 30)
+
+
+@pytest.mark.asyncio
+async def test_entity_traffic_history_endpoints(api_client):
+    """Test /users/{id}/traffic-history and /devices/{id}/traffic-history endpoints across presets."""
+    async with api_client.session_factory() as s:
+        # Seed user and device
+        user = User(name="Alice", speed_limit="unlimited")
+        s.add(user)
+        await s.commit()
+        await s.refresh(user)
+
+        device = Device(
+            mac_address="AA:BB:CC:DD:EE:01",
+            hostname="alice-laptop",
+            custom_name="Alice Laptop",
+            ip_address="192.168.88.100",
+            user_id=user.id,
+            is_active=True,
+        )
+        s.add(device)
+        await s.commit()
+        await s.refresh(device)
+
+        # Seed rollups across several days
+        today = (await router_local_now(s)).date()
+        s.add(TrafficRollup(user_id=user.id, record_date=today - timedelta(days=2), bytes_in=1000, bytes_out=500))
+        s.add(TrafficRollup(user_id=user.id, record_date=today - timedelta(days=1), bytes_in=2000, bytes_out=800))
+        s.add(TrafficRollup(user_id=user.id, record_date=today, bytes_in=3000, bytes_out=1200))
+
+        s.add(DeviceTrafficRollup(device_id=device.id, record_date=today - timedelta(days=2), bytes_in=1000, bytes_out=500))
+        s.add(DeviceTrafficRollup(device_id=device.id, record_date=today - timedelta(days=1), bytes_in=2000, bytes_out=800))
+        s.add(DeviceTrafficRollup(device_id=device.id, record_date=today, bytes_in=3000, bytes_out=1200))
+        await s.commit()
+
+        user_id = user.id
+        device_id = device.id
+
+    # 1. Test user traffic history 7d preset
+    res = await api_client.get(f"/api/v1/users/{user_id}/traffic-history?preset=7d")
+    assert res.status_code == 200
+    u_data = res.json()["data"]
+    assert u_data["entity_type"] == "user"
+    assert u_data["entity_name"] == "Alice"
+    assert u_data["total_bytes_in"] == 6000
+    assert u_data["total_bytes_out"] == 2500
+    assert u_data["total_bytes"] == 8500
+    assert len(u_data["timeline"]) == 7
+    assert len(u_data["devices"]) == 1
+    assert u_data["devices"][0]["device_id"] == device_id
+    assert u_data["devices"][0]["total_bytes"] == 8500
+
+    # 2. Test user traffic history 1d / today preset
+    res_1d = await api_client.get(f"/api/v1/users/{user_id}/traffic-history?preset=1d")
+    assert res_1d.status_code == 200
+    u_1d = res_1d.json()["data"]
+    assert len(u_1d["timeline"]) == 1
+    assert u_1d["total_bytes"] == 4200
+
+    # 3. Test device traffic history 7d preset
+    d_res = await api_client.get(f"/api/v1/devices/{device_id}/traffic-history?preset=7d")
+    assert d_res.status_code == 200
+    d_data = d_res.json()["data"]
+    assert d_data["entity_type"] == "device"
+    assert d_data["entity_name"] == "Alice Laptop"
+    assert d_data["mac_address"] == "AA:BB:CC:DD:EE:01"
+    assert d_data["user_name"] == "Alice"
+    assert d_data["total_bytes"] == 8500
+    assert len(d_data["timeline"]) == 7
+
+    # 4. Test custom range
+    start_str = (today - timedelta(days=1)).isoformat()
+    end_str = today.isoformat()
+    c_res = await api_client.get(f"/api/v1/devices/{device_id}/traffic-history?preset=custom&start_date={start_str}&end_date={end_str}")
+    assert c_res.status_code == 200
+    c_data = c_res.json()["data"]
+    assert len(c_data["timeline"]) == 2
+    assert c_data["total_bytes"] == (2000 + 800 + 3000 + 1200)
 

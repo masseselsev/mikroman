@@ -228,6 +228,10 @@ class RouterManager:
             if should_close:
                 await session.close()
 
+    async def get_active_router(self, session: Optional[AsyncSession] = None) -> Optional[Router]:
+        """Fetch the active router model from database."""
+        return await self.get_default_or_first_router(session)
+
     async def get_all_active_routers(self, session: Optional[AsyncSession] = None) -> List[Router]:
         """Fetch all active router records from database."""
         should_close = False

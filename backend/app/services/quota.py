@@ -100,21 +100,47 @@ async def _set(session: AsyncSession, key: str, value: str, description: str = "
         session.add(AppSetting(key=key, value=value, description=description))
 
 
-async def get_quota_config(session: AsyncSession) -> QuotaConfig:
+def _key(base: str, router_id: Optional[int] = None) -> str:
+    return f"{base}_{router_id}" if router_id is not None else base
+
+
+async def get_quota_config(session: AsyncSession, router_id: Optional[int] = None) -> QuotaConfig:
     """Current quota configuration; inert defaults when nothing is set."""
-    raw_limit = await _get(session, LIMIT_SETTING_KEY)
+    key = _key(LIMIT_SETTING_KEY, router_id)
+    raw_limit = await _get(session, key)
+    if raw_limit is None and router_id in (None, 1):
+        raw_limit = await _get(session, LIMIT_SETTING_KEY)
     try:
         limit = int(raw_limit) if raw_limit else 0
     except ValueError:
         logger.warning("Stored quota limit is not a number; treating quota as disabled")
         limit = 0
 
-    notify_raw = await _get(session, NOTIFY_SETTING_KEY)
-    portal_url = (await _get(session, PORTAL_URL_SETTING_KEY) or "").strip() or None
-    portal_label = (await _get(session, PORTAL_LABEL_SETTING_KEY) or "").strip() or None
+    notify_key = _key(NOTIFY_SETTING_KEY, router_id)
+    notify_raw = await _get(session, notify_key)
+    if notify_raw is None and router_id in (None, 1):
+        notify_raw = await _get(session, NOTIFY_SETTING_KEY)
+
+    thresh_key = _key(THRESHOLDS_SETTING_KEY, router_id)
+    thresh_raw = await _get(session, thresh_key)
+    if thresh_raw is None and router_id in (None, 1):
+        thresh_raw = await _get(session, THRESHOLDS_SETTING_KEY)
+
+    portal_url_key = _key(PORTAL_URL_SETTING_KEY, router_id)
+    portal_url_raw = await _get(session, portal_url_key)
+    if portal_url_raw is None and router_id in (None, 1):
+        portal_url_raw = await _get(session, PORTAL_URL_SETTING_KEY)
+    portal_url = (portal_url_raw or "").strip() or None
+
+    portal_label_key = _key(PORTAL_LABEL_SETTING_KEY, router_id)
+    portal_label_raw = await _get(session, portal_label_key)
+    if portal_label_raw is None and router_id in (None, 1):
+        portal_label_raw = await _get(session, PORTAL_LABEL_SETTING_KEY)
+    portal_label = (portal_label_raw or "").strip() or None
+
     return QuotaConfig(
         limit_bytes=max(0, limit),
-        thresholds=parse_thresholds(await _get(session, THRESHOLDS_SETTING_KEY)),
+        thresholds=parse_thresholds(thresh_raw),
         notify_telegram=(notify_raw is None or notify_raw.lower() != "false"),
         portal_url=portal_url,
         portal_label=portal_label,
@@ -141,25 +167,25 @@ def clean_portal_url(raw: Optional[str]) -> Optional[str]:
     return url
 
 
-async def save_quota_config(session: AsyncSession, config: QuotaConfig) -> QuotaConfig:
+async def save_quota_config(session: AsyncSession, config: QuotaConfig, router_id: Optional[int] = None) -> QuotaConfig:
     """Persist the quota configuration."""
-    await _set(session, LIMIT_SETTING_KEY, str(max(0, config.limit_bytes)),
+    await _set(session, _key(LIMIT_SETTING_KEY, router_id), str(max(0, config.limit_bytes)),
                "ISP data limit for one billing cycle, in bytes; 0 disables")
-    await _set(session, THRESHOLDS_SETTING_KEY, ",".join(str(t) for t in parse_thresholds(
+    await _set(session, _key(THRESHOLDS_SETTING_KEY, router_id), ",".join(str(t) for t in parse_thresholds(
         ",".join(str(t) for t in config.thresholds))),
         "Percentages of the quota at which to alert")
-    await _set(session, NOTIFY_SETTING_KEY, "true" if config.notify_telegram else "false",
+    await _set(session, _key(NOTIFY_SETTING_KEY, router_id), "true" if config.notify_telegram else "false",
                "Send quota threshold alerts to Telegram")
-    await _set(session, PORTAL_URL_SETTING_KEY, clean_portal_url(config.portal_url) or "",
+    await _set(session, _key(PORTAL_URL_SETTING_KEY, router_id), clean_portal_url(config.portal_url) or "",
                "Link to the ISP usage/billing page or the modem's stats page")
-    await _set(session, PORTAL_LABEL_SETTING_KEY, (config.portal_label or "").strip()[:40],
+    await _set(session, _key(PORTAL_LABEL_SETTING_KEY, router_id), (config.portal_label or "").strip()[:40],
                "Short label for the ISP portal link button")
     await session.commit()
-    return await get_quota_config(session)
+    return await get_quota_config(session, router_id=router_id)
 
 
-async def _load_fired(session: AsyncSession) -> dict:
-    raw = await _get(session, FIRED_SETTING_KEY)
+async def _load_fired(session: AsyncSession, router_id: Optional[int] = None) -> dict:
+    raw = await _get(session, _key(FIRED_SETTING_KEY, router_id))
     if not raw:
         return {}
     try:
@@ -169,23 +195,23 @@ async def _load_fired(session: AsyncSession) -> dict:
         return {}
 
 
-async def unfired_for_cycle(session: AsyncSession, cycle_start: date) -> List[int]:
+async def unfired_for_cycle(session: AsyncSession, cycle_start: date, router_id: Optional[int] = None) -> List[int]:
     """Thresholds already alerted on during this billing cycle.
 
     Keyed by cycle start, so a new cycle re-arms every threshold automatically
     without needing a separate reset step.
     """
-    data = await _load_fired(session)
+    data = await _load_fired(session, router_id)
     return sorted(data.get(cycle_start.isoformat(), []))
 
 
-async def mark_fired(session: AsyncSession, cycle_start: date, threshold: int) -> None:
+async def mark_fired(session: AsyncSession, cycle_start: date, threshold: int, router_id: Optional[int] = None) -> None:
     """Record that a threshold has been alerted on for this cycle."""
-    data = await _load_fired(session)
+    data = await _load_fired(session, router_id)
     key = cycle_start.isoformat()
     fired = set(data.get(key, []))
     fired.add(threshold)
     # Only the current cycle is retained; older entries are of no further use.
-    await _set(session, FIRED_SETTING_KEY, json.dumps({key: sorted(fired)}),
+    await _set(session, _key(FIRED_SETTING_KEY, router_id), json.dumps({key: sorted(fired)}),
                "Quota thresholds already alerted on, per billing cycle")
     await session.commit()

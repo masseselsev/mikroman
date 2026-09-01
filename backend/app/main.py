@@ -129,28 +129,34 @@ async def background_sync_worker():
                                 except Exception as ce:
                                     logger.debug(f"Rotation consolidation tick error for router {r.id}: {ce}")
 
-                            # Maintain RouterOS Simple Queues and FastTrack exemptions for all active users & unassigned devices
+                            # Maintain RouterOS Simple Queues and FastTrack exemptions for active users & unassigned devices of this router
                             try:
                                 from backend.app.db.models import Device, User
                                 from backend.app.services.traffic_controller import TrafficController
-                                tc = TrafficController(client)
+                                tc = TrafficController(client, router_id=r.id)
                                 from sqlalchemy import select
 
                                 # Before shaping anything, make sure the stored
                                 # intent is sane: a device that has an owner must
                                 # not still be carrying the quarantine limit, or
                                 # the sync below would faithfully re-apply it.
-                                await tc.reconcile_device_limits(session)
+                                await tc.reconcile_device_limits(session, router_id=r.id)
 
-                                users_res = await session.execute(select(User))
+                                users_res = await session.execute(
+                                    select(User).where((User.router_id == r.id) | (User.router_id.is_(None)))
+                                )
                                 for u in users_res.scalars().all():
-                                    active_ips = [d.ip_address for d in u.devices if d.is_active and d.ip_address]
+                                    active_ips = [
+                                        d.ip_address for d in u.devices
+                                        if d.is_active and d.ip_address and (d.router_id == r.id or d.router_id is None)
+                                    ]
                                     await tc.sync_user_queue(u.id, u.name, active_ips, u.speed_limit)
 
-                                # Sync unassigned quarantine devices and custom device queues
+                                # Sync unassigned quarantine devices and custom device queues for this router
                                 devs_res = await session.execute(
                                     select(Device).where(
                                         Device.is_active,
+                                        (Device.router_id == r.id) | (Device.router_id.is_(None)),
                                         Device.user_id.is_(None) | (Device.speed_limit != "default")
                                     )
                                 )
@@ -161,14 +167,13 @@ async def background_sync_worker():
                                 # is gone, or that no longer needs its own queue.
                                 # Runs after the syncs so freshly created queues
                                 # are already accounted for.
-                                await tc.reconcile_managed_queues(session)
+                                await tc.reconcile_managed_queues(session, router_id=r.id)
                             except Exception as qe:
                                 logger.debug(f"Queue sync tick error for router {r.id}: {qe}")
 
                             # Router uptime, read once for this tick. If it has
                             # gone backwards since the last tick the router
                             # rebooted and every byte counter on it reset to
-                            # zero; the accounting passes below need to know
                             # that so they credit the bytes since the reboot
                             # rather than a bogus delta. A network outage on its
                             # own is not a reboot - the counters keep running.

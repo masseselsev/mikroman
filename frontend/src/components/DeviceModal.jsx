@@ -37,8 +37,10 @@ function getDeviceIcon(vendor = '', hostname = '') {
   return <Globe size={20} />;
 }
 
-export function DeviceModal({ device, user, onClose, onUpdated }) {
+export function DeviceModal({ device, user, users = [], onClose, onUpdated }) {
   const { t } = useI18n();
+  const [userList, setUserList] = useState(users || []);
+  const [selectedUserId, setSelectedUserId] = useState(device.user_id || (user?.id ? String(user.id) : ''));
   const [customName, setCustomName] = useState(device.custom_name || device.hostname || '');
   const [speedLimit, setSpeedLimit] = useState(device.speed_limit || 'default');
   const [isPaused, setIsPaused] = useState(device.is_paused || false);
@@ -49,6 +51,16 @@ export function DeviceModal({ device, user, onClose, onUpdated }) {
   const [customUp, setCustomUp] = useState(device.speed_limit && device.speed_limit.includes('/') ? device.speed_limit.split('/')[0] : '5M');
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState(null);
+
+  React.useEffect(() => {
+    if (!users || users.length === 0) {
+      api.getUsers().then(res => {
+        if (res?.data) setUserList(res.data);
+      }).catch(err => console.debug('Failed to load users for device modal', err));
+    } else {
+      setUserList(users);
+    }
+  }, [users]);
 
   const handleSpeedSelect = (val) => {
     setSpeedLimit(val);
@@ -72,7 +84,8 @@ export function DeviceModal({ device, user, onClose, onUpdated }) {
         speed_limit: effectiveLimit,
         is_paused: isPaused,
         is_hidden: isHidden,
-        priority: Number(priority)
+        priority: Number(priority),
+        user_id: selectedUserId ? Number(selectedUserId) : null,
       });
       if (onUpdated) onUpdated();
       onClose();
@@ -120,6 +133,23 @@ export function DeviceModal({ device, user, onClose, onUpdated }) {
                 placeholder="e.g. My Phone, Living Room TV"
                 required
               />
+            </div>
+
+            {/* Owner / Assigned User */}
+            <div className="form-group">
+              <label className="form-label">{t('table_user')}</label>
+              <select
+                className="form-select"
+                value={selectedUserId}
+                onChange={e => setSelectedUserId(e.target.value)}
+              >
+                <option value="">{t('unassigned_traffic')}</option>
+                {userList.map(u => (
+                  <option key={u.id} value={String(u.id)}>
+                    {u.name}
+                  </option>
+                ))}
+              </select>
             </div>
 
             {/* Speed Limit */}

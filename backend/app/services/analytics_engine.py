@@ -3,7 +3,8 @@ import logging
 from datetime import date, datetime, timedelta
 from typing import Any, List, Optional, Tuple
 
-from sqlalchemy import select
+from fastapi import HTTPException
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.db.models import (
@@ -18,6 +19,7 @@ from backend.app.schemas.analytics import (
     AccountingHealth,
     DailyTrafficPoint,
     DeviceTrafficSummary,
+    EntityTrafficHistoryResponse,
     GatewayTrafficSummary,
     InterfaceTrafficSummary,
     RouterSelfTrafficSummary,
@@ -125,16 +127,21 @@ def resolve_date_range(
     the router's own clock shows.
     """
     today = today or date.today()
+    preset = (preset or "7d").lower().strip()
 
-    if preset == "today":
+    if preset in ("today", "day", "1d"):
         return (today, today, "today")
     elif preset == "yesterday":
         yest = today - timedelta(days=1)
         return (yest, yest, "yesterday")
-    elif preset == "7d":
+    elif preset in ("7d", "week", "1w"):
         return (today - timedelta(days=6), today, "7d")
-    elif preset == "30d":
+    elif preset in ("30d", "month", "1m"):
         return (today - timedelta(days=29), today, "30d")
+    elif preset in ("1y", "year", "365d"):
+        return (today - timedelta(days=364), today, "1y")
+    elif preset in ("all_time", "all", "alltime"):
+        return (date(2000, 1, 1), today, "all_time")
     elif preset == "billing_current":
         ref = now_dt or datetime.combine(today, datetime.min.time())
         s_dt, e_dt = get_billing_cycle_bounds(anchor_day, anchor_hour, anchor_minute, ref, previous=False)
@@ -147,6 +154,8 @@ def resolve_date_range(
         return (s_dt.date(), inclusive_end_date(e_dt), "billing_previous")
     elif preset == "custom" and start_date and end_date:
         return (min(start_date, end_date), max(start_date, end_date), "custom")
+    elif start_date and end_date:
+        return (min(start_date, end_date), max(start_date, end_date), "custom")
     else:
         # Default fallback: 7 days
         return (today - timedelta(days=6), today, "7d")
@@ -156,9 +165,12 @@ class AnalyticsEngine:
     """Historical traffic accounting and aggregation engine."""
 
     @staticmethod
-    async def get_billing_anchor_day(session: AsyncSession) -> int:
+    async def get_billing_anchor_day(session: AsyncSession, router_id: Optional[int] = None) -> int:
         """Fetch the configured ISP billing cycle anchor day from app settings."""
-        setting = await session.get(AppSetting, "billing_cycle_anchor_day")
+        key = f"billing_cycle_anchor_day_{router_id}" if router_id is not None else "billing_cycle_anchor_day"
+        setting = await session.get(AppSetting, key)
+        if not setting and router_id in (None, 1):
+            setting = await session.get(AppSetting, "billing_cycle_anchor_day")
         if setting and setting.value:
             try:
                 return max(1, min(int(setting.value), 31))
@@ -167,20 +179,21 @@ class AnalyticsEngine:
         return 1
 
     @staticmethod
-    async def set_billing_anchor_day(session: AsyncSession, anchor_day: int) -> int:
+    async def set_billing_anchor_day(session: AsyncSession, anchor_day: int, router_id: Optional[int] = None) -> int:
         """Save the ISP billing cycle anchor day to app settings."""
         day = max(1, min(anchor_day, 31))
-        setting = await session.get(AppSetting, "billing_cycle_anchor_day")
+        key = f"billing_cycle_anchor_day_{router_id}" if router_id is not None else "billing_cycle_anchor_day"
+        setting = await session.get(AppSetting, key)
         if setting:
             setting.value = str(day)
         else:
-            setting = AppSetting(key="billing_cycle_anchor_day", value=str(day), description="ISP billing cycle monthly anchor day (1-31)")
+            setting = AppSetting(key=key, value=str(day), description="ISP billing cycle monthly anchor day (1-31)")
             session.add(setting)
         await session.commit()
         return day
 
     @staticmethod
-    async def get_billing_anchor_time(session: AsyncSession) -> Tuple[int, int]:
+    async def get_billing_anchor_time(session: AsyncSession, router_id: Optional[int] = None) -> Tuple[int, int]:
         """The configured reset time of day as ``(hour, minute)``.
 
         Defaults to midnight, which reproduces the pre-existing date-only
@@ -190,8 +203,14 @@ class AnalyticsEngine:
         """
         hour = 0
         minute = 0
-        h_setting = await session.get(AppSetting, "billing_cycle_anchor_hour")
-        m_setting = await session.get(AppSetting, "billing_cycle_anchor_minute")
+        h_key = f"billing_cycle_anchor_hour_{router_id}" if router_id is not None else "billing_cycle_anchor_hour"
+        m_key = f"billing_cycle_anchor_minute_{router_id}" if router_id is not None else "billing_cycle_anchor_minute"
+        h_setting = await session.get(AppSetting, h_key)
+        m_setting = await session.get(AppSetting, m_key)
+        if not h_setting and router_id in (None, 1):
+            h_setting = await session.get(AppSetting, "billing_cycle_anchor_hour")
+        if not m_setting and router_id in (None, 1):
+            m_setting = await session.get(AppSetting, "billing_cycle_anchor_minute")
         if h_setting and h_setting.value:
             try:
                 hour = max(0, min(int(h_setting.value), 23))
@@ -205,7 +224,7 @@ class AnalyticsEngine:
         return (hour, minute)
 
     @staticmethod
-    async def set_billing_anchor_time(session: AsyncSession, hour: int, minute: int) -> Tuple[int, int]:
+    async def set_billing_anchor_time(session: AsyncSession, hour: int, minute: int, router_id: Optional[int] = None) -> Tuple[int, int]:
         """Persist the reset time of day as two app settings.
 
         ``hour`` is clamped to 0-23 and ``minute`` to 0-59 rather than rejected,
@@ -216,9 +235,11 @@ class AnalyticsEngine:
         """
         hh = max(0, min(hour, 23))
         mm = max(0, min(minute, 59))
+        h_key = f"billing_cycle_anchor_hour_{router_id}" if router_id is not None else "billing_cycle_anchor_hour"
+        m_key = f"billing_cycle_anchor_minute_{router_id}" if router_id is not None else "billing_cycle_anchor_minute"
         for key, value, desc in (
-            ("billing_cycle_anchor_hour", hh, "ISP billing cycle reset hour (0-23), router-local"),
-            ("billing_cycle_anchor_minute", mm, "ISP billing cycle reset minute (0-59)"),
+            (h_key, hh, "ISP billing cycle reset hour (0-23), router-local"),
+            (m_key, mm, "ISP billing cycle reset minute (0-59)"),
         ):
             setting = await session.get(AppSetting, key)
             if setting:
@@ -267,12 +288,11 @@ class AnalyticsEngine:
         # All six go through rollups.sum_by so the date window and the router
         # filter cannot differ between them - they used to, silently.
         user_totals = await rollups.sum_by(
-            session, TrafficRollup, TrafficRollup.user_id, start_date, end_date
+            session, TrafficRollup, TrafficRollup.user_id, start_date, end_date, router_id=router_id,
         )
         dev_totals = await rollups.sum_by(
-            session, DeviceTrafficRollup, DeviceTrafficRollup.device_id, start_date, end_date
+            session, DeviceTrafficRollup, DeviceTrafficRollup.device_id, start_date, end_date, router_id=router_id,
         )
-
         # Extra columns: current-cycle and all-time volume per owner, and the
         # per-interface breakdown. Skipped entirely when the caller only wants
         # the gateway total and the timeline (the quota endpoint).
@@ -287,16 +307,16 @@ class AnalyticsEngine:
             now_local = await router_local_now(session)
             cyc_start, cyc_end = get_billing_cycle_dates(anchor_day, now_local.date())
             user_cycle = await rollups.sum_by(
-                session, TrafficRollup, TrafficRollup.user_id, cyc_start, cyc_end
+                session, TrafficRollup, TrafficRollup.user_id, cyc_start, cyc_end, router_id=router_id,
             )
             dev_cycle = await rollups.sum_by(
-                session, DeviceTrafficRollup, DeviceTrafficRollup.device_id, cyc_start, cyc_end
+                session, DeviceTrafficRollup, DeviceTrafficRollup.device_id, cyc_start, cyc_end, router_id=router_id,
             )
             user_alltime = await rollups.sum_by(
-                session, TrafficRollup, TrafficRollup.user_id, _ALLTIME_START, _ALLTIME_END
+                session, TrafficRollup, TrafficRollup.user_id, _ALLTIME_START, _ALLTIME_END, router_id=router_id,
             )
             dev_alltime = await rollups.sum_by(
-                session, DeviceTrafficRollup, DeviceTrafficRollup.device_id, _ALLTIME_START, _ALLTIME_END
+                session, DeviceTrafficRollup, DeviceTrafficRollup.device_id, _ALLTIME_START, _ALLTIME_END, router_id=router_id,
             )
             iface_range = await rollups.sum_by(
                 session, InterfaceTrafficRollup, InterfaceTrafficRollup.interface_name,
@@ -669,3 +689,206 @@ class AnalyticsEngine:
             await recompute_recent(session, router_id)
         except Exception as e:
             logger.warning(f"Interface rollup refresh failed for router {router_id}: {e}")
+
+    @classmethod
+    async def get_user_traffic_history(
+        cls,
+        session: AsyncSession,
+        user_id: int,
+        start_date: date,
+        end_date: date,
+        range_preset: str = "7d",
+    ) -> EntityTrafficHistoryResponse:
+        """Detailed historical traffic timeline and device split for a specific user."""
+        user = await session.get(User, user_id)
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        # 1. Daily user rollups
+        stmt = (
+            select(
+                TrafficRollup.record_date,
+                TrafficRollup.bytes_in,
+                TrafficRollup.bytes_out,
+            )
+            .where(
+                TrafficRollup.user_id == user_id,
+                TrafficRollup.record_date >= start_date,
+                TrafficRollup.record_date <= end_date,
+            )
+            .order_by(TrafficRollup.record_date.asc())
+        )
+        res = await session.execute(stmt)
+        user_daily_map = {row[0]: (int(row[1] or 0), int(row[2] or 0)) for row in res.all()}
+
+        # 2. Build contiguous timeline
+        timeline: List[DailyTrafficPoint] = []
+        cur_d = start_date
+        total_in = 0
+        total_out = 0
+        peak_date = None
+        peak_bytes = 0
+        while cur_d <= end_date:
+            b_in, b_out = user_daily_map.get(cur_d, (0, 0))
+            day_total = b_in + b_out
+            total_in += b_in
+            total_out += b_out
+            if day_total > peak_bytes:
+                peak_bytes = day_total
+                peak_date = cur_d
+            timeline.append(DailyTrafficPoint(
+                record_date=cur_d,
+                bytes_in=b_in,
+                bytes_out=b_out,
+                total_bytes=day_total,
+            ))
+            cur_d += timedelta(days=1)
+
+        total_bytes = total_in + total_out
+        num_days = max(1, (end_date - start_date).days + 1)
+        daily_avg = total_bytes // num_days
+
+        # 3. Query per-device consumption for devices owned by this user
+        dev_stmt = (
+            select(
+                Device,
+                func.coalesce(func.sum(DeviceTrafficRollup.bytes_in), 0).label("d_in"),
+                func.coalesce(func.sum(DeviceTrafficRollup.bytes_out), 0).label("d_out"),
+            )
+            .outerjoin(
+                DeviceTrafficRollup,
+                (DeviceTrafficRollup.device_id == Device.id)
+                & (DeviceTrafficRollup.record_date >= start_date)
+                & (DeviceTrafficRollup.record_date <= end_date),
+            )
+            .where(Device.user_id == user_id)
+            .group_by(Device.id)
+        )
+        dev_res = await session.execute(dev_stmt)
+        device_summaries: List[DeviceTrafficSummary] = []
+        for dev, d_in, d_out in dev_res.all():
+            d_in_int = int(d_in or 0)
+            d_out_int = int(d_out or 0)
+            d_total = d_in_int + d_out_int
+            pct = round((d_total / total_bytes * 100), 1) if total_bytes > 0 else 0.0
+            device_summaries.append(DeviceTrafficSummary(
+                device_id=dev.id,
+                hostname=dev.hostname or "",
+                custom_name=dev.custom_name,
+                ip_address=dev.ip_address or "",
+                mac_address=dev.mac_address,
+                vendor=dev.vendor,
+                user_id=dev.user_id,
+                user_name=user.name,
+                bytes_in=d_in_int,
+                bytes_out=d_out_int,
+                total_bytes=d_total,
+                percentage_of_total=pct,
+                is_active=dev.is_active,
+                last_active=dev.last_seen,
+            ))
+        device_summaries.sort(key=lambda d: d.total_bytes, reverse=True)
+
+        return EntityTrafficHistoryResponse(
+            entity_type="user",
+            entity_id=user.id,
+            entity_name=user.name,
+            avatar_icon=user.avatar_icon,
+            range_preset=range_preset,
+            start_date=start_date,
+            end_date=end_date,
+            total_bytes_in=total_in,
+            total_bytes_out=total_out,
+            total_bytes=total_bytes,
+            daily_average_bytes=daily_avg,
+            peak_date=peak_date,
+            peak_bytes=peak_bytes,
+            timeline=timeline,
+            devices=device_summaries,
+        )
+
+    @classmethod
+    async def get_device_traffic_history(
+        cls,
+        session: AsyncSession,
+        device_id: int,
+        start_date: date,
+        end_date: date,
+        range_preset: str = "7d",
+    ) -> EntityTrafficHistoryResponse:
+        """Detailed historical traffic timeline for a specific network device."""
+        device = await session.get(Device, device_id)
+        if not device:
+            raise HTTPException(status_code=404, detail="Device not found")
+
+        user_name = None
+        if device.user_id:
+            user = await session.get(User, device.user_id)
+            if user:
+                user_name = user.name
+
+        # 1. Daily device rollups
+        stmt = (
+            select(
+                DeviceTrafficRollup.record_date,
+                DeviceTrafficRollup.bytes_in,
+                DeviceTrafficRollup.bytes_out,
+            )
+            .where(
+                DeviceTrafficRollup.device_id == device_id,
+                DeviceTrafficRollup.record_date >= start_date,
+                DeviceTrafficRollup.record_date <= end_date,
+            )
+            .order_by(DeviceTrafficRollup.record_date.asc())
+        )
+        res = await session.execute(stmt)
+        dev_daily_map = {row[0]: (int(row[1] or 0), int(row[2] or 0)) for row in res.all()}
+
+        # 2. Build contiguous timeline
+        timeline: List[DailyTrafficPoint] = []
+        cur_d = start_date
+        total_in = 0
+        total_out = 0
+        peak_date = None
+        peak_bytes = 0
+        while cur_d <= end_date:
+            b_in, b_out = dev_daily_map.get(cur_d, (0, 0))
+            day_total = b_in + b_out
+            total_in += b_in
+            total_out += b_out
+            if day_total > peak_bytes:
+                peak_bytes = day_total
+                peak_date = cur_d
+            timeline.append(DailyTrafficPoint(
+                record_date=cur_d,
+                bytes_in=b_in,
+                bytes_out=b_out,
+                total_bytes=day_total,
+            ))
+            cur_d += timedelta(days=1)
+
+        total_bytes = total_in + total_out
+        num_days = max(1, (end_date - start_date).days + 1)
+        daily_avg = total_bytes // num_days
+
+        display_name = device.custom_name or device.hostname or device.mac_address
+
+        return EntityTrafficHistoryResponse(
+            entity_type="device",
+            entity_id=device.id,
+            entity_name=display_name,
+            mac_address=device.mac_address,
+            ip_address=device.ip_address,
+            user_id=device.user_id,
+            user_name=user_name,
+            range_preset=range_preset,
+            start_date=start_date,
+            end_date=end_date,
+            total_bytes_in=total_in,
+            total_bytes_out=total_out,
+            total_bytes=total_bytes,
+            daily_average_bytes=daily_avg,
+            peak_date=peak_date,
+            peak_bytes=peak_bytes,
+            timeline=timeline,
+        )

@@ -7,6 +7,7 @@ from backend.app.schemas.device import DeviceDTO
 
 
 class UserBase(BaseModel):
+    router_id: Optional[int] = None
     name: str = Field(
         ...,
         min_length=1,
@@ -25,6 +26,7 @@ class UserCreate(UserBase):
 
 
 class UserUpdate(BaseModel):
+    router_id: Optional[int] = None
     name: Optional[str] = Field(
         None,
         min_length=1,

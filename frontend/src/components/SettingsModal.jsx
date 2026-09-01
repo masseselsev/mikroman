@@ -3,12 +3,22 @@ import { useI18n } from '../context/I18nContext';
 import { api } from '../api/client';
 import { templateErrorKey } from '../utils/ipLookup';
 import { RouterConnectionForm } from './RouterConnectionForm';
-import { X, Settings as SettingsIcon, Send, CheckCircle2, AlertTriangle, Power, Server, Plus, Pencil, Trash2, Check, Loader2 } from 'lucide-react';
+import { PauseNetworksModal, parseNetworksList } from './PauseNetworksModal';
+import { X, Settings as SettingsIcon, Send, CheckCircle2, AlertTriangle, Power, Server, Plus, Pencil, Trash2, Check, Loader2, Network } from 'lucide-react';
 
-export function SettingsModal({ isOpen, onClose, onReboot, onRoutersChanged }) {
+export function SettingsModal({
+  isOpen,
+  onClose,
+  onReboot,
+  onRoutersChanged,
+  initialTab = 'general',
+  autoOpenAddRouter = false,
+  activeRouter = null,
+  initialRouters = [],
+}) {
   const { t } = useI18n();
-  const [activeTab, setActiveTab] = useState('general');
-
+  const [activeTab, setActiveTab] = useState(initialTab);
+  const [selectedRouterId, setSelectedRouterId] = useState(activeRouter?.id || null);
   // General Settings
   const [settings, setSettings] = useState({
     telegram_bot_token: '',
@@ -19,27 +29,33 @@ export function SettingsModal({ isOpen, onClose, onReboot, onRoutersChanged }) {
   const [isSaving, setIsSaving] = useState(false);
   const [testResult, setTestResult] = useState(null);
   const [statusMsg, setStatusMsg] = useState('');
+  const [showPauseNetworksModal, setShowPauseNetworksModal] = useState(false);
 
   // Routers list
-  const [routers, setRouters] = useState([]);
+  const [routers, setRouters] = useState(initialRouters || []);
   const [loadingRouters, setLoadingRouters] = useState(false);
-  const [showAddRouter, setShowAddRouter] = useState(false);
   // Which router's connection details are open for editing, if any. The form
   // itself owns the field state; this only decides whose details it is showing.
   const [editingRouterId, setEditingRouterId] = useState(null);
   const [savingRouter, setSavingRouter] = useState(false);
 
-  const loadSettingsAndRouters = async () => {
+  const loadSettingsAndRouters = async (routerId = selectedRouterId) => {
     try {
       setLoadingRouters(true);
       const [settRes, routRes] = await Promise.all([
-        api.getSettings().catch(() => ({ data: {} })),
+        api.getSettings(routerId).catch(() => ({ data: {} })),
         api.getRouters().catch(() => ({ data: [] }))
       ]);
       if (settRes.data) setSettings(prev => ({ ...prev, ...settRes.data }));
-      if (routRes.data) setRouters(routRes.data);
-    } catch (err) {
-      console.error('Settings load error', err);
+      if (routRes.data) {
+        setRouters(routRes.data);
+        if (!routerId && routRes.data.length > 0) {
+          const act = routRes.data.find(r => r.is_default) || routRes.data[0];
+          setSelectedRouterId(act.id);
+        }
+      }
+    } catch (e) {
+      console.error('Failed to load settings or routers', e);
     } finally {
       setLoadingRouters(false);
     }
@@ -49,16 +65,14 @@ export function SettingsModal({ isOpen, onClose, onReboot, onRoutersChanged }) {
   // endpoint and derived status, and is expressed in GB for the operator.
   const [quota, setQuota] = useState({ limit_gb: 0, thresholds: [], notify_telegram: true, portal_url: '', portal_label: '' });
 
-  const loadQuota = async () => {
+  const loadQuota = async (routerId = selectedRouterId) => {
     try {
-      const res = await api.getQuota();
+      const res = await api.getQuota(routerId);
       if (res?.data) {
         setQuota({
           limit_gb: Math.round((res.data.limit_bytes || 0) / (1024 ** 3)),
-          thresholds: res.data.thresholds || [],
           // Read back rather than assumed: assuming true meant that turning
           // Telegram alerts off survived the save but not the next page load,
-          // and the following save wrote the assumption back over the choice.
           notify_telegram: res.data.notify_telegram ?? true,
           portal_url: res.data.portal_url || '',
           portal_label: res.data.portal_label || '',
@@ -126,16 +140,17 @@ export function SettingsModal({ isOpen, onClose, onReboot, onRoutersChanged }) {
 
   useEffect(() => {
     if (isOpen) {
+      setActiveTab(initialTab || 'general');
+      setShowAddRouter(!!autoOpenAddRouter);
+      setEditingRouterId(null);
       loadSettingsAndRouters();
       loadQuota();
       loadIpLookup();
       setIpLookupError('');
       setTestResult(null);
       setStatusMsg('');
-      setShowAddRouter(false);
-      setEditingRouterId(null);
     }
-  }, [isOpen]);
+  }, [isOpen, initialTab, autoOpenAddRouter]);
 
   if (!isOpen) return null;
 
@@ -252,7 +267,7 @@ export function SettingsModal({ isOpen, onClose, onReboot, onRoutersChanged }) {
 
   return (
     <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal-card" onClick={e => e.stopPropagation()} style={{ maxWidth: 640 }}>
+      <div className="modal-card" onClick={e => e.stopPropagation()} style={{ maxWidth: 680 }}>
         <div className="modal-header">
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontWeight: 700 }}>
             <SettingsIcon size={18} style={{ color: 'var(--color-primary)' }} />
@@ -300,21 +315,16 @@ export function SettingsModal({ isOpen, onClose, onReboot, onRoutersChanged }) {
         {activeTab === 'general' && (
           <form onSubmit={handleSaveGeneral}>
             <div className="modal-body">
-              {/* Telegram Bot Section */}
-              <div>
-                <h3 style={{ fontSize: 'var(--fs-md)', fontWeight: 700, marginBottom: 10, color: 'var(--color-primary)' }}>
-                  {t('telegram_integration')}
-                </h3>
-                <div className="form-group" style={{ marginBottom: 10 }}>
-                  <label className="form-label">{t('tg_bot_token')}</label>
-                  <input
-                    type="password"
-                    className="form-input font-mono"
-                    value={settings.telegram_bot_token || ''}
-                    onChange={e => setSettings({ ...settings, telegram_bot_token: e.target.value })}
-                    placeholder="123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
-                  />
-                </div>
+              <div className="form-group" style={{ marginBottom: 16 }}>
+                <label className="form-label">{t('tg_token')}</label>
+                <input
+                  type="password"
+                  className="form-input font-mono"
+                  value={settings.telegram_bot_token || ''}
+                  onChange={e => setSettings({ ...settings, telegram_bot_token: e.target.value })}
+                  placeholder="123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
+                />
+              </div>
 
                 <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 10, marginBottom: 10 }}>
                   <div className="form-group">
@@ -381,7 +391,6 @@ export function SettingsModal({ isOpen, onClose, onReboot, onRoutersChanged }) {
                     </span>
                   )}
                 </div>
-              </div>
 
               <div style={{ height: 1, background: 'var(--border-color)', margin: '6px 0' }}></div>
 
@@ -707,6 +716,34 @@ export function SettingsModal({ isOpen, onClose, onReboot, onRoutersChanged }) {
               </div>
 
               <div style={{ height: 1, background: 'var(--border-color)', margin: '6px 0' }}></div>
+              <div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                  <h3 style={{ fontSize: 'var(--fs-md)', fontWeight: 700, color: 'var(--color-primary)' }}>
+                    {t('pause_networks_title')}
+                  </h3>
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    onClick={() => setShowPauseNetworksModal(true)}
+                  >
+                    <Network size={13} style={{ marginRight: 4 }} />
+                    {t('configure_pause_networks')}
+                  </button>
+                </div>
+                <p style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginBottom: 10 }}>
+                  {t('pause_networks_desc')}
+                </p>
+
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+                  {parseNetworksList(settings.pause_allowed_networks).map(net => (
+                    <span key={net} className="badge badge-neutral font-mono" style={{ fontSize: 'var(--fs-2xs)', padding: '2px 8px' }}>
+                      {net}
+                    </span>
+                  ))}
+                </div>
+              </div>
+
+              <div style={{ height: 1, background: 'var(--border-color)', margin: '6px 0' }}></div>
 
               {/* System Actions */}
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -784,17 +821,18 @@ export function SettingsModal({ isOpen, onClose, onReboot, onRoutersChanged }) {
                     borderRadius: 'var(--radius-sm)'
                   }}
                 >
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0, flex: 1 }}>
                     <span
                       style={{
                         width: 8,
                         height: 8,
                         borderRadius: 'var(--radius-full)',
-                        background: r.is_online ? 'var(--color-success)' : 'var(--text-muted)'
+                        background: r.is_online ? 'var(--color-success)' : 'var(--text-muted)',
+                        flexShrink: 0
                       }}
                     />
-                    <div>
-                      <div style={{ fontWeight: 700, fontSize: 'var(--fs-sm)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <div style={{ minWidth: 0, flex: 1 }}>
+                      <div style={{ fontWeight: 700, fontSize: 'var(--fs-sm)', display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                         <span>{r.name}</span>
                         {r.is_default && (
                           <span className="badge badge-primary" style={{ fontSize: 'var(--fs-3xs)', padding: '1px 6px' }}>
@@ -805,13 +843,23 @@ export function SettingsModal({ isOpen, onClose, onReboot, onRoutersChanged }) {
                           {r.use_ssl ? 'HTTPS' : 'HTTP'}
                         </span>
                       </div>
-                      <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }} className="font-mono">
-                        {r.host}:{r.port} {r.board_name ? `• ${r.board_name}` : (r.model ? `• ${r.model}` : '')} {r.ros_version ? `• RouterOS ${r.ros_version}` : ''} {r.architecture ? `(${r.architecture})` : ''}
+                      <div
+                        style={{
+                          fontSize: 'var(--fs-xs)',
+                          color: 'var(--text-muted)',
+                          whiteSpace: 'nowrap',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis'
+                        }}
+                        className="font-mono"
+                        title={`${r.host}:${r.port}${r.board_name ? ` • ${r.board_name}` : (r.model ? ` • ${r.model}` : '')}${r.ros_version ? ` • RouterOS ${r.ros_version}` : ''}${r.architecture ? ` (${r.architecture})` : ''}`}
+                      >
+                        {r.host}:{r.port} {r.board_name ? `• ${r.board_name}` : (r.model ? `• ${r.model}` : '')} {r.ros_version ? `• ROS ${r.ros_version.replace(/\s*\(stable\)|\s*\(long-term\)|\s*\(testing\)|\s*\(development\)/gi, '')}` : ''} {r.architecture ? `(${r.architecture})` : ''}
                       </div>
                     </div>
                   </div>
 
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0, marginLeft: 12 }}>
                     {!r.use_ssl && r.is_online && (
                       <button
                         type="button"
@@ -830,7 +878,7 @@ export function SettingsModal({ isOpen, onClose, onReboot, onRoutersChanged }) {
                         onClick={() => handleActivateRouter(r.id)}
                         style={{ fontSize: 'var(--fs-xs)', padding: '3px 8px' }}
                       >
-                        Set Active
+                        {t('set_active')}
                       </button>
                     )}
                     {/* The recovery path. Without it, a router whose stored
@@ -880,6 +928,19 @@ export function SettingsModal({ isOpen, onClose, onReboot, onRoutersChanged }) {
           </div>
         )}
       </div>
+
+      {showPauseNetworksModal && (
+        <PauseNetworksModal
+          isOpen={showPauseNetworksModal}
+          onClose={() => setShowPauseNetworksModal(false)}
+          currentNetworks={settings.pause_allowed_networks}
+          onSave={async (newNetworks) => {
+            const updated = { ...settings, pause_allowed_networks: newNetworks };
+            setSettings(updated);
+            await api.saveSettings(updated);
+          }}
+        />
+      )}
     </div>
   );
 }

@@ -59,7 +59,7 @@ def parse_bytes_string(bytes_str: Optional[str]) -> Tuple[int, int]:
 DEFAULT_UNASSIGNED_LIMIT = "5M/5M"
 
 
-async def resolve_unassigned_limit(session: AsyncSession) -> str:
+async def resolve_unassigned_limit(session: AsyncSession, router_id: Optional[int] = None) -> str:
     """The quarantine bandwidth applied to devices that belong to nobody.
 
     Read from settings on every use rather than copied onto the device row.
@@ -67,9 +67,14 @@ async def resolve_unassigned_limit(session: AsyncSession) -> str:
     this one device"; quarantine is a consequence of having no owner, so it is
     resolved here and disappears the moment the device is assigned.
     """
+    key = f"unassigned_device_speed_limit_{router_id}" if router_id is not None else "unassigned_device_speed_limit"
     row = (await session.execute(
-        select(AppSetting).where(AppSetting.key == "unassigned_device_speed_limit")
+        select(AppSetting).where(AppSetting.key == key)
     )).scalar_one_or_none()
+    if not row and router_id is not None:
+        row = (await session.execute(
+            select(AppSetting).where(AppSetting.key == "unassigned_device_speed_limit")
+        )).scalar_one_or_none()
     return row.value if row and row.value else DEFAULT_UNASSIGNED_LIMIT
 
 
@@ -78,9 +83,9 @@ class TrafficController:
 
     _fasttrack_checked_at: dict = {}
 
-    def __init__(self, router_client: RouterOSClient):
+    def __init__(self, router_client: RouterOSClient, router_id: Optional[int] = None):
         self.router_client = router_client
-
+        self.router_id = router_id
     async def ensure_fasttrack_exemption(self) -> None:
         """Ensure FastTrack rule excludes mikroman_queued IPs so Simple Queues take effect."""
         client_key = getattr(self.router_client, "base_url", "default")
@@ -236,6 +241,100 @@ class TrafficController:
         await self.sync_user_queue(user.id, user.name, active_ips, speed_limit)
         return True
 
+    async def ensure_pause_firewall_rules(self, session: AsyncSession) -> bool:
+        """Ensure RouterOS has the drop filter rule and allowed LANs address-list for paused devices.
+
+        Allows traffic to local LAN subnets, router services (input chain), and custom
+        allowed subnets while dropping all other forwarded internet-bound traffic.
+        """
+        try:
+            from backend.app.db.models import AppSetting
+            key = f"pause_allowed_networks_{self.router_id}" if self.router_id is not None else "pause_allowed_networks"
+            setting = await session.get(AppSetting, key)
+            if not setting and self.router_id is not None:
+                setting = await session.get(AppSetting, "pause_allowed_networks")
+            raw_val = setting.value if setting and setting.value else "192.168.0.0/16,10.0.0.0/8,172.16.0.0/12"
+
+            allowed_nets = set()
+            for part in raw_val.replace("\n", ",").split(","):
+                p = part.strip()
+                if p:
+                    allowed_nets.add(p)
+            if not allowed_nets:
+                allowed_nets = {"192.168.0.0/16", "10.0.0.0/8", "172.16.0.0/12"}
+
+            # Sync mikroman_allowed_lans in /ip/firewall/address-list
+            existing_allowed = await self.router_client.get_address_list("mikroman_allowed_lans")
+            existing_ips = {item.get("address"): item.get(".id") for item in existing_allowed if item.get("address")}
+
+            for ip, item_id in existing_ips.items():
+                if ip not in allowed_nets and item_id:
+                    try:
+                        await self.router_client.remove_from_address_list(item_id)
+                    except Exception as e:
+                        logger.debug(f"Failed to remove {ip} from mikroman_allowed_lans: {e}")
+
+            for net in allowed_nets:
+                if net not in existing_ips:
+                    try:
+                        await self.router_client.add_to_address_list(
+                            address=net,
+                            list_name="mikroman_allowed_lans",
+                            comment="mikroman:allowed_lan"
+                        )
+                    except Exception as e:
+                        logger.debug(f"Failed to add {net} to mikroman_allowed_lans: {e}")
+
+            # Ensure firewall filter drop rule exists
+            # chain=forward action=drop src-address-list=mikroman_blocked dst-address-list=!mikroman_allowed_lans comment="mikroman:drop_blocked_internet"
+            filter_rules = await self.router_client.get_firewall_filter_rules()
+            target_rule = None
+            for r in filter_rules:
+                comment = r.get("comment", "")
+                if comment in ("mikroman:drop_blocked_internet", "mikroman:drop_blocked_users"):
+                    target_rule = r
+                    break
+
+            desired_payload = {
+                "chain": "forward",
+                "action": "drop",
+                "src-address-list": "mikroman_blocked",
+                "dst-address-list": "!mikroman_allowed_lans",
+                "comment": "mikroman:drop_blocked_internet"
+            }
+
+            if not target_rule:
+                try:
+                    await self.router_client.create_firewall_filter_rule(desired_payload)
+                except Exception as e:
+                    logger.warning(f"Failed to create pause filter drop rule: {e}")
+            else:
+                rule_id = target_rule.get(".id")
+                needs_update = (
+                    target_rule.get("chain") != "forward" or
+                    target_rule.get("action") != "drop" or
+                    target_rule.get("src-address-list") != "mikroman_blocked" or
+                    target_rule.get("dst-address-list") != "!mikroman_allowed_lans" or
+                    target_rule.get("disabled") in (True, "true")
+                )
+                if needs_update and rule_id:
+                    try:
+                        await self.router_client.update_firewall_filter_rule(rule_id, {
+                            "chain": "forward",
+                            "action": "drop",
+                            "src-address-list": "mikroman_blocked",
+                            "dst-address-list": "!mikroman_allowed_lans",
+                            "disabled": False,
+                            "comment": "mikroman:drop_blocked_internet"
+                        })
+                    except Exception as e:
+                        logger.debug(f"Failed to update pause filter drop rule: {e}")
+
+            return True
+        except Exception as e:
+            logger.error(f"Error ensuring pause firewall rules: {e}")
+            return False
+
     async def pause_user_internet(self, user_id: int, session: AsyncSession) -> bool:
         """Pause internet for user by adding active IPs to RouterOS mikroman_blocked address list."""
         user = await session.get(User, user_id)
@@ -245,6 +344,8 @@ class TrafficController:
         user.is_paused = True
         await session.commit()
         await session.refresh(user)
+
+        await self.ensure_pause_firewall_rules(session)
 
         active_ips = [d.ip_address for d in user.devices if d.is_active and d.ip_address]
         for ip in active_ips:
@@ -409,6 +510,8 @@ class TrafficController:
         await session.commit()
         await session.refresh(device)
 
+        await self.ensure_pause_firewall_rules(session)
+
         clean_ip = device.ip_address.strip()
         try:
             await self.router_client.add_to_address_list(
@@ -470,9 +573,8 @@ class TrafficController:
         rows = (await session.execute(stmt)).all()
         return {row[0]: (int(row[1] or 0), int(row[2] or 0)) for row in rows}
 
-    async def reconcile_managed_queues(self, session: AsyncSession) -> int:
+    async def reconcile_managed_queues(self, session: AsyncSession, router_id: Optional[int] = None) -> int:
         """Delete managed Simple Queues whose owning user or device is gone.
-
         Per-object sync can only correct queues it is asked about, so a queue
         whose owner was deleted - or a device child queue whose custom limit was
         reverted to "inherit user" - was never revisited and stayed on RouterOS
@@ -484,14 +586,21 @@ class TrafficController:
         Returns:
             Number of stale queues removed.
         """
+        eff_router_id = router_id if router_id is not None else self.router_id
         try:
             queues = await self.router_client.get_simple_queues()
         except Exception as e:
             logger.warning(f"Could not read queues for reconciliation: {e}")
             return 0
 
-        users = (await session.execute(select(User))).scalars().all()
-        devices = (await session.execute(select(Device))).scalars().all()
+        u_stmt = select(User)
+        d_stmt = select(Device)
+        if eff_router_id is not None:
+            u_stmt = u_stmt.where((User.router_id == eff_router_id) | (User.router_id.is_(None)))
+            d_stmt = d_stmt.where((Device.router_id == eff_router_id) | (Device.router_id.is_(None)))
+
+        users = (await session.execute(u_stmt)).scalars().all()
+        devices = (await session.execute(d_stmt)).scalars().all()
 
         # A user queue is wanted only while the user has somewhere to point it.
         # Derived from the device rows directly rather than the ORM relationship,
@@ -533,12 +642,11 @@ class TrafficController:
 
         return removed
 
-    async def reconcile_device_limits(self, session: AsyncSession) -> List[int]:
+    async def reconcile_device_limits(self, session: AsyncSession, router_id: Optional[int] = None) -> List[int]:
         """Clear quarantine limits left on devices that now belong to a user.
 
         Discovery used to copy the quarantine bandwidth onto ``speed_limit``.
         Assignment only ever set ``user_id``, so the copy survived and the device
-        kept a child queue of its own - typically 5M/5M - hanging underneath an
         unlimited parent. The owner's limit was therefore never what actually
         applied, and the queue tree read as if someone had throttled the family
         at random.
@@ -558,12 +666,15 @@ class TrafficController:
         Returns:
             Ids of the devices whose limit was reset.
         """
+        eff_router_id = router_id if router_id is not None else self.router_id
         quarantine = await resolve_unassigned_limit(session)
 
         stmt = select(Device).where(
             Device.user_id.is_not(None),
             Device.speed_limit == quarantine,
         )
+        if eff_router_id is not None:
+            stmt = stmt.where((Device.router_id == eff_router_id) | (Device.router_id.is_(None)))
         stranded = (await session.execute(stmt)).scalars().all()
         if not stranded:
             return []
@@ -592,13 +703,12 @@ class TrafficController:
         except (TypeError, ValueError):
             return None
 
-    async def get_realtime_traffic_stats(self, session: AsyncSession) -> List[Dict[str, Any]]:
+    async def get_realtime_traffic_stats(self, session: AsyncSession, router_id: Optional[int] = None) -> List[Dict[str, Any]]:
         """Live per-user throughput and today's volume, measured from firewall counters.
 
         Simple Queue ``rate``/``bytes`` are deliberately NOT used: on RouterOS 7.x
         they were observed frozen (one user pinned at 488 Kbps / 2.4 Mbps for
         hours while the WAN was idle, everyone else stuck at 0 bps). Rates are
-        differentiated from the per-device mangle counters, and today's totals
         come from the same rollups the analytics view uses, so the dashboard and
         the reports can never disagree.
         """
@@ -607,13 +717,12 @@ class TrafficController:
             live_rate_tracker,
         )
 
-        result = await session.execute(select(User))
-        users = result.scalars().all()
+        eff_router_id = router_id if router_id is not None else self.router_id
 
         try:
             rules = await self.router_client.get_mangle_rules()
         except Exception as e:
-            logger.warning(f"Failed to fetch accounting counters for live rates: {e}")
+            logger.warning(f"Could not read mangle rules for real-time stats: {e}")
             rules = []
 
         per_device_rates = live_rate_tracker.sample(rules)
@@ -621,10 +730,15 @@ class TrafficController:
         user_volume = await self._todays_user_volume(session)
         device_volume = await self._todays_device_volume(session)
 
-        # Grouped from the device rows directly rather than the ORM relationship,
-        # which can be stale on a long-lived session.
+        user_stmt = select(User)
+        dev_stmt = select(Device)
+        if eff_router_id is not None:
+            user_stmt = user_stmt.where((User.router_id == eff_router_id) | (User.router_id.is_(None)))
+            dev_stmt = dev_stmt.where((Device.router_id == eff_router_id) | (Device.router_id.is_(None)))
+
+        users = (await session.execute(user_stmt)).scalars().all()
+        all_devices = (await session.execute(dev_stmt)).scalars().all()
         devices_by_user: Dict[int, List[Device]] = {}
-        all_devices = (await session.execute(select(Device))).scalars().all()
         for device in all_devices:
             if device.user_id:
                 devices_by_user.setdefault(device.user_id, []).append(device)

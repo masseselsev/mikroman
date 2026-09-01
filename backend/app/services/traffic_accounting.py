@@ -360,8 +360,8 @@ class TrafficAccountingService:
         # with unflushed bytes; this is the backstop.
         to_prune = {key: rule for key, rule in existing.items() if key not in desired}
         if to_prune:
-            baselines = await self._load_baselines(session)
             final_deltas: Dict[int, Tuple[int, int]] = {}
+            baselines = await self._load_baselines(session, self.router_id)
             for (device_id, direction), rule in to_prune.items():
                 try:
                     current = int(rule.get("bytes", 0) or 0)
@@ -380,9 +380,8 @@ class TrafficAccountingService:
 
             if final_deltas:
                 await self._flush_deltas(session, await router_local_date(session), final_deltas)
-            await self._save_baselines(session, baselines)
+            await self._save_baselines(session, baselines, self.router_id)
 
-            # The pruned rules were the last thing that could still produce
             # bytes for these device ids, so their redirects have done their job.
             successors = await self._load_successors(session)
             pruned_ids = {str(device_id) for device_id, _ in to_prune}
@@ -488,37 +487,67 @@ class TrafficAccountingService:
 
     # --- baselines --------------------------------------------------------
 
-    @staticmethod
-    async def _load_baselines(session: AsyncSession) -> Dict[str, int]:
-        setting = await session.get(AppSetting, BASELINE_SETTING_KEY)
-        if setting and setting.value:
-            try:
-                return json.loads(setting.value)
-            except json.JSONDecodeError:
-                logger.warning("Accounting baselines corrupted; reinitialising")
-        return {}
+    @classmethod
+    def _baseline_key(cls, router_id: Optional[int] = None) -> str:
+        return f"accounting_baselines_{router_id}" if router_id is not None else BASELINE_SETTING_KEY
 
-    @staticmethod
-    async def _save_baselines(session: AsyncSession, baselines: Dict[str, int]) -> None:
+    @classmethod
+    async def _load_baselines_static(cls, session: AsyncSession, router_id: Optional[int] = None) -> Dict[str, Any]:
+        key = cls._baseline_key(router_id)
+        setting = await session.get(AppSetting, key)
+        if not setting or not setting.value:
+            if router_id == 1:
+                setting = await session.get(AppSetting, BASELINE_SETTING_KEY)
+            elif router_id is None:
+                setting = await session.get(AppSetting, "accounting_baselines_1")
+                if not setting or not setting.value:
+                    setting = await session.get(AppSetting, BASELINE_SETTING_KEY)
+            if not setting or not setting.value:
+                return {}
+        try:
+            return json.loads(setting.value)
+        except (json.JSONDecodeError, TypeError):
+            return {}
+
+    @classmethod
+    async def _save_baselines_static(cls, session: AsyncSession, baselines: Dict[str, Any], router_id: Optional[int] = None) -> None:
         raw = json.dumps(baselines)
-        setting = await session.get(AppSetting, BASELINE_SETTING_KEY)
+        key = cls._baseline_key(router_id)
+        setting = await session.get(AppSetting, key)
         if setting:
             setting.value = raw
         else:
-            session.add(AppSetting(
-                key=BASELINE_SETTING_KEY,
-                value=raw,
-                description="Per-device mangle counter baselines for delta accounting",
-            ))
+            session.add(
+                AppSetting(
+                    key=key,
+                    value=raw,
+                    description=f"Raw mangle counter baselines for router {router_id or 'default'}",
+                )
+            )
+        # If router_id is None or 1, keep both default and scoped keys synchronized
+        if router_id in (None, 1):
+            other_key = "accounting_baselines_1" if key == BASELINE_SETTING_KEY else BASELINE_SETTING_KEY
+            other_setting = await session.get(AppSetting, other_key)
+            if other_setting:
+                other_setting.value = raw
+            else:
+                session.add(AppSetting(key=other_key, value=raw))
+        await session.commit()
+
+    @classmethod
+    async def _load_baselines(cls, session: AsyncSession, router_id: Optional[int] = None) -> Dict[str, Any]:
+        return await cls._load_baselines_static(session, router_id)
+
+    @classmethod
+    async def _save_baselines(cls, session: AsyncSession, baselines: Dict[str, Any], router_id: Optional[int] = None) -> None:
+        await cls._save_baselines_static(session, baselines, router_id)
 
     @staticmethod
     def compute_delta(current: int, previous: Optional[int], *, reset: bool = False) -> int:
         """Delta between successive readings of a monotonic counter.
 
-        A first reading establishes a baseline and contributes nothing. When the
         counter reset - the rule was recreated, or the router rebooted - only
         the bytes seen since that reset are credited, never a whole lifetime
-        total.
 
         ``reset=True`` forces that path even when ``current >= previous``. A
         counter climbing fast enough can pass its stale pre-reboot value within
@@ -582,7 +611,7 @@ class TrafficAccountingService:
         if not readings and not self_readings:
             return {"devices": 0, "bytes_in": 0, "bytes_out": 0}
 
-        baselines = await self._load_baselines(session)
+        baselines = await self._load_baselines(session, self.router_id)
 
         # When the last successful collection was on an earlier router-local
         # date, this tick's counter delta covers more than one day and is
@@ -602,20 +631,21 @@ class TrafficAccountingService:
         # Did the router reboot since the last collection? Uptime running
         # backwards is proof; a first run (no stored uptime) is not.
         prev_uptime = baselines.get(UPTIME_BASELINE_KEY)
+        is_first_run = prev_uptime is None and not any(":" in k for k in baselines)
         rebooted = (
-            router_uptime_seconds is not None
+            not is_first_run
+            and router_uptime_seconds is not None
             and isinstance(prev_uptime, int)
-            and router_uptime_seconds + REBOOT_SLACK_SECONDS < prev_uptime
+            and router_uptime_seconds < prev_uptime
         )
         if rebooted:
             logger.info(
-                f"Router uptime dropped {prev_uptime}s -> {router_uptime_seconds}s: "
+                f"Router {self.router_id} uptime dropped {prev_uptime}s -> {router_uptime_seconds}s: "
                 f"treating all accounting counters as reset for this tick"
             )
 
         # device_id -> (downloaded, uploaded) accumulated this tick
         per_device: Dict[int, Tuple[int, int]] = {}
-
         for device_id, values in readings.items():
             deltas = {}
             for direction, current in values.items():
@@ -653,7 +683,7 @@ class TrafficAccountingService:
                     day, d_in, d_out,
                 )
 
-        await self._save_baselines(session, baselines)
+        await self._save_baselines(session, baselines, self.router_id)
         await session.commit()
 
         return {"devices": len(per_device), "bytes_in": total_in, "bytes_out": total_out}
@@ -667,7 +697,6 @@ class TrafficAccountingService:
         up: int,
     ) -> List[Tuple[date, int, int]]:
         """``[(date, down, up)]`` for one delta.
-
         A single ``(today, down, up)`` entry when the tick did not cross a
         local midnight; otherwise the amount apportioned across the spanned
         days by clock time. The per-day parts always sum back to the input.

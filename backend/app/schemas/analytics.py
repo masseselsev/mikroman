@@ -70,6 +70,7 @@ class BillingCycleConfig(BaseModel):
     anchor_day: int = Field(default=1, ge=1, le=31, description="Day of the month when ISP traffic counters reset (1-31)")
     anchor_hour: int = Field(default=0, ge=0, le=23, description="Hour of the reset, router-local (0-23)")
     anchor_minute: int = Field(default=0, ge=0, le=59, description="Minute of the reset (0-59)")
+    router_id: Optional[int] = Field(default=None, description="Router ID for multi-router setups")
 
 
 class DailyTrafficPoint(BaseModel):
@@ -226,3 +227,26 @@ class TrafficAnalyticsResponse(BaseModel):
     interfaces: List[InterfaceTrafficSummary] = []
     timeline: List[DailyTrafficPoint]
     accounting_health: AccountingHealth = AccountingHealth()
+
+
+class EntityTrafficHistoryResponse(BaseModel):
+    """Historical traffic analytics breakdown for a single user or device."""
+    entity_type: str  # 'user' | 'device'
+    entity_id: int
+    entity_name: str
+    avatar_icon: Optional[str] = None
+    mac_address: Optional[str] = None
+    ip_address: Optional[str] = None
+    user_name: Optional[str] = None
+    user_id: Optional[int] = None
+    range_preset: str
+    start_date: date
+    end_date: date
+    total_bytes_in: int = 0
+    total_bytes_out: int = 0
+    total_bytes: int = 0
+    daily_average_bytes: int = 0
+    peak_date: Optional[date] = None
+    peak_bytes: int = 0
+    timeline: List[DailyTrafficPoint] = Field(default_factory=list)
+    devices: Optional[List[DeviceTrafficSummary]] = None

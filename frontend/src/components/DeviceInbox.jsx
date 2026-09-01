@@ -4,7 +4,7 @@ import { api } from '../api/client';
 import { DeviceModal } from './DeviceModal';
 import { formatBytes, formatRelativeTime } from '../utils/formatters';
 
-import { RefreshCw, UserPlus, Laptop, Smartphone, Wifi, Tag, History, Link, X, Clock, ShieldAlert, Sliders, Pause, Play, EyeOff, Eye } from 'lucide-react';
+import { RefreshCw, UserPlus, Laptop, Smartphone, Wifi, Tag, History, Link, X, Clock, ShieldAlert, Sliders, Pause, Play, EyeOff, Eye, BarChart2 } from 'lucide-react';
 
 /**
  * Earliest known sighting of a device: the 'discovered' history entry if one
@@ -22,7 +22,7 @@ function firstSeenOf(device) {
 }
 
 
-export function DeviceInbox({ devices = [], users = [], onAssign, onScan, isScanning }) {
+export function DeviceInbox({ devices = [], users = [], onAssign, onScan, isScanning, onViewTrafficHistory }) {
   const { t, lang } = useI18n();
   const [selectedUserMap, setSelectedUserMap] = useState({});
   const [suggestions, setSuggestions] = useState([]);
@@ -415,6 +415,23 @@ export function DeviceInbox({ devices = [], users = [], onAssign, onScan, isScan
 
                 {/* Assignment footer */}
                 <div style={{ display: 'flex', gap: 6, alignItems: 'center', borderTop: '1px solid var(--border-color)', paddingTop: 10 }}>
+                  {onViewTrafficHistory && (
+                    <button
+                      className="btn btn-ghost btn-sm btn-icon"
+                      onClick={() => onViewTrafficHistory({
+                        type: 'device',
+                        id: device.id,
+                        name: device.custom_name || device.hostname || device.mac_address,
+                        mac: device.mac_address,
+                        ip: device.ip_address
+                      })}
+                      title={t('view_device_history')}
+                      style={{ width: 32, height: 32 }}
+                    >
+                      <BarChart2 size={14} />
+                    </button>
+                  )}
+
                   <button
                     className="btn btn-ghost btn-sm btn-icon"
                     onClick={() => handleOpenHistory(device)}
@@ -534,6 +551,7 @@ export function DeviceInbox({ devices = [], users = [], onAssign, onScan, isScan
         <DeviceModal
           device={editingDevice}
           user={null}
+          users={users}
           onClose={() => setEditingDevice(null)}
           onUpdated={onScan}
         />

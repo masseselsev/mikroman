@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useI18n } from '../context/I18nContext';
 import { api } from '../api/client';
-import { CheckCircle2, Loader2, Lock, Unlock } from 'lucide-react';
+import { CheckCircle2, Loader2, Lock, Unlock, Sparkles } from 'lucide-react';
 
 /**
  * The connection details of one router — used both to add a new one and to
@@ -46,12 +46,15 @@ export function RouterConnectionForm({ initial, mode = 'create', onSubmit, onCan
 
   const [testResult, setTestResult] = useState(null);
   const [testing, setTesting] = useState(false);
+  const [provisioningSsl, setProvisioningSsl] = useState(false);
+  const [sslSuccessMsg, setSslSuccessMsg] = useState(null);
 
   const set = (patch) => {
     setForm(prev => ({ ...prev, ...patch }));
     // Any change invalidates a previous verdict; leaving it on screen would
     // vouch for settings that are no longer the ones displayed.
     setTestResult(null);
+    setSslSuccessMsg(null);
   };
 
   /**
@@ -94,6 +97,49 @@ export function RouterConnectionForm({ initial, mode = 'create', onSubmit, onCan
       setTestResult({ ok: false, msg: err.message });
     } finally {
       setTesting(false);
+    }
+  };
+
+  const handleAutoProvisionSsl = async () => {
+    setProvisioningSsl(true);
+    setSslSuccessMsg(null);
+    try {
+      const res = await api.autoProvisionSslDirect({
+        host: form.host,
+        port: form.port,
+        use_ssl: form.use_ssl,
+        username: form.username,
+        password: form.password,
+      });
+      if (res.data?.success) {
+        setSslSuccessMsg(t('auto_ssl_success'));
+        const newPort = res.data.port || 443;
+        const updated = {
+          ...form,
+          port: newPort,
+          use_ssl: true,
+          ssl_verify: false
+        };
+        setForm(updated);
+        try {
+          const testRes = await api.testRouterConnection(updated);
+          const tData = testRes.data;
+          if (tData?.success) {
+            setTestResult({
+              ok: true,
+              msg: `${t('router_test_connected')} ${tData.board_name || 'MikroTik'} HTTPS (${newPort})`
+            });
+          }
+        } catch (_) {
+          // ignore secondary test error
+        }
+      } else {
+        setTestResult({ ok: false, msg: res.data?.message || 'SSL provisioning failed' });
+      }
+    } catch (err) {
+      setTestResult({ ok: false, msg: `SSL setup error: ${err.message}` });
+    } finally {
+      setProvisioningSsl(false);
     }
   };
 
@@ -189,24 +235,41 @@ export function RouterConnectionForm({ initial, mode = 'create', onSubmit, onCan
         )}
       </div>
 
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 10, gap: 8 }}>
-        <button
-          type="button"
-          className="btn btn-secondary btn-sm"
-          onClick={handleTest}
-          disabled={testing || !canTest}
-          style={{ display: 'flex', alignItems: 'center', gap: 6 }}
-          title={canTest ? undefined : t('test_needs_password_hint')}
-        >
-          {testing ? <Loader2 size={13} className="spin" /> : <CheckCircle2 size={13} />}
-          {t('wizard_test_conn')}
-        </button>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 10, gap: 8, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <button
+            type="button"
+            className="btn btn-secondary btn-sm"
+            onClick={handleTest}
+            disabled={testing || provisioningSsl || !canTest}
+            style={{ display: 'flex', alignItems: 'center', gap: 6 }}
+            title={canTest ? undefined : t('test_needs_password_hint')}
+          >
+            {testing ? <Loader2 size={13} className="spin" /> : <CheckCircle2 size={13} />}
+            {t('wizard_test_conn')}
+          </button>
+
+          {/* If connected over HTTP without SSL, offer 1-click Auto-SSL setup */}
+          {testResult && testResult.ok && !form.use_ssl && (
+            <button
+              type="button"
+              className="btn btn-primary btn-sm"
+              onClick={handleAutoProvisionSsl}
+              disabled={provisioningSsl || testing}
+              style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)' }}
+              title={t('auto_ssl_hint')}
+            >
+              {provisioningSsl ? <Loader2 size={13} className="spin" /> : <Sparkles size={13} />}
+              <span>{t('auto_ssl_btn')}</span>
+            </button>
+          )}
+        </div>
 
         <div style={{ display: 'flex', gap: 6 }}>
           <button type="button" className="btn btn-ghost btn-sm" onClick={onCancel}>
             {t('cancel')}
           </button>
-          <button type="submit" className="btn btn-primary btn-sm" disabled={busy}>
+          <button type="submit" className="btn btn-primary btn-sm" disabled={busy || provisioningSsl}>
             {busy ? <Loader2 size={13} className="spin" /> : null}
             {t('save')}
           </button>
@@ -216,6 +279,26 @@ export function RouterConnectionForm({ initial, mode = 'create', onSubmit, onCan
       {isEdit && !form.password && (
         <div style={{ marginTop: 8, fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)' }}>
           {t('test_needs_password_hint')}
+        </div>
+      )}
+
+      {sslSuccessMsg && (
+        <div
+          style={{
+            marginTop: 8,
+            padding: '6px 10px',
+            borderRadius: 'var(--radius-sm)',
+            fontSize: 'var(--fs-xs)',
+            background: 'rgba(16, 185, 129, 0.12)',
+            color: 'var(--color-success)',
+            border: '1px solid rgba(16, 185, 129, 0.3)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6
+          }}
+        >
+          <CheckCircle2 size={14} style={{ flexShrink: 0 }} />
+          <span>{sslSuccessMsg}</span>
         </div>
       )}
 

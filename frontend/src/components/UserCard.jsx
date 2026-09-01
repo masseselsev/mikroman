@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useI18n } from '../context/I18nContext';
 import { api } from '../api/client';
-import { formatSpeed, formatSpeedShort, formatBytes, formatBytesCompact, formatGbWhole, formatRelativeTime, formatLastActive, formatDateTime } from '../utils/formatters';
+import { formatSpeed, formatSpeedShort, formatBytes, formatBytesCompact, formatGbWhole, formatRelativeTime, formatLastActive, formatDateTime, parseUtcDate } from '../utils/formatters';
 import { displayVendor } from '../utils/deviceLabels';
 import { DeviceModal } from './DeviceModal';
 import {
@@ -21,7 +21,8 @@ import {
   Check,
   X,
   Sliders,
-  GripVertical
+  GripVertical,
+  BarChart2
 } from 'lucide-react';
 
 const SPEED_PRESETS = [
@@ -110,7 +111,11 @@ export function groupDevices(devices) {
       lastSeen: adapters.reduce((latest, a) => {
         if (!a.last_seen) return latest;
         if (!latest) return a.last_seen;
-        return new Date(a.last_seen) > new Date(latest) ? a.last_seen : latest;
+        const dA = parseUtcDate(a.last_seen);
+        const dL = parseUtcDate(latest);
+        if (!dA) return latest;
+        if (!dL) return a.last_seen;
+        return dA > dL ? a.last_seen : latest;
       }, null),
     };
   });
@@ -173,7 +178,7 @@ export function bandLabel(band) {
  *    row tooltip and the device modal, since the per-user panel above already
  *    carries the number the reader came for.
  */
-function DeviceRow({ group, t, lang, grandTotal = 0, onOpen, onUpdate }) {
+function DeviceRow({ group, t, lang, grandTotal = 0, onOpen, onUpdate, onViewTrafficHistory }) {
   const [busy, setBusy] = useState(false);
 
   const d = group.primary;
@@ -190,16 +195,16 @@ function DeviceRow({ group, t, lang, grandTotal = 0, onOpen, onUpdate }) {
   const vendorLabel = displayVendor(d.vendor);
   const deviceName = d.custom_name || d.hostname || d.vendor || 'Device';
 
-  // Compact volume readout shown on the row: Today / Cycle / All-Time in compact K/M/G/T units.
+  // Compact volume readout shown on the row: Today / All-Time / Share% in compact units.
   const volToday = group.bytesIn + group.bytesOut;
-  const volCycle = group.bytesCycleIn + group.bytesCycleOut;
   const volTotal = group.bytesTotalIn + group.bytesTotalOut;
-  const showVolume = volTotal > 0 || volCycle > 0 || volToday > 0;
+  const showVolume = volTotal > 0 || volToday > 0;
+  const sharePct = grandTotal > 0 ? ((volTotal / grandTotal) * 100).toFixed(1) : '0';
   const volTitle =
     `${t('device_volume_legend')}\n` +
-    `${t('today_scope')}: ↓ ${formatBytes(group.bytesIn)} · ↑ ${formatBytes(group.bytesOut)}\n` +
-    `${t('cycle_scope')}: ↓ ${formatBytes(group.bytesCycleIn)} · ↑ ${formatBytes(group.bytesCycleOut)}\n` +
-    `${t('all_time_label')}: ↓ ${formatBytes(group.bytesTotalIn)} · ↑ ${formatBytes(group.bytesTotalOut)}`;
+    `${t('today_scope')}: ↓ ${formatBytes(group.bytesIn)} · ↑ ${formatBytes(group.bytesOut)} (${formatBytes(volToday)})\n` +
+    `${t('all_time_label')}: ↓ ${formatBytes(group.bytesTotalIn)} · ↑ ${formatBytes(group.bytesTotalOut)} (${formatBytes(volTotal)})\n` +
+    `${t('share_of_traffic')}: ${sharePct}% (${formatBytes(volTotal)} ${t('of_total')} ${formatBytes(grandTotal)})`;
   const volumeNote = `${t('today_scope')}: ↓ ${formatBytes(group.bytesIn)} · ↑ ${formatBytes(group.bytesOut)}`;
   const rowTitle = [
     t('device_row_hint'),
@@ -277,8 +282,8 @@ function DeviceRow({ group, t, lang, grandTotal = 0, onOpen, onUpdate }) {
         {showVolume && (
           <span className="drow-vol font-mono" title={volTitle} style={{ marginLeft: 'auto' }}>
             {formatBytesCompact(volToday)}<span className="drow-vol-sep">/</span>
-            {formatBytesCompact(volCycle)}<span className="drow-vol-sep">/</span>
-            {formatBytesCompact(volTotal)}
+            {formatBytesCompact(volTotal)}<span className="drow-vol-sep">/</span>
+            {sharePct}%
           </span>
         )}
       </div>
@@ -291,12 +296,32 @@ function DeviceRow({ group, t, lang, grandTotal = 0, onOpen, onUpdate }) {
           {d.is_hidden && <> · {t('hidden_badge')}</>}
           {(group.lastSeen || d.last_seen) && (
             <span title={formatDateTime(group.lastSeen || d.last_seen, lang)}>
-              {" · "}{t('col_last_active')}: <span className="font-mono">{formatLastActive(group.lastSeen || d.last_seen, lang)}</span>
+              {" · "}{t('col_last_active')}: <span className="font-mono">{(group.isActive || d.is_active) ? (lang === 'ru' ? 'сейчас' : 'now') : formatLastActive(group.lastSeen || d.last_seen, lang)}</span>
             </span>
           )}
         </span>
 
         <span className="drow-actions">
+          {onViewTrafficHistory && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onViewTrafficHistory({
+                  type: 'device',
+                  id: d.id,
+                  name: deviceName,
+                  mac: d.mac_address,
+                  ip: d.ip_address
+                });
+              }}
+              className="btn-icon"
+              style={{ width: 24, height: 24, background: 'var(--bg-card)' }}
+              title={t('view_device_history')}
+            >
+              <BarChart2 size={12} />
+            </button>
+          )}
           <button
             type="button"
             onClick={togglePause}
@@ -351,7 +376,7 @@ function DeviceRow({ group, t, lang, grandTotal = 0, onOpen, onUpdate }) {
   );
 }
 
-export function UserCard({ user, onEdit, onDelete, onLimitChange, onPauseToggle, onUpdate, showHidden = false, gatewayTotal = 0, deviceGrandTotal = 0, dragIndex = null }) {
+export function UserCard({ user, users = [], onEdit, onDelete, onLimitChange, onPauseToggle, onUpdate, onViewTrafficHistory, showHidden = false, autoSortActivity = false, gatewayTotal = 0, deviceGrandTotal = 0, dragIndex = null }) {
   const { t, lang } = useI18n();
   const [isUpdating, setIsUpdating] = useState(false);
   const [showCustomInput, setShowCustomInput] = useState(false);
@@ -361,7 +386,31 @@ export function UserCard({ user, onEdit, onDelete, onLimitChange, onPauseToggle,
 
   const visibleDevices = (user.devices || []).filter(d => showHidden || !d.is_hidden);
   // Adapters of one machine collapse into a single row.
-  const deviceGroups = groupDevices(visibleDevices);
+  const rawDeviceGroups = groupDevices(visibleDevices);
+  const deviceGroups = autoSortActivity
+    ? [...rawDeviceGroups].sort((a, b) => {
+        // 1. Current live moving rate (highest first)
+        const rateA = (a.rateIn || 0) + (a.rateOut || 0);
+        const rateB = (b.rateIn || 0) + (b.rateOut || 0);
+        if (rateB !== rateA) {
+          return rateB - rateA;
+        }
+        // 2. Active status (active first)
+        if (a.isActive !== b.isActive) {
+          return a.isActive ? -1 : 1;
+        }
+        // 3. Total downloaded volume (all-time highest first)
+        const volA = (a.bytesTotalIn || 0) + (a.bytesTotalOut || 0);
+        const volB = (b.bytesTotalIn || 0) + (b.bytesTotalOut || 0);
+        if (volB !== volA) {
+          return volB - volA;
+        }
+        // 4. Today volume fallback
+        const todayA = (a.bytesIn || 0) + (a.bytesOut || 0);
+        const todayB = (b.bytesIn || 0) + (b.bytesOut || 0);
+        return todayB - todayA;
+      })
+    : rawDeviceGroups;
   const activeDevices = deviceGroups.filter(g => g.isActive);
   const isPaused = user.is_paused;
   const isOnline = activeDevices.length > 0 && !isPaused;
@@ -481,6 +530,16 @@ export function UserCard({ user, onEdit, onDelete, onLimitChange, onPauseToggle,
             <span className={`badge ${isPaused ? 'badge-danger' : (isOnline ? 'badge-success' : 'badge-neutral')}`}>
               {isPaused ? t('paused') : (isOnline ? t('active_now') : t('idle'))}
             </span>
+            {onViewTrafficHistory && (
+              <button
+                className="btn-icon"
+                onClick={() => onViewTrafficHistory({ type: 'user', id: user.id, name: user.name })}
+                title={t('view_traffic_history')}
+                style={{ width: 26, height: 26 }}
+              >
+                <BarChart2 size={13} />
+              </button>
+            )}
             <button className="btn-icon" onClick={() => onEdit(user)} title={t('edit_user')} style={{ width: 26, height: 26 }}>
               <Settings size={13} />
             </button>
@@ -557,7 +616,7 @@ export function UserCard({ user, onEdit, onDelete, onLimitChange, onPauseToggle,
           </span>
           <span title={user.last_seen ? formatDateTime(user.last_seen, lang) : t('last_active_never')}>
             {t('col_last_active')}: <span className="font-mono" style={{ color: 'var(--text-secondary)' }}>
-              {user.last_seen ? formatLastActive(user.last_seen, lang) : t('last_active_never')}
+              {user.last_seen ? (isOnline ? (lang === 'ru' ? 'сейчас' : 'now') : formatLastActive(user.last_seen, lang)) : t('last_active_never')}
             </span>
           </span>
         </div>
@@ -573,6 +632,7 @@ export function UserCard({ user, onEdit, onDelete, onLimitChange, onPauseToggle,
               grandTotal={deviceGrandTotal}
               onOpen={() => setSelectedDevice(g.primary)}
               onUpdate={onUpdate}
+              onViewTrafficHistory={onViewTrafficHistory}
             />
           ))}
           {deviceGroups.length === 0 && (
@@ -707,6 +767,7 @@ export function UserCard({ user, onEdit, onDelete, onLimitChange, onPauseToggle,
         <DeviceModal
           device={selectedDevice}
           user={user}
+          users={users}
           onClose={() => setSelectedDevice(null)}
           onUpdated={onUpdate}
         />

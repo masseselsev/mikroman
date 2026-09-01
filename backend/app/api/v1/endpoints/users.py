@@ -1,14 +1,16 @@
-from typing import List
+from datetime import date
+from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.db.models import Device, DeviceTrafficRollup, User
 from backend.app.db.session import get_db
+from backend.app.schemas.analytics import EntityTrafficHistoryResponse
 from backend.app.schemas.common import APIResponse
 from backend.app.schemas.user import UserCreate, UserDTO, UserReorderRequest, UserUpdate
-from backend.app.services.analytics_engine import AnalyticsEngine, get_billing_cycle_dates
+from backend.app.services.analytics_engine import AnalyticsEngine, get_billing_cycle_dates, resolve_date_range
 from backend.app.services.device_manager import detach_device_traffic_from_user
 from backend.app.services.router_manager import router_manager
 from backend.app.services.router_time import router_local_now
@@ -23,16 +25,27 @@ async def get_traffic_controller(db: AsyncSession = Depends(get_db)) -> TrafficC
 
 @router.get("", response_model=APIResponse[List[UserDTO]])
 async def list_users(
-    db: AsyncSession = Depends(get_db),
-    traffic_ctrl: TrafficController = Depends(get_traffic_controller)
+    router_id: Optional[int] = Query(None, description="Filter users by Router ID"),
+    db: AsyncSession = Depends(get_db)
 ):
-    """List all users with live metrics and device assignments."""
-    # Manual order first, then id, so the sequence is stable for equal values.
-    result = await db.execute(select(User).order_by(User.sort_order, User.id))
+    """List all users with live metrics and device assignments for a specific router."""
+    eff_router_id = router_id
+    if eff_router_id is None:
+        default_r = await router_manager.get_default_or_first_router(db)
+        if default_r:
+            eff_router_id = default_r.id
+
+    query = select(User).order_by(User.sort_order, User.id)
+    if eff_router_id is not None:
+        query = query.where((User.router_id == eff_router_id) | (User.router_id.is_(None)))
+
+    result = await db.execute(query)
     users = result.scalars().all()
 
-    # Enrich with live queue metrics
-    metrics = await traffic_ctrl.get_realtime_traffic_stats(db)
+    # Enrich with live queue metrics for this router
+    client = await router_manager.get_client(eff_router_id, session=db)
+    traffic_ctrl = TrafficController(client, router_id=eff_router_id) if client else None
+    metrics = (await traffic_ctrl.get_realtime_traffic_stats(db, router_id=eff_router_id)) if traffic_ctrl else []
     metrics_map = {m["user_id"]: m for m in metrics}
 
     # All-time bytes per device, from the daily rollups. Today's running total is
@@ -65,6 +78,10 @@ async def list_users(
     user_dtos = []
     for u in users:
         dto = UserDTO.model_validate(u)
+        # Filter devices to those belonging to this router
+        if eff_router_id is not None:
+            dto.devices = [d for d in dto.devices if d.router_id == eff_router_id or d.router_id is None]
+
         m = metrics_map.get(u.id)
         if m:
             dto.current_rate_in = m["current_rate_in"]
@@ -100,7 +117,7 @@ async def list_users(
         dto.bytes_total_out = u_total_out
         dto.bytes_cycle_in = u_cycle_in
         dto.bytes_cycle_out = u_cycle_out
-        seens = [d.last_seen for d in u.devices if d.last_seen]
+        seens = [d.last_seen for d in u.devices if d.last_seen and (eff_router_id is None or d.router_id == eff_router_id or d.router_id is None)]
         dto.last_seen = max(seens) if seens else None
         user_dtos.append(dto)
 
@@ -110,16 +127,26 @@ async def list_users(
 @router.post("", response_model=APIResponse[UserDTO], status_code=status.HTTP_201_CREATED)
 async def create_user(
     payload: UserCreate,
-    db: AsyncSession = Depends(get_db),
-    traffic_ctrl: TrafficController = Depends(get_traffic_controller)
+    db: AsyncSession = Depends(get_db)
 ):
     """Create a new user profile and optionally assign devices by MAC."""
-    existing = await db.execute(select(User).where(User.name == payload.name))
+    eff_router_id = payload.router_id
+    if eff_router_id is None:
+        default_r = await router_manager.get_default_or_first_router(db)
+        if default_r:
+            eff_router_id = default_r.id
+
+    # Check if name already exists for this router
+    name_check = select(User).where(User.name == payload.name)
+    if eff_router_id is not None:
+        name_check = name_check.where(User.router_id == eff_router_id)
+    existing = await db.execute(name_check)
     if existing.scalar_one_or_none():
-        raise HTTPException(status_code=400, detail="User with this name already exists")
+        raise HTTPException(status_code=400, detail="User with this name already exists on this router")
 
     user = User(
         name=payload.name,
+        router_id=eff_router_id,
         avatar_icon=payload.avatar_icon,
         speed_limit=payload.speed_limit,
         is_paused=payload.is_paused,
@@ -131,15 +158,23 @@ async def create_user(
 
     if payload.device_macs:
         for mac in payload.device_macs:
-            dev_res = await db.execute(select(Device).where(Device.mac_address == mac.upper()))
+            dev_stmt = select(Device).where(Device.mac_address == mac.upper())
+            if eff_router_id is not None:
+                dev_stmt = dev_stmt.where((Device.router_id == eff_router_id) | (Device.router_id.is_(None)))
+            dev_res = await db.execute(dev_stmt)
             dev = dev_res.scalar_one_or_none()
             if dev:
                 dev.user_id = user.id
+                if dev.router_id is None and eff_router_id is not None:
+                    dev.router_id = eff_router_id
         await db.commit()
         await db.refresh(user)
 
-    active_ips = [d.ip_address for d in user.devices if d.is_active and d.ip_address]
-    await traffic_ctrl.sync_user_queue(user.id, user.name, active_ips, user.speed_limit)
+    client = await router_manager.get_client(eff_router_id, session=db)
+    if client:
+        traffic_ctrl = TrafficController(client, router_id=eff_router_id)
+        active_ips = [d.ip_address for d in user.devices if d.is_active and d.ip_address]
+        await traffic_ctrl.sync_user_queue(user.id, user.name, active_ips, user.speed_limit)
 
     return APIResponse(data=UserDTO.model_validate(user))
 
@@ -248,3 +283,36 @@ async def reorder_users(payload: UserReorderRequest, db: AsyncSession = Depends(
 
     await db.commit()
     return APIResponse(data=True)
+
+
+@router.get("/{user_id}/traffic-history", response_model=APIResponse[EntityTrafficHistoryResponse])
+async def get_user_traffic_history(
+    user_id: int,
+    preset: str = Query("7d", description="Range preset: today, 7d, 30d, 1y, custom"),
+    start_date: Optional[date] = Query(None, description="Custom start date (YYYY-MM-DD)"),
+    end_date: Optional[date] = Query(None, description="Custom end date (YYYY-MM-DD)"),
+    db: AsyncSession = Depends(get_db),
+):
+    """Retrieve detailed historical traffic timeline and device breakdown for a user."""
+    anchor_day = await AnalyticsEngine.get_billing_anchor_day(db)
+    anchor_hour, anchor_minute = await AnalyticsEngine.get_billing_anchor_time(db)
+    now = await router_local_now(db)
+    today = now.date()
+    resolved_start, resolved_end, range_label = resolve_date_range(
+        preset=preset,
+        start_date=start_date,
+        end_date=end_date,
+        anchor_day=anchor_day,
+        anchor_hour=anchor_hour,
+        anchor_minute=anchor_minute,
+        today=today,
+        now_dt=now,
+    )
+    data = await AnalyticsEngine.get_user_traffic_history(
+        session=db,
+        user_id=user_id,
+        start_date=resolved_start,
+        end_date=resolved_end,
+        range_preset=range_label,
+    )
+    return APIResponse(data=data)
