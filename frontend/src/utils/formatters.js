@@ -69,6 +69,43 @@ export function formatRelativeTime(timestamp, lang = 'en') {
   return `${Math.floor(days / 30)}${isRu ? 'мес' : 'mo'}`;
 }
 
+/**
+ * "Time since", rounded UP to the coarsest sensible unit - a "last active"
+ * readout. 90 minutes reads "2h", 25 hours reads "2d". This is the deliberate
+ * opposite of `formatRelativeTime`'s floor: "how long since we last saw this"
+ * is a staleness question, and rounding it down understates the staleness.
+ */
+export function formatLastActive(timestamp, lang = 'en') {
+  if (!timestamp) return '';
+  const then = new Date(timestamp);
+  if (Number.isNaN(then.getTime())) return '';
+
+  const isRu = lang === 'ru';
+  const seconds = Math.max(0, Math.floor((Date.now() - then.getTime()) / 1000));
+  if (seconds < 45) return isRu ? 'сейчас' : 'now';
+
+  const ceilDiv = (a, b) => Math.max(1, Math.ceil(a / b));
+  if (seconds < 3600) return `${ceilDiv(seconds, 60)}${isRu ? 'м' : 'm'}`;
+  if (seconds <= 86400) return `${ceilDiv(seconds, 3600)}${isRu ? 'ч' : 'h'}`;
+  if (seconds <= 2592000) return `${ceilDiv(seconds, 86400)}${isRu ? 'д' : 'd'}`;
+  return `${ceilDiv(seconds, 2592000)}${isRu ? 'мес' : 'mo'}`;
+}
+
+/**
+ * Absolute local date and time for a hover title, e.g. "01.09.2026, 14:32".
+ * Paired with `formatLastActive`: the compact label answers "roughly how
+ * stale", the title answers "exactly when".
+ */
+export function formatDateTime(timestamp, lang = 'en') {
+  if (!timestamp) return '';
+  const d = new Date(timestamp);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toLocaleString(lang === 'ru' ? 'ru-RU' : 'en-GB', {
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit',
+  });
+}
+
 export function formatUptime(uptime, lang = 'en') {
   const isRu = lang === 'ru';
   const dUnit = isRu ? 'д' : 'd';

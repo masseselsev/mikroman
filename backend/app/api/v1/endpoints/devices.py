@@ -7,7 +7,14 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from backend.app.db.models import AlertLog, Device, DeviceCoexistence, DeviceHistory, User
+from backend.app.db.models import (
+    AlertLog,
+    Device,
+    DeviceCoexistence,
+    DeviceHistory,
+    DeviceTrafficRollup,
+    User,
+)
 from backend.app.db.session import get_db
 from backend.app.schemas.common import APIResponse
 from backend.app.schemas.device import (
@@ -21,6 +28,8 @@ from backend.app.schemas.device import (
     DeviceSuggestionDTO,
     DeviceUpdate,
 )
+from backend.app.services import rollups
+from backend.app.services.analytics_engine import AnalyticsEngine, get_billing_cycle_dates
 from backend.app.services.device_linking import (
     LinkSuggestion,
     find_link_suggestions,
@@ -30,6 +39,7 @@ from backend.app.services.device_linking import (
 from backend.app.services.device_manager import DeviceManager, detach_device_traffic_from_user
 from backend.app.services.mac_rotation import canonical_pair, normalise_hostname
 from backend.app.services.router_manager import router_manager
+from backend.app.services.router_time import router_local_now
 from backend.app.services.traffic_controller import TrafficController, resolve_unassigned_limit
 from backend.app.services.vendor_lookup import vendor_service
 
@@ -84,8 +94,20 @@ async def list_devices(
 
     # Attach today's accounted volume. For an unassigned device this is the
     # signal that matters most: an unknown client that moved gigabytes today is
-    # very different from one that has moved nothing.
+    # very different from one that has moved nothing. The all-time and
+    # billing-cycle totals sit beside it so a device that has been quietly
+    # pulling data for days is not mistaken for a fresh arrival.
     volume = await TrafficController._todays_device_volume(db)
+    all_time = await rollups.sum_by(
+        db, DeviceTrafficRollup, DeviceTrafficRollup.device_id,
+        rollups.ALLTIME_START, rollups.ALLTIME_END,
+    )
+    anchor_day = await AnalyticsEngine.get_billing_anchor_day(db)
+    today_local = (await router_local_now(db)).date()
+    cyc_start, cyc_end = get_billing_cycle_dates(anchor_day, today_local)
+    cycle = await rollups.sum_by(
+        db, DeviceTrafficRollup, DeviceTrafficRollup.device_id, cyc_start, cyc_end,
+    )
 
     dtos = []
     for d in devices:
@@ -93,6 +115,12 @@ async def list_devices(
         d_in, d_out = volume.get(d.id, (0, 0))
         dto.bytes_today_in = d_in
         dto.bytes_today_out = d_out
+        t_in, t_out = all_time.get(d.id, (0, 0))
+        dto.bytes_total_in = t_in
+        dto.bytes_total_out = t_out
+        c_in, c_out = cycle.get(d.id, (0, 0))
+        dto.bytes_cycle_in = c_in
+        dto.bytes_cycle_out = c_out
         dtos.append(dto)
 
     return APIResponse(data=dtos)

@@ -58,3 +58,11 @@ class UserDTO(UserBase):
     current_rate_out: int = 0  # bps up
     bytes_today_in: int = 0    # bytes downloaded today
     bytes_today_out: int = 0   # bytes uploaded today
+    # All-time and current-billing-cycle volume, summed from this user's
+    # devices' daily rollups. Shown next to the "today" figure on the card.
+    bytes_total_in: int = 0    # bytes downloaded, all time
+    bytes_total_out: int = 0   # bytes uploaded, all time
+    bytes_cycle_in: int = 0    # bytes downloaded, this billing cycle
+    bytes_cycle_out: int = 0   # bytes uploaded, this billing cycle
+    # Most recent moment any of this user's devices was seen on the network.
+    last_seen: Optional[datetime] = None
