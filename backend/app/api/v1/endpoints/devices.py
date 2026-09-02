@@ -140,18 +140,40 @@ async def list_devices(
 
 @router.get("/suggestions", response_model=APIResponse[List[DeviceSuggestionDTO]])
 async def get_merge_suggestions(
+    router_id: Optional[int] = None,
     db: AsyncSession = Depends(get_db)
 ):
-    """Get smart suggestions for unassigned rotated MAC devices matching existing user devices."""
-    dev_mgr = DeviceManager(await router_manager.require_client(session=db))
+    """Get smart suggestions for unassigned rotated MAC devices matching existing user devices.
+
+    Scoped to one router: a device on a newly added router must never be
+    proposed for linking to a user on another one.
+    """
+    eff_router_id = router_id
+    if eff_router_id is None:
+        active_r = await router_manager.get_active_router(db)
+        if active_r:
+            eff_router_id = active_r.id
+
+    client = await router_manager.get_client(eff_router_id, session=db) if eff_router_id else None
+    if client is None:
+        client = await router_manager.require_client(session=db)
+    dev_mgr = DeviceManager(client, router_id=eff_router_id)
     suggestions = await dev_mgr.find_merge_suggestions(db)
     return APIResponse(data=suggestions)
 
 
 @router.get("/link-suggestions", response_model=APIResponse[List[LinkSuggestion]])
-async def get_link_suggestions(db: AsyncSession = Depends(get_db)):
-    """Devices that look like separate adapters of the same physical machine."""
-    return APIResponse(data=await find_link_suggestions(db))
+async def get_link_suggestions(
+    router_id: Optional[int] = None,
+    db: AsyncSession = Depends(get_db)
+):
+    """Devices that look like separate adapters of the same physical machine, within one router."""
+    eff_router_id = router_id
+    if eff_router_id is None:
+        active_r = await router_manager.get_active_router(db)
+        if active_r:
+            eff_router_id = active_r.id
+    return APIResponse(data=await find_link_suggestions(db, eff_router_id))
 
 
 @router.post("/{device_id}/link", response_model=APIResponse[DeviceDTO])

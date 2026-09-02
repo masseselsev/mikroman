@@ -138,6 +138,7 @@ export function Navbar({ isConnected, routerInfo, routers = [], activeRouter, on
           <RouterSelector
             routers={routers}
             activeRouter={activeRouter}
+            telemetryLive={isConnected}
             onSelectRouter={onSelectRouter}
             onAddRouter={onAddRouter}
           />

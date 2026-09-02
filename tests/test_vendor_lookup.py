@@ -43,3 +43,47 @@ async def test_online_oui_lookup_with_caching():
         # Subsequent lookup should hit local cache without network call
         cached = vendor_service.lookup_sync(mac)
         assert cached == "Cisco"
+
+
+@pytest.mark.asyncio
+async def test_unresolvable_oui_is_negatively_cached():
+    # An OUI neither service can name must be asked about exactly once: a
+    # discovery sweep runs every minute and would otherwise re-issue both of
+    # these doomed calls for every such device forever.
+    mac = "9C:1A:2B:33:44:55"
+    with respx.mock() as respx_mock:
+        maclookup = respx_mock.get(f"https://api.maclookup.app/v2/macs/{mac}").mock(
+            return_value=httpx.Response(200, json={"found": False, "company": ""})
+        )
+        macvendors = respx_mock.get(f"https://api.macvendors.com/{mac}").mock(
+            return_value=httpx.Response(404)
+        )
+
+        first = await vendor_service.lookup_async(mac)
+        assert first == "Unknown Vendor"
+        assert maclookup.call_count == 1
+        assert macvendors.call_count == 1
+
+        # Second call: served from the negative cache, no further network.
+        second = await vendor_service.lookup_async(mac)
+        assert second == "Unknown Vendor"
+        assert maclookup.call_count == 1
+        assert macvendors.call_count == 1
+
+        # The sync path sees the negative entry too.
+        assert vendor_service.lookup_sync(mac) == "Unknown Vendor"
+
+
+@pytest.mark.asyncio
+async def test_network_error_is_not_cached():
+    # A transient failure says nothing about whether the OUI is knowable, so it
+    # must stay retryable rather than sticking as "Unknown Vendor".
+    mac = "9C:1A:2C:66:77:88"
+    with respx.mock() as respx_mock:
+        respx_mock.get(f"https://api.maclookup.app/v2/macs/{mac}").mock(
+            side_effect=httpx.ConnectError("boom")
+        )
+        assert await vendor_service.lookup_async(mac) == "Unknown Vendor"
+
+    prefix = mac[:8]
+    assert prefix not in vendor_service._cache

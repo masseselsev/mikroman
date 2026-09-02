@@ -121,6 +121,28 @@ class SystemMixin:
                 logger.debug(f"RouterOS /system/health not available: {e}")
                 return RouterSystemHealth(temperature=None, voltage=None)
 
+    async def get_cloud_public_address(self) -> Optional[str]:
+        """The router's own public IP as it knows it, from ``/ip/cloud``.
+
+        RouterOS maintains this for its DDNS name and refreshes it on its own,
+        so it is the router's real internet-facing address even when the box
+        sits behind carrier-grade NAT. Returns ``None`` when the field is
+        absent, ``0.0.0.0`` (DDNS never reached), or otherwise unusable - the
+        caller then falls back to a container-side lookup.
+        """
+        async with self._get_client() as client:
+            try:
+                resp = await client.get("/ip/cloud")
+                resp.raise_for_status()
+                data = resp.json()
+                if isinstance(data, list):
+                    data = data[0] if data else {}
+                addr = str(data.get("public-address") or "").strip()
+                return addr or None
+            except Exception as e:
+                logger.debug(f"RouterOS /ip/cloud not available: {e}")
+                return None
+
     async def get_log(self, topics: Optional[str] = None, limit: int = 300) -> List[Dict[str, Any]]:
         """Recent entries from the RouterOS in-memory log, newest last.
 

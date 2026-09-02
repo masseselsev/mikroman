@@ -61,34 +61,48 @@ export function App() {
   // Hook up WebSocket telemetry with active router ID
   const { telemetry, isConnected } = useWebSocketTelemetry(activeRouter?.id);
 
+  // The router list is fetched on its own, slower beat. GET /routers probes
+  // every configured box for its live status, so folding it into the 6s data
+  // poll put one RouterOS round trip per router on the critical path of every
+  // refresh - the single biggest source of "the dashboard feels sluggish".
+  // Split out, it runs on mount, on a switch, and every 30s for the selector's
+  // online dots, while loadData() below only moves user/device data.
+  const loadRouters = async () => {
+    const routersRes = await api.getRouters().catch(() => ({ data: [] }));
+    const routerList = routersRes.data || [];
+    setRouters(routerList);
+
+    // Adopt the default router when there is no valid selection yet - the first
+    // run, or right after the selected router was deleted in Settings.
+    // Otherwise just refresh the active router's own snapshot, whose is_online
+    // drives the header dot.
+    const fresh = activeRouterIdRef.current != null
+      ? routerList.find(r => r.id === activeRouterIdRef.current)
+      : null;
+    if (!fresh) {
+      const current = routerList.find(r => r.is_default) || routerList[0] || null;
+      activeRouterIdRef.current = current ? current.id : null;
+      setActiveRouter(current || null);
+    } else {
+      setActiveRouter(prev => (prev && prev.is_online === fresh.is_online ? prev : fresh));
+    }
+  };
+
+  // Full refresh: the router list AND the active router's data. Used where the
+  // set of routers may have changed (first-run wizard, add/remove in Settings),
+  // not on the fast data poll.
+  const reloadAll = async () => {
+    await loadRouters();
+    await loadData();
+  };
+
   const loadData = async (routerIdOverride = null) => {
     // The router this load is for: an explicit override wins, otherwise the ref
-    // (never the closure's activeRouter, which lags a switch).
-    const targetRouterId = routerIdOverride ?? activeRouterIdRef.current;
+    // (never the closure's activeRouter, which lags a switch). Null means the
+    // first loadRouters() has not resolved a target yet - nothing to fetch.
+    const effectiveId = routerIdOverride ?? activeRouterIdRef.current;
+    if (effectiveId == null) return;
     try {
-      const routersRes = await api.getRouters().catch(() => ({ data: [] }));
-      const routerList = routersRes.data || [];
-      setRouters(routerList);
-
-      let current = routerList.find(r => r.id === targetRouterId) || null;
-      if (!current && routerIdOverride == null && routerList.length > 0) {
-        // First load, before any selection - fall back to the default router.
-        current = routerList.find(r => r.is_default) || routerList[0] || null;
-      }
-
-      // A newer switch landed while getRouters was in flight - this load is for
-      // a router that is no longer selected. Drop it.
-      const stillCurrent = () =>
-        (routerIdOverride ?? current?.id ?? null) === (routerIdOverride ?? activeRouterIdRef.current);
-      if (!stillCurrent()) return;
-
-      if (current && (activeRouterIdRef.current !== current.id
-          || activeRouter?.is_online !== current.is_online)) {
-        activeRouterIdRef.current = current.id;
-        setActiveRouter(current);
-      }
-
-      const effectiveId = routerIdOverride ?? current?.id ?? null;
       const [usersRes, devsRes, ifacesRes, alertsRes] = await Promise.all([
         api.getUsers(effectiveId).catch(() => ({ data: [] })),
         api.getDevices(true, showHiddenDevices, 'client', effectiveId).catch(() => ({ data: [] })),
@@ -112,12 +126,20 @@ export function App() {
   };
 
   useEffect(() => {
-    loadData();
-    // Poll data in background every 6 seconds to catch new active devices & IP shifts
-    const pollInterval = setInterval(() => {
-      loadData();
-    }, 6000);
-    return () => clearInterval(pollInterval);
+    let cancelled = false;
+    (async () => {
+      await loadRouters();
+      if (!cancelled) await loadData();
+    })();
+    // Data poll: fast, so a new active device or an IP shift shows quickly.
+    const dataPoll = setInterval(() => loadData(), 6000);
+    // Router poll: slow, since each pass probes every box for its status.
+    const routerPoll = setInterval(() => loadRouters(), 30000);
+    return () => {
+      cancelled = true;
+      clearInterval(dataPoll);
+      clearInterval(routerPoll);
+    };
   }, [activeRouter?.id]);
 
   const [interfacesOpen, setInterfacesOpen] = useState(false);
@@ -269,7 +291,7 @@ export function App() {
 
   // If no routers exist and not loading, show First-Run Setup Wizard!
   if (!isLoading && routers.length === 0) {
-    return <SetupWizard onComplete={loadData} />;
+    return <SetupWizard onComplete={reloadAll} />;
   }
 
   return (
@@ -492,6 +514,7 @@ export function App() {
           <DeviceInbox
             devices={unassignedDevices}
             users={users}
+            activeRouterId={activeRouter?.id}
             onAssign={handleAssignDevice}
             onScan={handleScan}
             isScanning={isScanning}
@@ -677,7 +700,7 @@ export function App() {
         autoOpenAddRouter={settingsAutoAddRouter}
         onClose={() => setSettingsModalOpen(false)}
         onReboot={handleReboot}
-        onRoutersChanged={loadData}
+        onRoutersChanged={reloadAll}
       />
 
       {/* Traffic History Modal (User & Device) */}

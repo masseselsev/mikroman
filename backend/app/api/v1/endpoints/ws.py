@@ -7,7 +7,7 @@ from typing import Optional, Set
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 
 from backend.app.core.config import settings
-from backend.app.db.models import AppSetting
+from backend.app.db.models import AppSetting, Router
 from backend.app.db.session import AsyncSessionLocal
 from backend.app.services.hardware import resolve_cpu_identity
 from backend.app.services.public_network import public_network_resolver
@@ -74,9 +74,15 @@ async def _get_router_clock(client, router_id: Optional[int]) -> dict:
 async def _get_wan_ip(client, router_id: Optional[int], monitored: list) -> Optional[str]:
     """Public-facing address of the monitored uplink, cached briefly.
 
-    Falls back to any non-loopback address when no monitored interface matches,
-    so the dashboard still shows something useful on unusual topologies.
+    Returns ``None`` when no WAN interface has been chosen for this router - the
+    tile then reads "-" rather than a guessed LAN address, matching the loud
+    "no WAN selected" state on the bandwidth tiles. When a WAN *is* chosen but
+    no address sits on it, falls back to any non-loopback address so an unusual
+    topology still shows something.
     """
+    if not monitored:
+        return None
+
     cache_key = str(router_id)
     cached = _wan_ip_cache.get(cache_key)
     now = time.time()
@@ -162,20 +168,35 @@ async def websocket_telemetry_endpoint(
                         continue
 
                     tick_interval = await _telemetry_interval(session)
-                    traffic_ctrl = TrafficController(client)
-                    res = await client.get_system_resource()
-                    health = await client.get_system_health()
-                    # Cached after the first tick; the SoC name and core count
-                    # do not change without a reboot.
-                    board = await client.get_routerboard()
-                    users_stats = await traffic_ctrl.get_realtime_traffic_stats(session)
 
-                    # Determine effective router ID
+                    # Resolve the router this frame is for *before* reading any
+                    # per-user data, so the stats query can be scoped to it.
+                    # Without this the user list, the client counts and the
+                    # bandwidth totals were summed across every managed router.
                     eff_router_id = router_id
                     if not eff_router_id:
                         active_r = await router_manager.get_default_or_first_router(session)
                         if active_r:
                             eff_router_id = active_r.id
+
+                    traffic_ctrl = TrafficController(client, router_id=eff_router_id)
+                    res = await client.get_system_resource()
+                    health = await client.get_system_health()
+                    # Cached after the first tick; the SoC name and core count
+                    # do not change without a reboot.
+                    board = await client.get_routerboard()
+
+                    # Backfill the RouterBoard serial onto rows added before it
+                    # was stored, so archive -> re-add can match this box later.
+                    if eff_router_id and board and board.serial_number:
+                        row = await session.get(Router, eff_router_id)
+                        if row is not None and not row.serial_number:
+                            row.serial_number = board.serial_number
+                            await session.commit()
+
+                    users_stats = await traffic_ctrl.get_realtime_traffic_stats(
+                        session, router_id=eff_router_id
+                    )
 
                     # Read configured monitored interfaces for this router
                     setting_key = f"monitored_interfaces_{eff_router_id}" if eff_router_id else "monitored_interfaces_default"
@@ -187,35 +208,34 @@ async def websocket_telemetry_endpoint(
                         except Exception:
                             monitored_ifaces = []
 
-                    # If interfaces are selected, monitor their live traffic rates
+                    # The monitored set is exactly what the admin ticked in the
+                    # WAN selector - never guessed. With nothing selected there
+                    # is no WAN to measure: report an empty set and zero rate so
+                    # the bandwidth tiles render their loud "no WAN selected"
+                    # state instead of silently graphing an interface the
+                    # operator never chose.
                     ifaces_rates = []
-                    if monitored_ifaces and len(monitored_ifaces) > 0:
+                    if monitored_ifaces:
                         ifaces_rates = await client.monitor_interface_traffic(monitored_ifaces)
                         total_rx = sum(r.get("rx_bits_per_second", 0.0) for r in ifaces_rates)
                         total_tx = sum(r.get("tx_bits_per_second", 0.0) for r in ifaces_rates)
-                    elif setting is not None and len(monitored_ifaces) == 0:
-                        # User explicitly deselected all interfaces -> 0 bps
+                    else:
                         total_rx = 0.0
                         total_tx = 0.0
-                    else:
-                        # Default fallback: monitor running physical/WAN interfaces or sum users
-                        all_ifaces = await client.get_interfaces()
-                        running_ifaces = [i.name for i in all_ifaces if i.running and not i.disabled]
-                        default_pick = [n for n in running_ifaces if "ether1" in n or "wan" in n or "bridge" in n or "sfp" in n]
-                        if not default_pick and running_ifaces:
-                            default_pick = running_ifaces[:2]
-                        if default_pick:
-                            monitored_ifaces = default_pick
-                            ifaces_rates = await client.monitor_interface_traffic(default_pick)
-                            total_rx = sum(r.get("rx_bits_per_second", 0.0) for r in ifaces_rates)
-                            total_tx = sum(r.get("tx_bits_per_second", 0.0) for r in ifaces_rates)
-                        else:
-                            total_rx = sum(u["current_rate_in"] for u in users_stats)
-                            total_tx = sum(u["current_rate_out"] for u in users_stats)
 
-                # Resolved once here rather than inline three times below, so a
-                # single frame never triggers more than one lookup.
-                public_net = await public_network_resolver.resolve()
+                # Public identity is per router: ask this router for its own
+                # public address (/ip/cloud, kept current by RouterOS DDNS) and
+                # let the resolver look the operator up for *that* address. It
+                # falls back to a container-side echo only when the router
+                # cannot say. Cached for 15 min, so a provider-side upstream or
+                # routing change is picked up on its own within the window.
+                try:
+                    cloud_ip = await client.get_cloud_public_address()
+                except Exception:
+                    cloud_ip = None
+                public_net = await public_network_resolver.resolve(
+                    router_id=eff_router_id, hint_ip=cloud_ip
+                )
                 cpu_identity = resolve_cpu_identity(
                     product_code=board.model,
                     board_name=res.board_name,
@@ -259,8 +279,12 @@ async def websocket_telemetry_endpoint(
                         # both hand out carrier-grade NAT addresses.
                         "isp": public_net.isp,
                         "asn": public_net.asn,
-                        # Devices currently online across all profiles - answers
-                        # "how many clients is this router actually serving".
+                        # The client tile counts people and their hardware:
+                        #  - user_count           how many profiles exist here
+                        #  - client_device_count  devices assigned to those profiles
+                        #  - active_clients       of those devices, how many are online now
+                        "user_count": len(users_stats),
+                        "client_device_count": sum(u.get("device_count", 0) for u in users_stats),
                         "active_clients": sum(u.get("active_device_count", 0) for u in users_stats),
                     },
                     "users": users_stats

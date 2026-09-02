@@ -59,11 +59,18 @@ export function RouterStep({ routerForm, setRouterForm, onNext }) {
   const [uploadingCert, setUploadingCert] = useState(false);
   const [bindingCert, setBindingCert] = useState(null);
 
+  // When a successful test told us which port the router's www-ssl service
+  // runs on, snap the port field to that instead of assuming 443 - the
+  // router may serve HTTPS on a custom port and we must never change it.
+  const detectedSslPort = testResult?.success ? testResult?.ssl_status?.www_ssl_port : null;
+
   const handleSslToggle = (checked) => {
     setRouterForm(prev => ({
       ...prev,
       use_ssl: checked,
-      port: checked ? (prev.port === 80 ? 443 : prev.port) : (prev.port === 443 ? 80 : prev.port)
+      port: checked
+        ? (detectedSslPort || (prev.port === 80 ? 443 : prev.port))
+        : ((prev.port === 443 || prev.port === detectedSslPort) ? 80 : prev.port)
     }));
   };
 
@@ -121,10 +128,12 @@ export function RouterStep({ routerForm, setRouterForm, onNext }) {
         use_ssl: routerForm.use_ssl
       });
       if (res.data && res.data.success) {
-        setSslSuccessMsg(t('auto_ssl_success'));
+        // Follow the router: connect on whatever port www-ssl reported.
+        const activePort = res.data.port || routerForm.port || 443;
+        setSslSuccessMsg(t('auto_ssl_success', { port: activePort }));
         const updated = {
           ...routerForm,
-          port: 443,
+          port: activePort,
           use_ssl: true,
           ssl_verify: false
         };
@@ -160,12 +169,13 @@ export function RouterStep({ routerForm, setRouterForm, onNext }) {
     setError(null);
     setSslSuccessMsg(null);
     try {
-      const res = await api.testBindCertificate(routerForm, certName, 443);
+      const res = await api.testBindCertificate(routerForm, certName);
       if (res.data && res.data.success) {
-        setSslSuccessMsg(`Certificate '${certName}' bound to www-ssl! Switched to HTTPS (443).`);
+        const activePort = res.data.port || routerForm.port || 443;
+        setSslSuccessMsg(`Certificate '${certName}' bound to www-ssl. Switched to HTTPS on port ${activePort}.`);
         const updated = {
           ...routerForm,
-          port: 443,
+          port: activePort,
           use_ssl: true
         };
         setRouterForm(updated);
@@ -190,14 +200,14 @@ export function RouterStep({ routerForm, setRouterForm, onNext }) {
     setSslSuccessMsg(null);
     try {
       const res = await api.testUploadCertificate(routerForm, {
-        ...uploadForm,
-        port: 443
+        ...uploadForm
       });
       if (res.data && res.data.success) {
-        setSslSuccessMsg(`Certificate '${uploadForm.cert_name}' uploaded and active on port 443!`);
+        const activePort = res.data.port || routerForm.port || 443;
+        setSslSuccessMsg(`Certificate '${uploadForm.cert_name}' uploaded and active on port ${activePort}!`);
         const updated = {
           ...routerForm,
-          port: 443,
+          port: activePort,
           use_ssl: true
         };
         setRouterForm(updated);
@@ -430,6 +440,25 @@ export function RouterStep({ routerForm, setRouterForm, onNext }) {
                     >
                       <Zap size={12} style={{ color: 'var(--color-warning)' }} />
                       <span>Switch to port {testResult.suggested_port} ({testResult.suggested_ssl ? 'HTTPS' : 'HTTP'})</span>
+                    </button>
+                  </div>
+                )}
+
+                {/* Connected over HTTP, but the router already runs www-ssl on
+                    some port - offer to switch to it verbatim, no assumptions. */}
+                {testResult.success
+                  && !routerForm.use_ssl
+                  && testResult.ssl_status?.www_ssl_enabled
+                  && testResult.ssl_status?.www_ssl_port && (
+                  <div style={{ marginTop: 2, display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-sm"
+                      onClick={() => handleApplySuggested(testResult.ssl_status.www_ssl_port, true)}
+                      style={{ fontSize: 'var(--fs-xs)', padding: '3px 8px', display: 'flex', alignItems: 'center', gap: 5 }}
+                    >
+                      <Lock size={12} style={{ color: 'var(--color-success)' }} />
+                      <span>{t('use_detected_https_port', { port: testResult.ssl_status.www_ssl_port })}</span>
                     </button>
                   </div>
                 )}

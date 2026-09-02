@@ -113,6 +113,8 @@ async def init_db() -> None:
                     router_additions = {
                         "ca_cert": "TEXT",
                         "comment": "TEXT",
+                        "serial_number": "VARCHAR(120)",
+                        "archived_at": "DATETIME",
                     }
                     for column, ddl in router_additions.items():
                         if column not in columns:

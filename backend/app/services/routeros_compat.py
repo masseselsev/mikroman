@@ -176,7 +176,7 @@ REQUIREMENTS: List[ApiRequirement] = [
         path="/ip/service",
         since=_V7_REST,
         required=False,
-        note="Used only when enabling www-ssl during auto-provisioning.",
+        note="Read to discover the www-ssl port and to enable the service during auto-provisioning; the port itself is never modified.",
     ),
     ApiRequirement(
         path="/file",

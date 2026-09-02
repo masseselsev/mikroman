@@ -283,8 +283,13 @@ class TelegramBotService:
                 await send_func("⚠️ No active router configured.")
                 return
 
-            ctrl = TrafficController(client)
-            user_stats = await ctrl.get_realtime_traffic_stats(session)
+            # Scope the stats to the active router, otherwise a multi-router
+            # install lists every router's profiles in one message.
+            active = await self.router_manager.get_default_or_first_router(session)
+            ctrl = TrafficController(client, router_id=active.id if active else None)
+            user_stats = await ctrl.get_realtime_traffic_stats(
+                session, router_id=active.id if active else None
+            )
 
         if not user_stats:
             await send_func(get_text("no_users", lang=self.lang))

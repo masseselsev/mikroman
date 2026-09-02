@@ -311,11 +311,15 @@ async def get_user_traffic_history(
         today=today,
         now_dt=now,
     )
+    # The 1D preset resolves to a single day ("today"); pass the router-local
+    # clock so the engine returns a 30-minute-bucket timeline for it.
+    intraday_now = now if (resolved_start == resolved_end and preset in ("today", "day", "1d")) else None
     data = await AnalyticsEngine.get_user_traffic_history(
         session=db,
         user_id=user_id,
         start_date=resolved_start,
         end_date=resolved_end,
         range_preset=range_label,
+        intraday_now=intraday_now,
     )
     return APIResponse(data=data)

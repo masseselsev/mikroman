@@ -69,7 +69,7 @@ class RouterManager:
         # edited in Settings is noticed and its stale client retired.
         self._fingerprints: Dict[int, tuple] = {}
 
-    def _create_client_from_model(self, router: Router) -> RouterOSClient:
+    def _create_client_from_model(self, router: Router, *, timeout: float = 5.0) -> RouterOSClient:
         return RouterOSClient(
             host=router.host,
             port=router.port,
@@ -77,8 +77,19 @@ class RouterManager:
             ssl_verify=router.ssl_verify,
             username=router.username,
             password=router.password,
-            timeout=5.0
+            timeout=timeout
         )
+
+    def build_probe_client(self, router: Router) -> RouterOSClient:
+        """A throwaway client for a one-off reachability check.
+
+        Deliberately NOT the cached client the telemetry loop uses: a probe
+        that times out must not open that client's circuit breaker and black
+        the router out of the live view. Given a longer timeout too, because a
+        remote router across the internet often needs more than the 5 s the
+        pooled client allows before the poll would wrongly call it offline.
+        """
+        return self._create_client_from_model(router, timeout=10.0)
 
     @staticmethod
     def _fingerprint(router: Router) -> tuple:
@@ -125,10 +136,10 @@ class RouterManager:
 
         try:
             if router_id:
-                stmt = select(Router).where(Router.id == router_id, Router.is_active == True) # noqa: E712
+                stmt = select(Router).where(Router.id == router_id, Router.is_active == True, Router.archived_at.is_(None)) # noqa: E712
             else:
                 # Get default or first active router
-                stmt = select(Router).where(Router.is_active == True).order_by(Router.is_default.desc(), Router.id.asc()) # noqa: E712
+                stmt = select(Router).where(Router.is_active == True, Router.archived_at.is_(None)).order_by(Router.is_default.desc(), Router.id.asc()) # noqa: E712
 
             result = await session.execute(stmt)
             router = result.scalars().first()
@@ -221,7 +232,7 @@ class RouterManager:
             should_close = True
 
         try:
-            stmt = select(Router).where(Router.is_active == True).order_by(Router.is_default.desc(), Router.id.asc()) # noqa: E712
+            stmt = select(Router).where(Router.is_active == True, Router.archived_at.is_(None)).order_by(Router.is_default.desc(), Router.id.asc()) # noqa: E712
             result = await session.execute(stmt)
             return result.scalars().first()
         finally:
@@ -240,7 +251,7 @@ class RouterManager:
             should_close = True
 
         try:
-            stmt = select(Router).where(Router.is_active == True).order_by(Router.is_default.desc(), Router.id.asc()) # noqa: E712
+            stmt = select(Router).where(Router.is_active == True, Router.archived_at.is_(None)).order_by(Router.is_default.desc(), Router.id.asc()) # noqa: E712
             result = await session.execute(stmt)
             return list(result.scalars().all())
         finally:
@@ -264,6 +275,13 @@ class RouterManager:
         try:
             res = await client.get_system_resource()
             ssl_info = await client.check_ssl_status()
+            # The serial travels with the test result so the add-router flow can
+            # spot a router it already has archived before it writes a new row.
+            try:
+                board = await client.get_routerboard()
+                serial = board.serial_number if board else None
+            except Exception:
+                serial = None
 
             # Setup is the moment a version problem is cheapest to act on, so
             # the check runs here and the verdict travels with the response.
@@ -286,6 +304,7 @@ class RouterManager:
                 board_name=res.board_name,
                 cpu_load=res.cpu_load,
                 uptime=res.uptime,
+                serial_number=serial,
                 ssl_status=ssl_info,
                 message=message
             )
@@ -359,31 +378,33 @@ class RouterManager:
         session: AsyncSession
     ) -> RouterProvisionSslResponse:
         """
-        Generate self-signed certificate and enable www-ssl on the specified router,
-        then update the router database record to use port 443 with HTTPS.
+        Generate a self-signed certificate and enable www-ssl on the specified
+        router, then repoint the stored connection at HTTPS on whatever port the
+        router's www-ssl service actually uses. The router's port configuration
+        is never modified.
         """
         router = await session.get(Router, router_id)
         if not router:
             return RouterProvisionSslResponse(
                 success=False,
                 message="Router not found",
-                port=req.port
             )
 
         client = await self.get_client(router_id, session=session)
         if not client:
             client = self._create_client_from_model(router)
 
-        prov_result = await client.provision_ssl(common_name=req.common_name, port=req.port)
+        prov_result = await client.provision_ssl(common_name=req.common_name)
         if not prov_result.get("success"):
             return RouterProvisionSslResponse(
                 success=False,
                 message=prov_result.get("message", "Failed to provision SSL"),
-                port=req.port
             )
 
-        # Update Router record in DB to HTTPS
-        router.port = req.port
+        # Point the stored record at HTTPS on the www-ssl port reported by the
+        # router - a custom port set by the administrator is honoured, not 443.
+        active_port = int(prov_result.get("port", 443))
+        router.port = active_port
         router.use_ssl = True
         router.ssl_verify = False
         await session.commit()
@@ -395,8 +416,8 @@ class RouterManager:
         return RouterProvisionSslResponse(
             success=True,
             certificate=prov_result.get("certificate"),
-            port=req.port,
-            message="SSL certificate successfully provisioned on MikroTik and connection upgraded to HTTPS (port 443)."
+            port=active_port,
+            message=f"SSL provisioned on MikroTik; MikroMan now connects over HTTPS on port {active_port}."
         )
 
     async def aclose(self) -> None:

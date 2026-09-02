@@ -299,6 +299,13 @@ export function TelemetryBar({ router, activeRouter, interfaces = [], onNavigate
   const goHealth = onNavigate ? () => onNavigate('health') : undefined;
   const goUsers = onNavigate ? () => onNavigate('users') : undefined;
 
+  // The client tile leads with the number of profiles and carries their device
+  // count underneath (online / total). Older telemetry frames only had
+  // `active_clients`, so fall back to it rather than showing a bare zero.
+  const userCount = router.user_count ?? 0;
+  const onlineDevices = router.active_clients ?? 0;
+  const clientDevices = router.client_device_count ?? onlineDevices;
+
   // CPU tile subtitle: the processor model, then its characteristics. The model
   // line is dropped when it is only the architecture repeated (a CHR or x86
   // box with no SoC name), leaving just the spec line.
@@ -328,18 +335,29 @@ export function TelemetryBar({ router, activeRouter, interfaces = [], onNavigate
     onNavigate ? t('open_health_hint') : null,
   ].filter(Boolean).join('\n') || undefined;
 
+  // The WAN set is exactly what the admin ticked in the selector - never
+  // inferred from the routing table. `monitored_interfaces` on the telemetry
+  // frame is that saved selection; `selectedIfaces` is the same list read
+  // straight from config before the first frame arrives.
   const monitored = (router.monitored_interfaces && router.monitored_interfaces.length)
     ? router.monitored_interfaces
     : (selectedIfaces || []);
-  const monitoredShort = monitored.length === 0
+  const hasWan = monitored.length > 0;
+  const monitoredShort = !hasWan
     ? t('ifaces_none')
     : monitored.length <= 2
       ? monitored.join(', ')
       : `${monitored.slice(0, 2).join(', ')} +${monitored.length - 2}`;
-  // The two bandwidth tiles are measured across exactly these interfaces, so
-  // they carry a WAN marker and the full list is in their tooltip.
-  const wanSub = `${t('wan_label')} · ${monitoredShort}`;
-  const wanTileTitle = `${t('configure_interfaces_hint')}\n${t('wan_label')}: ${monitored.join(', ') || t('ifaces_none')}`;
+  // The two bandwidth tiles are measured across exactly these interfaces. With
+  // nothing selected there is no WAN to measure, so the tiles say so loudly
+  // and turn amber rather than quietly reading 0 bps.
+  const wanSub = hasWan
+    ? `${t('wan_label')} · ${monitoredShort}`
+    : <span style={{ color: 'var(--color-warning)', fontWeight: 700 }}>⚠ {t('wan_none_warning')}</span>;
+  const wanTone = hasWan ? null : 'var(--color-warning)';
+  const wanTileTitle = hasWan
+    ? `${t('configure_interfaces_hint')}\n${t('wan_label')}: ${monitored.join(', ')}`
+    : `${t('wan_none_warning')}\n${t('configure_interfaces_hint')}`;
 
   return (
     <>
@@ -352,7 +370,7 @@ export function TelemetryBar({ router, activeRouter, interfaces = [], onNavigate
       }}>
         <Tile
           icon={<ArrowDown size={15} />}
-          tone="var(--color-success)"
+          tone={wanTone || 'var(--color-success)'}
           label={t('total_rx')}
           value={formatSpeed(router.wan_rx_bps)}
           sub={wanSub}
@@ -363,7 +381,7 @@ export function TelemetryBar({ router, activeRouter, interfaces = [], onNavigate
 
         <Tile
           icon={<ArrowUp size={15} />}
-          tone="var(--color-primary)"
+          tone={wanTone || 'var(--color-primary)'}
           label={t('total_tx')}
           value={formatSpeed(router.wan_tx_bps)}
           sub={wanSub}
@@ -415,8 +433,8 @@ export function TelemetryBar({ router, activeRouter, interfaces = [], onNavigate
           icon={<Users size={15} />}
           tone="var(--color-primary)"
           label={t('clients_label')}
-          value={String(router.active_clients ?? 0)}
-          sub={t('online')}
+          value={String(userCount)}
+          sub={t('clients_devices_sub', { online: onlineDevices, total: clientDevices })}
           onClick={goUsers}
           title={onNavigate ? t('open_users_hint') : undefined}
         />
@@ -509,7 +527,9 @@ export function TelemetryBar({ router, activeRouter, interfaces = [], onNavigate
                             flexShrink: 0
                           }} />
                           <span className="truncate" style={{ fontWeight: isChecked ? 700 : 500 }}>{iface.name}</span>
-                          {iface.is_wan && (
+                          {/* The WAN badge marks the admin's choice, nothing
+                              else: it appears only on ticked rows. */}
+                          {isChecked && (
                             <span
                               className="badge badge-primary"
                               style={{ fontSize: 'var(--fs-3xs)', padding: '1px 5px', flexShrink: 0 }}
@@ -519,8 +539,13 @@ export function TelemetryBar({ router, activeRouter, interfaces = [], onNavigate
                             </span>
                           )}
                         </div>
-                        <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', flexShrink: 0 }}>
-                          {iface.parent ? t('iface_on_parent', { parent: iface.parent }) : (iface.type || 'interface')}
+                        <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', flexShrink: 0, display: 'flex', alignItems: 'center', gap: 6 }}>
+                          {/* Routing-table steer, kept as a faint hint so it can
+                              never be mistaken for the selection itself. */}
+                          {iface.is_wan && !isChecked && (
+                            <span style={{ opacity: 0.7, fontStyle: 'italic' }}>{t('wan_detected_hint')}</span>
+                          )}
+                          <span>{iface.parent ? t('iface_on_parent', { parent: iface.parent }) : (iface.type || 'interface')}</span>
                         </span>
                       </div>
                     );

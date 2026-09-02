@@ -13,6 +13,7 @@ from backend.app.db.models import (
     RouterTrafficRollup,
     TrafficRollup,
     User,
+    UserTrafficBucket,
 )
 from backend.app.db.session import get_db
 from backend.app.main import app
@@ -372,6 +373,35 @@ async def test_multi_day_timeline_aggregation(api_client: AsyncClient):
         assert pts[yesterday].total_bytes != pts[today].total_bytes
 
 
+@pytest.mark.asyncio
+async def test_by_users_is_scoped_to_the_viewed_router(api_client: AsyncClient):
+    """A profile that belongs to another router must not appear in this
+    router's "By Users" table (it used to, as a row of zeros)."""
+    async with api_client.session_factory() as session:
+        from backend.app.db.models import Router
+        from backend.app.services.analytics_engine import AnalyticsEngine
+
+        session.add(Router(id=2, name="Edge", host="10.9.9.1", username="u", password="p"))
+        session.add(User(name="OnRouterOne", speed_limit="unlimited", router_id=1))
+        session.add(User(name="OnRouterTwo", speed_limit="unlimited", router_id=2))
+        session.add(User(name="Everywhere", speed_limit="unlimited", router_id=None))
+        await session.commit()
+
+        today = date.today()
+        data = await AnalyticsEngine.get_historical_traffic(
+            session=session,
+            start_date=today,
+            end_date=today,
+            router_id=2,
+            range_preset="custom",
+            anchor_day=1,
+        )
+        names = {u.user_name for u in data.users}
+        assert "OnRouterTwo" in names
+        assert "Everywhere" in names  # NULL router_id belongs to every router
+        assert "OnRouterOne" not in names
+
+
 def test_delta_computation_logic():
     """Verify _compute_delta handles normal accumulation, counter wrapping, and reboots."""
     from backend.app.services.analytics_engine import AnalyticsEngine
@@ -400,6 +430,11 @@ class TestQuotaBoundaryPrecision:
         session.add(AppSetting(key="billing_cycle_anchor_hour", value=str(hour)))
         session.add(AppSetting(key="billing_cycle_anchor_minute", value=str(minute)))
         session.add(AppSetting(key="isp_quota_limit_bytes", value=str(limit_gb * GB)))
+        # The WAN must be chosen before the boundary slices have an interface
+        # to measure - the resolver no longer guesses "ether1". No Router row
+        # is seeded here, so the quota path resolves against the _default key.
+        session.add(AppSetting(key="monitored_interfaces_default", value='["ether1"]'))
+        session.add(AppSetting(key="monitored_interfaces_1", value='["ether1"]'))
         await session.commit()
 
     async def _daily_gateway(self, session, day, total_bytes, router_id=1):
@@ -612,6 +647,12 @@ async def test_entity_traffic_history_endpoints(api_client):
         s.add(DeviceTrafficRollup(device_id=device.id, record_date=today - timedelta(days=2), bytes_in=1000, bytes_out=500))
         s.add(DeviceTrafficRollup(device_id=device.id, record_date=today - timedelta(days=1), bytes_in=2000, bytes_out=800))
         s.add(DeviceTrafficRollup(device_id=device.id, record_date=today, bytes_in=3000, bytes_out=1200))
+
+        # Intraday buckets for today - the 1D view reads these, not the daily
+        # rollup. The 00:00 window is always inside the rendered range whatever
+        # time the suite runs, so the whole test volume goes there.
+        day0 = datetime.combine(today, time())
+        s.add(UserTrafficBucket(user_id=user.id, bucket_start=day0, bytes_in=1500, bytes_out=600))
         await s.commit()
 
         user_id = user.id
@@ -631,12 +672,23 @@ async def test_entity_traffic_history_endpoints(api_client):
     assert u_data["devices"][0]["device_id"] == device_id
     assert u_data["devices"][0]["total_bytes"] == 8500
 
-    # 2. Test user traffic history 1d / today preset
+    # 2. The 1D preset returns a 30-minute-bucket timeline (resolution
+    # 'half_hour'), summed from UserTrafficBucket rather than the daily rollup.
     res_1d = await api_client.get(f"/api/v1/users/{user_id}/traffic-history?preset=1d")
     assert res_1d.status_code == 200
     u_1d = res_1d.json()["data"]
-    assert len(u_1d["timeline"]) == 1
-    assert u_1d["total_bytes"] == 4200
+    assert u_1d["resolution"] == "half_hour"
+    # Points run from 00:00 up to the current window; every one carries an
+    # HH:MM label and stays on today's date.
+    assert len(u_1d["timeline"]) >= 1
+    assert u_1d["timeline"][0]["label"] == "00:00"
+    assert all(p["record_date"] == today.isoformat() for p in u_1d["timeline"])
+    assert u_1d["total_bytes_in"] == 1500
+    assert u_1d["total_bytes_out"] == 600
+    assert u_1d["total_bytes"] == 2100
+    assert u_1d["peak_label"] == "00:00"
+    assert u_1d["timeline"][0]["bytes_in"] == 1500
+    assert u_1d["timeline"][0]["bytes_out"] == 600
 
     # 3. Test device traffic history 7d preset
     d_res = await api_client.get(f"/api/v1/devices/{device_id}/traffic-history?preset=7d")

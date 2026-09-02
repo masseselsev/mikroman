@@ -3,8 +3,9 @@ import { useI18n } from '../context/I18nContext';
 import { api } from '../api/client';
 import { templateErrorKey } from '../utils/ipLookup';
 import { RouterConnectionForm } from './RouterConnectionForm';
+import { RouterDeleteDialog, ChangeRouterModal, ArchivedRoutersSection } from './RouterLifecycle';
 import { PauseNetworksModal, parseNetworksList } from './PauseNetworksModal';
-import { X, Settings as SettingsIcon, Send, CheckCircle2, AlertTriangle, Power, Server, Plus, Pencil, Trash2, Check, Loader2, Network } from 'lucide-react';
+import { X, Settings as SettingsIcon, Send, CheckCircle2, AlertTriangle, Power, Server, Plus, Pencil, Trash2, Check, Loader2, Network, Repeat } from 'lucide-react';
 
 export function SettingsModal({
   isOpen,
@@ -41,15 +42,23 @@ export function SettingsModal({
   // itself owns the field state; this only decides whose details it is showing.
   const [editingRouterId, setEditingRouterId] = useState(null);
   const [savingRouter, setSavingRouter] = useState(false);
+  // Router lifecycle: delete-choice dialog, hardware-swap modal, archived list.
+  const [deleteDialogRouter, setDeleteDialogRouter] = useState(null);
+  const [changeRouterTarget, setChangeRouterTarget] = useState(null);
+  const [archivedRouters, setArchivedRouters] = useState([]);
+  const [lifecycleBusy, setLifecycleBusy] = useState(false);
+  const [archivedBusyId, setArchivedBusyId] = useState(null);
 
   const loadSettingsAndRouters = async (routerId = selectedRouterId) => {
     try {
       setLoadingRouters(true);
-      const [settRes, routRes] = await Promise.all([
+      const [settRes, routRes, archRes] = await Promise.all([
         api.getSettings(routerId).catch(() => ({ data: {} })),
-        api.getRouters().catch(() => ({ data: [] }))
+        api.getRouters().catch(() => ({ data: [] })),
+        api.getArchivedRouters().catch(() => ({ data: [] }))
       ]);
       if (settRes.data) setSettings(prev => ({ ...prev, ...settRes.data }));
+      setArchivedRouters(archRes.data || []);
       if (routRes.data) {
         setRouters(routRes.data);
         if (!routerId && routRes.data.length > 0) {
@@ -247,11 +256,51 @@ export function SettingsModal({
     }
   };
 
-  const handleDeleteRouter = async (id) => {
-    if (window.confirm(t('confirm_delete_router'))) {
-      await api.deleteRouter(id);
+  const runLifecycle = async (fn) => {
+    setLifecycleBusy(true);
+    try {
+      const res = await fn();
+      setDeleteDialogRouter(null);
+      setChangeRouterTarget(null);
       await loadSettingsAndRouters();
       if (onRoutersChanged) onRoutersChanged();
+      if (res?.message) setStatusMsg(res.message);
+    } catch (err) {
+      alert(err.message || 'Operation failed');
+    } finally {
+      setLifecycleBusy(false);
+    }
+  };
+
+  const handleArchiveRouter = (id) => runLifecycle(() => api.deleteRouter(id, 'archive'));
+  const handlePurgeRouter = (id) => runLifecycle(() => api.deleteRouter(id, 'purge'));
+  const handleChangeRouter = (id, payload) => runLifecycle(() => api.changeRouter(id, payload));
+
+  const handleRestoreRouter = async (id) => {
+    setArchivedBusyId(id);
+    try {
+      const res = await api.restoreRouter(id);
+      await loadSettingsAndRouters();
+      if (onRoutersChanged) onRoutersChanged();
+      if (res?.message) setStatusMsg(res.message);
+    } catch (err) {
+      alert(err.message || 'Restore failed');
+    } finally {
+      setArchivedBusyId(null);
+    }
+  };
+
+  const handlePurgeArchived = async (r) => {
+    if (!window.confirm(t('router_delete_purge_confirm_plain', { name: r.name }))) return;
+    setArchivedBusyId(r.id);
+    try {
+      await api.deleteRouter(r.id, 'purge');
+      await loadSettingsAndRouters();
+      if (onRoutersChanged) onRoutersChanged();
+    } catch (err) {
+      alert(err.message || 'Purge failed');
+    } finally {
+      setArchivedBusyId(null);
     }
   };
 
@@ -900,12 +949,23 @@ export function SettingsModal({
                     >
                       <Pencil size={14} />
                     </button>
+                    {/* Swap the hardware behind this row, keeping its users,
+                        devices and history. Works even if the old box is dead. */}
+                    <button
+                      type="button"
+                      className="btn-icon"
+                      style={{ width: 28, height: 28 }}
+                      onClick={() => setChangeRouterTarget(r)}
+                      title={t('router_change_title', { name: r.name })}
+                    >
+                      <Repeat size={14} />
+                    </button>
                     <button
                       type="button"
                       className="btn-icon"
                       style={{ color: 'var(--color-danger)', width: 28, height: 28 }}
-                      onClick={() => handleDeleteRouter(r.id)}
-                      title={t('confirm_delete_router')}
+                      onClick={() => setDeleteDialogRouter(r)}
+                      title={t('router_delete_title', { name: r.name })}
                     >
                       <Trash2 size={14} />
                     </button>
@@ -932,9 +992,35 @@ export function SettingsModal({
                 </div>
               ))}
             </div>
+
+            <ArchivedRoutersSection
+              items={archivedRouters}
+              busyId={archivedBusyId}
+              onRestore={handleRestoreRouter}
+              onPurge={handlePurgeArchived}
+            />
           </div>
         )}
       </div>
+
+      {deleteDialogRouter && (
+        <RouterDeleteDialog
+          router={deleteDialogRouter}
+          busy={lifecycleBusy}
+          onArchive={() => handleArchiveRouter(deleteDialogRouter.id)}
+          onPurge={() => handlePurgeRouter(deleteDialogRouter.id)}
+          onCancel={() => setDeleteDialogRouter(null)}
+        />
+      )}
+
+      {changeRouterTarget && (
+        <ChangeRouterModal
+          router={changeRouterTarget}
+          busy={lifecycleBusy}
+          onSubmit={(payload) => handleChangeRouter(changeRouterTarget.id, payload)}
+          onCancel={() => setChangeRouterTarget(null)}
+        />
+      )}
 
       {showPauseNetworksModal && (
         <PauseNetworksModal

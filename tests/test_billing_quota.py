@@ -287,8 +287,10 @@ class TestSliceOfDayBytes:
 
 
 @pytest.mark.asyncio
-async def test_resolve_monitored_interfaces_reads_the_setting_or_defaults(session):
-    assert await resolve_monitored_interfaces(session, 1) == ["ether1"]
+async def test_resolve_monitored_interfaces_reads_the_setting_or_is_empty(session):
+    # Nothing chosen yet -> empty. The WAN is never guessed; accounting for a
+    # router starts only once its uplink is picked in the selector.
+    assert await resolve_monitored_interfaces(session, 1) == []
     session.add(AppSetting(key="monitored_interfaces_1", value='["ether1", "pppoe-out1"]'))
     await session.commit()
     assert await resolve_monitored_interfaces(session, 1) == ["ether1", "pppoe-out1"]

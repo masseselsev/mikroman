@@ -175,6 +175,67 @@ it. The breaker belongs at the transport, because roughly forty client methods
 catch their own exceptions and a breaker wrapped around callers would never see
 those failures. And an unreachable dependency is a normal state, not a 500.
 
+**[2026-09-02] Problem:** The dashboard "still felt sluggish" after the breaker.
+The REST endpoints themselves were fast (`/users` ~30ms, `/devices` ~7ms), but
+`GET /routers` sat at a steady ~220ms because it probed *every* configured
+router for live status **sequentially**, and the frontend `loadData()` awaited
+it *first*, on the 6-second poll, before fetching users/devices. One RouterOS
+round trip per router on the critical path of every refresh, growing per router.
+**→ Solution:** (1) `list_routers` runs the per-router probes concurrently
+(`asyncio.gather`, each with its own `AsyncSession` — a session is single-use).
+(2) The frontend split `loadRouters()` out of `loadData()`: the 6s poll now
+only moves user/device data with the already-known id, and the router list
+refreshes on mount, on switch, and every 30s (for the selector's dots).
+Lesson: anything that fans out to N remote calls does not belong on a fast
+timer's hot path — put it on its own slower beat and parallelise what remains.
+
+**[2026-09-02] Problem:** `api.macvendors.com` / `api.maclookup.app` were called
+on **every discovery sweep** for the same MACs, flooding the event loop. When
+neither service could name an OUI, `lookup_async` returned `"Unknown Vendor"`
+and cached nothing, and `device_manager` re-attempts on every sweep for any
+device whose vendor is a generic label. So each unlisted OUI cost two HTTP
+calls per sweep forever.
+**→ Solution:** negative caching in `VendorLookupService` — a definitive
+"not found" (maclookup `found:false`, or macvendors `404`) stores a `None`
+sentinel under the prefix; a *network error* is not cached (transient). The
+sentinel is cleared on restart, so each unknown device gets one re-check per
+container lifetime. Lesson: a lookup with a "not found" outcome needs a
+negative cache as much as a positive one, or the retry path becomes a DoS on
+the upstream.
+
+## Multi-router isolation
+
+**[2026-09-02] Problem:** After switching the dashboard to router 2, its
+*Traffic Analytics → By Users* table and the telemetry **USERS** count still
+listed router 1's profiles (as rows of zeros). The *Users & Devices* tab was
+correct. Two independent scoping gaps: (1) `AnalyticsEngine.get_historical_traffic`
+did `select(User)` with no router filter and then built a summary row for
+*every* user, even those with no device on the viewed router; (2)
+`ws.py` constructed `TrafficController(client)` and called
+`get_realtime_traffic_stats(session)` with **no** `router_id`, so `eff_router_id`
+was `None` and the `(User.router_id == id) | (User.router_id.is_(None))` clause
+never ran.
+**→ Solution:** scope `users_query` the same way `devices_query` already was,
+and resolve `eff_router_id` in the WS loop *before* the stats call so it can be
+passed to both the controller and the query. Lesson: a `WHERE` that is only
+added `if router_id:` is silently a no-op whenever the caller forgot to thread
+the id through — grep every construction site, not just the one that showed the
+symptom.
+
+**[2026-09-02] Problem:** The WAN IP tile showed the *container's* egress
+(address + operator) for whichever router was selected, because
+`public_network_resolver` was a process-wide singleton that resolved "what is
+*my* IP" once. On a multi-router install router 2 sits at a different site with
+a different operator, so its tile was simply wrong.
+**→ Solution:** the resolver caches **per router id**, and the WS loop passes
+`hint_ip` = that router's own `/ip/cloud` `public-address` (RouterOS keeps it
+current over DDNS, and it is correct even behind CGNAT). The operator is looked
+up for *that* address. The container-egress echo is the fallback only when the
+router reports nothing usable (`0.0.0.0`, CGNAT, RFC1918 — see
+`public_ip_or_none`). Lesson: "what is my public IP" answered from the app
+server is the app server's answer; when the question is really "what is this
+router's uplink", ask the router — it already knows.
+
 ## Durability
 
 **[2026-08-31] Problem:** All state — including months of daily traffic rollups
@@ -470,3 +531,119 @@ only correct if it runs often enough to never straddle a boundary - and a
 process that can be restarted mid-day does not clear that bar. If a
 finer-grained series exists (here, the ~3 s interface samples), derive the
 rollup from it instead of trusting the accumulator.
+
+**[2026-09-02] Problem:** Connecting a new router whose web services were
+moved off the defaults - `www` on 88, `www-ssl` on 444 - and running HTTPS
+auto-configuration, the app "restored" `www-ssl` to 443. The provisioning
+code (`CertificatesMixin.provision_ssl` / `bind_ssl_certificate` /
+`import_custom_certificate`) took a `port: int = 443` argument and wrote it
+into every `/ip/service` PATCH/`set` payload, so enabling HTTPS silently
+rewrote the administrator's port. The frontend then hardcoded `443` into the
+wizard form and the bind/upload calls, and `provision_ssl_for_router` stored
+`443` in the router record. **Solution:** provisioning now sends only
+`{disabled: False, certificate: <name>}` to `/ip/service` - never `port`,
+`address`, or anything else the operator owns - then **reads the port back**
+from `/ip/service` (`_read_www_ssl_port`, falling back to the row in hand,
+then 443) and returns it. `provision_ssl_for_router` repoints the stored
+connection at that discovered port; the wizard fills the port field from
+`ssl_status.www_ssl_port` and offers a one-click "Use HTTPS on port N"
+switch when a plain HTTP test finds `www-ssl` already enabled. The `port`
+field was removed from `RouterProvisionSslRequest` / `RouterBindCertRequest`
+/ `RouterUploadCertRequest` so it cannot be reintroduced by accident.
+Lesson: an auto-configuration flow may enable a service and bind a
+certificate, but the listening port (and address list, TLS version, ...) is
+the administrator's setting - discover it, never assert it. RouterOS
+`/ip/service` names are a fixed built-in set (`api`, `api-ssl`, `ftp`,
+`ssh`, `telnet`, `winbox`, `www`, `www-ssl`); they cannot be renamed or
+added to, so matching by `name == "www-ssl"` is safe, but every other field
+on the row is fair game for the operator to have changed.
+
+**[2026-09-02] Problem:** Adding a new router and opening the dashboard, the
+WAN selector and the bandwidth tiles showed `ether1` + `bridge` already
+"selected" with WAN badges, and interface accounting started against them -
+the operator never picked anything. Three independent fallbacks were
+inventing a WAN when none was configured: the telemetry loop
+(`ws.py`) ran a `default_pick` heuristic (`name in {ether1,wan,bridge,sfp}`,
+else the first two running interfaces) and put the guess into the telemetry
+frame as `monitored_interfaces`, so the frontend rendered it as a real
+selection and never showed the "no WAN" warning; `resolve_monitored_interfaces`
+(gateway / interface rollups, billing-cycle slices) and
+`TrafficAccountingService._monitored_interfaces` (router self-traffic rules)
+each `return ["ether1"]` when the setting was absent. **Solution:** all three
+now yield an empty set when nothing is saved. `ws.py` reports
+`monitored_interfaces: []` and `0` bps -> the tiles render the loud amber
+"⚠ No WAN selected" state; `_get_wan_ip` returns `None` (tile reads `—`)
+rather than the first non-loopback address. The rollup/slice/self-traffic
+paths simply record nothing for a router until its WAN is chosen; per-device
+counters are unaffected because they key off the device IP. Tests that
+exercised accounting now seed a `monitored_interfaces_*` setting explicitly
+(added to the shared `_seed` helper), which is the real new contract.
+`device_manager._get_wan_interfaces` deliberately keeps its `{"ether1"}`
+fallback - its job is to keep the upstream ISP gateway *out* of the client
+list, and an empty set there would let the gateway be ingested as a device,
+which is more intrusive than a name guess, not less. Lesson: a "helpful"
+default that fabricates configuration is worse than an empty state the UI
+can flag - especially when the same guess is duplicated across three code
+paths that then disagree.
+
+**[2026-09-02] Problem:** Adding a new router, its unassigned-device inbox
+immediately offered "Identical hostname 'NamasT3k' on user 'Mark'" - where
+'Mark' is a user on a *different* router. `DeviceConsolidationMixin.find_merge_suggestions`
+selected assigned and unassigned devices with `select(Device).where(user_id ...)`
+and **no router filter** (its own docstring claimed it filtered by
+`self.router_id`; it did not); `consolidate_rotated_devices` (the automatic
+background merge) and `device_linking.find_link_suggestions` had the same
+unscoped `select(Device)`. A DHCP hostname is not unique across sites, so the
+hostname match reached straight across routers and would have linked/merged a
+new router's device onto another router's user - silently, in the background
+worker's case. **Solution:** every device-identity query is now confined to
+`(Device.router_id == <id>) | (Device.router_id.is_(None))` - the same
+scope the live discovery sweep already used. `find_link_suggestions` took a
+`router_id` param; the `/devices/suggestions` and `/devices/link-suggestions`
+endpoints resolve `eff_router_id` (query param -> active router) and thread it
+through, and the frontend passes the viewed router's id explicitly. Lesson:
+a docstring that says "scoped to the router" is not a filter. Any query that
+feeds a cross-record heuristic (hostname, vendor, MAC pattern) must carry the
+router predicate, and the auto-acting paths (`consolidate_rotated_devices`)
+are more dangerous than the propose-only ones because there is no click to
+catch the mistake.
+
+**[2026-09-02] Problem:** Freshly added remote routers (a CCR1009 and another
+box, both across the internet) showed a grey "offline" dot in the switcher
+even though selecting them worked and telemetry streamed fine. `/routers`
+`_probe` reused the **pooled telemetry client** (5 s timeout, shared circuit
+breaker) for its status check. A remote router that took >5 s to answer one
+probe tripped that client's breaker for 15 s - grey dot, and the telemetry
+loop briefly poisoned too - and the sparse 30 s poll cadence meant the grey
+state lingered. **Solution:** two parts. (1) `_probe` now uses
+`router_manager.build_probe_client(r)` - a throwaway client with a 10 s
+timeout and its own breaker, closed after the single request - so a slow
+probe can neither wait too little nor knock out the real client. (2) The
+frontend `RouterSelector` treats the selected router as online when the
+telemetry WS is connected (`telemetryLive`), regardless of the last
+`/routers` probe result - a flowing stream is proof of reachability and
+should win over a 30 s poll that flaps. Lesson: a health probe must be
+isolated from the connection it is reporting on; sharing the pooled client
+and its breaker means the probe's own timeout becomes an outage.
+
+**[2026-09-02] Feature, not a bug, but a hazard worth recording:** deleting a
+router used to be `db.delete(router_obj)` and nothing else. With SQLite
+`PRAGMA foreign_keys=OFF` (the deployment's state - only `journal_mode`,
+`synchronous`, `busy_timeout` are set on connect) the models' `ON DELETE
+CASCADE` never fires, so that left `router_traffic_rollups`,
+`interface_traffic_rollups`, `system_metrics`, `interface_metrics`,
+`speed_test_results` and `alert_logs` rows with a dangling `router_id`, plus
+every `<base>_<id>` row in `app_settings`, and SQLite reuses `max(id)+1` so a
+newly added router could inherit all of it. Delete now takes a `mode`:
+`archive` (set `routers.archived_at`, filtered out of `get_client` and every
+`get_*_router` helper and the `/routers` list, all data kept, re-add by
+`serial_number` restores the row) or `purge` (a new `router_lifecycle.purge_router`
+deletes every child table in child-before-parent order, inside one
+transaction, and the `*_<id>` settings via `key LIKE '%\_<id>' ESCAPE '\'`).
+"Change router" (`/routers/{id}/change`) rewrites the connection fields on the
+existing row after test-connecting the *new* box only, so a dead old router
+does not block the swap. Lesson: on a database where cascade is not enforced,
+"delete the parent row" is never the whole delete - either enumerate the
+children explicitly or turn the pragma on (and re-test everything that relied
+on the lax behaviour). And a stable hardware id (`/system/routerboard`
+serial) is what makes "archive then re-add" safe against SQLite's id reuse.
