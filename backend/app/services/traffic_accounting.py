@@ -404,7 +404,7 @@ class TrafficAccountingService:
                     final_deltas[device_id] = (down, up + delta)
 
             if final_deltas:
-                now_local = await router_local_now(session)
+                now_local = await router_local_now(session, router_id=self.router_id)
                 await self._flush_deltas(
                     session, now_local.date(), final_deltas, span_end=now_local
                 )
@@ -437,8 +437,7 @@ class TrafficAccountingService:
             await self._mark_accounting_started(session)
         return {"created": created, "updated": updated, "removed": removed}
 
-    @staticmethod
-    async def _mark_accounting_started(session: AsyncSession) -> None:
+    async def _mark_accounting_started(self, session: AsyncSession) -> None:
         """Record the first day per-device accounting was active.
 
         Gateway (WAN interface) counters have been running since long before the
@@ -451,7 +450,7 @@ class TrafficAccountingService:
             return
         session.add(AppSetting(
             key=STARTED_SETTING_KEY,
-            value=(await router_local_date(session)).isoformat(),
+            value=(await router_local_date(session, router_id=self.router_id)).isoformat(),
             description="First date per-device mangle accounting was active",
         ))
         await session.commit()
@@ -610,7 +609,7 @@ class TrafficAccountingService:
         """
         # Rollups are keyed by the router's date, not the container's: a UTC
         # container files the router's evening under the previous day.
-        now_local = await router_local_now(session)
+        now_local = await router_local_now(session, router_id=self.router_id)
         today = now_local.date()
 
         try:

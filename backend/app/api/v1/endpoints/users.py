@@ -61,7 +61,7 @@ async def list_users(
 
     # The same, restricted to the current ISP billing cycle.
     anchor_day = await AnalyticsEngine.get_billing_anchor_day(db)
-    today_local = (await router_local_now(db)).date()
+    today_local = (await router_local_now(db, router_id=eff_router_id)).date()
     cyc_start, cyc_end = get_billing_cycle_dates(anchor_day, today_local)
     cycle_rows = (await db.execute(
         select(
@@ -297,9 +297,14 @@ async def get_user_traffic_history(
     db: AsyncSession = Depends(get_db),
 ):
     """Retrieve detailed historical traffic timeline and device breakdown for a user."""
+    # The user's own router decides the calendar - a user on a UTC+3 box and one
+    # on a UTC+5 box do not share a "today".
+    user_row = await db.get(User, user_id)
+    user_router_id = user_row.router_id if user_row else None
+
     anchor_day = await AnalyticsEngine.get_billing_anchor_day(db)
     anchor_hour, anchor_minute = await AnalyticsEngine.get_billing_anchor_time(db)
-    now = await router_local_now(db)
+    now = await router_local_now(db, router_id=user_router_id)
     today = now.date()
     resolved_start, resolved_end, range_label = resolve_date_range(
         preset=preset,

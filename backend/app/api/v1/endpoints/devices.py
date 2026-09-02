@@ -109,13 +109,13 @@ async def list_devices(
     # very different from one that has moved nothing. The all-time and
     # billing-cycle totals sit beside it so a device that has been quietly
     # pulling data for days is not mistaken for a fresh arrival.
-    volume = await TrafficController._todays_device_volume(db)
+    volume = await TrafficController._todays_device_volume(db, eff_router_id)
     all_time = await rollups.sum_by(
         db, DeviceTrafficRollup, DeviceTrafficRollup.device_id,
         rollups.ALLTIME_START, rollups.ALLTIME_END,
     )
     anchor_day = await AnalyticsEngine.get_billing_anchor_day(db)
-    today_local = (await router_local_now(db)).date()
+    today_local = (await router_local_now(db, router_id=eff_router_id)).date()
     cyc_start, cyc_end = get_billing_cycle_dates(anchor_day, today_local)
     cycle = await rollups.sum_by(
         db, DeviceTrafficRollup, DeviceTrafficRollup.device_id, cyc_start, cyc_end,
@@ -558,9 +558,11 @@ async def get_device_traffic_history(
     db: AsyncSession = Depends(get_db),
 ):
     """Retrieve detailed historical traffic timeline for a device."""
+    dev_row = await db.get(Device, device_id)
+    dev_router_id = dev_row.router_id if dev_row else None
     anchor_day = await AnalyticsEngine.get_billing_anchor_day(db)
     anchor_hour, anchor_minute = await AnalyticsEngine.get_billing_anchor_time(db)
-    now = await router_local_now(db)
+    now = await router_local_now(db, router_id=dev_router_id)
     today = now.date()
     resolved_start, resolved_end, range_label = resolve_date_range(
         preset=preset,

@@ -27,7 +27,7 @@ GB = 1024 ** 3
 
 
 def _fake_now(dt):
-    async def _inner(_session):
+    async def _inner(_session, *args, **kwargs):
         return dt
     return _inner
 

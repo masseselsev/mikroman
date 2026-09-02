@@ -647,3 +647,30 @@ does not block the swap. Lesson: on a database where cascade is not enforced,
 children explicitly or turn the pragma on (and re-test everything that relied
 on the lax behaviour). And a stable hardware id (`/system/routerboard`
 serial) is what makes "archive then re-add" safe against SQLite's id reuse.
+
+**[2026-09-03] Problem:** Router Health graphs (Interface Bandwidth, CPU, RAM,
+Board Temp) were ~5 h behind the header clock on a UTC+5 box - x-axis and
+tooltips in UTC while the rest of the UI showed router-local. Two causes.
+(1) `metrics_collector.get_system_history` / `get_interface_history` returned
+the raw naive-UTC `timestamp`; `MetricCharts` renders it with
+`new Date(str).getHours()` and never applied any offset. (2) The router UTC
+offset was a single shared `AppSetting` (`router_gmt_offset_minutes`, no id),
+overwritten by whichever router streamed telemetry last - so switching to a
+router in a different zone skewed its rollup `record_date`, billing-cycle
+bounds and 1D history until its next tick (and any `collect()` in that gap
+misfiled a day). **Solution:** the offset is stored per router
+(`router_gmt_offset_minutes_<id>`, mirrored to the un-suffixed key as a
+fallback for calls that cannot name a router); `get_router_offset` /
+`router_local_now` / `router_local_date` / `store_router_offset` take
+`router_id`, threaded through ws, metrics_collector, analytics_engine,
+interface_rollups, rollups.slice_of_day_bytes, traffic_accounting and the
+analytics/users/devices endpoints (user/device history resolve the offset
+from the row's own `router_id`). The two metrics-history methods shift each
+returned point by that router's offset, so the frontend needs no change -
+`new Date("2026-09-04T00:38:00").getHours()` round-trips a naive local
+wall-clock on any browser. Also pinned `int(r.timestamp.timestamp())` in the
+bucketing to UTC (`.replace(tzinfo=timezone.utc)`) - on a non-UTC host it
+assumed the system zone. Lesson: naive-UTC that leaves the backend must be
+shifted to the display zone before it does, not left for `new Date` to guess;
+and any value keyed "the router's timezone" has to be per router the moment
+there is more than one.

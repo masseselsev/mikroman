@@ -548,19 +548,23 @@ class TrafficController:
         return True
 
     @staticmethod
-    async def _todays_user_volume(session: AsyncSession) -> Dict[int, Tuple[int, int]]:
+    async def _todays_user_volume(
+        session: AsyncSession, router_id: Optional[int] = None
+    ) -> Dict[int, Tuple[int, int]]:
         """Today's accumulated (download, upload) bytes per user from the rollups."""
         from backend.app.db.models import TrafficRollup
         from backend.app.services.router_time import router_local_date
 
         stmt = select(
             TrafficRollup.user_id, TrafficRollup.bytes_in, TrafficRollup.bytes_out
-        ).where(TrafficRollup.record_date == await router_local_date(session))
+        ).where(TrafficRollup.record_date == await router_local_date(session, router_id=router_id))
         rows = (await session.execute(stmt)).all()
         return {row[0]: (int(row[1] or 0), int(row[2] or 0)) for row in rows}
 
     @staticmethod
-    async def _todays_device_volume(session: AsyncSession) -> Dict[int, Tuple[int, int]]:
+    async def _todays_device_volume(
+        session: AsyncSession, router_id: Optional[int] = None
+    ) -> Dict[int, Tuple[int, int]]:
         """Today's accumulated (download, upload) bytes per device from the rollups."""
         from backend.app.db.models import DeviceTrafficRollup
         from backend.app.services.router_time import router_local_date
@@ -569,7 +573,7 @@ class TrafficController:
             DeviceTrafficRollup.device_id,
             DeviceTrafficRollup.bytes_in,
             DeviceTrafficRollup.bytes_out,
-        ).where(DeviceTrafficRollup.record_date == await router_local_date(session))
+        ).where(DeviceTrafficRollup.record_date == await router_local_date(session, router_id=router_id))
         rows = (await session.execute(stmt)).all()
         return {row[0]: (int(row[1] or 0), int(row[2] or 0)) for row in rows}
 
@@ -727,8 +731,8 @@ class TrafficController:
 
         per_device_rates = live_rate_tracker.sample(rules)
         user_rates = await aggregate_user_rates(session, per_device_rates)
-        user_volume = await self._todays_user_volume(session)
-        device_volume = await self._todays_device_volume(session)
+        user_volume = await self._todays_user_volume(session, eff_router_id)
+        device_volume = await self._todays_device_volume(session, eff_router_id)
 
         user_stmt = select(User)
         dev_stmt = select(Device)
