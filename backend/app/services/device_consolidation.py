@@ -63,16 +63,30 @@ class DeviceConsolidationMixin:
     """
 
     async def find_merge_suggestions(self, session: AsyncSession) -> List[DeviceSuggestionDTO]:
-        """Identifies unassigned devices that likely belong to an existing user device (e.g. MAC rotation)."""
+        """Identifies unassigned devices that likely belong to an existing user device (e.g. MAC rotation).
+
+        Both sides of the match are confined to this router (``self.router_id``,
+        plus untagged legacy rows). Without that confinement a device just
+        discovered on a newly added router was matched against - and offered for
+        linking to - a user on a completely different router, which breaks the
+        per-router isolation the rest of the app maintains.
+        """
+        def _scope(stmt):
+            if self.router_id is not None:
+                return stmt.where(
+                    (Device.router_id == self.router_id) | (Device.router_id.is_(None))
+                )
+            return stmt
+
         # Get unassigned devices
         unassigned_res = await session.execute(
-            select(Device).where(Device.user_id == None).options(selectinload(Device.history))  # noqa: E711
+            _scope(select(Device).where(Device.user_id == None)).options(selectinload(Device.history))  # noqa: E711
         )
         unassigned_devs = unassigned_res.scalars().all()
 
         # Get assigned devices with their parent users
         assigned_res = await session.execute(
-            select(Device).where(Device.user_id != None).options(selectinload(Device.user), selectinload(Device.history))  # noqa: E711
+            _scope(select(Device).where(Device.user_id != None)).options(selectinload(Device.user), selectinload(Device.history))  # noqa: E711
         )
         assigned_devs = assigned_res.scalars().all()
 
@@ -278,7 +292,15 @@ class DeviceConsolidationMixin:
         coex_rows = (await session.execute(select(DeviceCoexistence))).scalars().all()
         coex_pairs = {canonical_pair(r.mac_a, r.mac_b) for r in coex_rows}
 
-        devices = (await session.execute(select(Device))).scalars().all()
+        # Confined to this router (plus untagged legacy rows). An automatic
+        # merge that reached across routers would silently fold a new router's
+        # device into a user on another one.
+        devices_stmt = select(Device)
+        if self.router_id is not None:
+            devices_stmt = devices_stmt.where(
+                (Device.router_id == self.router_id) | (Device.router_id.is_(None))
+            )
+        devices = (await session.execute(devices_stmt)).scalars().all()
 
         groups: dict = {}
         for device in devices:
@@ -401,17 +423,20 @@ class DeviceConsolidationMixin:
         record is permanent, so without this the same advisory would be logged
         every minute for as long as both phones stay on the network.
         """
-        recent = (
-            await session.execute(
-                select(AlertLog)
-                .where(
-                    AlertLog.alert_type == "mac_rotated_multi",
-                    AlertLog.message.like(f"%'{name}'%"),
-                    AlertLog.created_at > now - timedelta(days=1),
-                )
-                .limit(1)
+        stmt = (
+            select(AlertLog)
+            .where(
+                AlertLog.alert_type == "mac_rotated_multi",
+                AlertLog.message.like(f"%'{name}'%"),
+                AlertLog.created_at > now - timedelta(days=1),
             )
-        ).scalar_one_or_none()
+            .limit(1)
+        )
+        if self.router_id is not None:
+            stmt = stmt.where(
+                (AlertLog.router_id == self.router_id) | (AlertLog.router_id.is_(None))
+            )
+        recent = (await session.execute(stmt)).scalar_one_or_none()
         return recent is None
 
     async def merge_devices(self, session: AsyncSession, source_device_id: int, target_device_id: int, note: Optional[str] = None) -> Device:

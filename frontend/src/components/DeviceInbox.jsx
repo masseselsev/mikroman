@@ -22,7 +22,7 @@ function firstSeenOf(device) {
 }
 
 
-export function DeviceInbox({ devices = [], users = [], onAssign, onScan, isScanning, onViewTrafficHistory }) {
+export function DeviceInbox({ devices = [], users = [], activeRouterId, onAssign, onScan, isScanning, onViewTrafficHistory }) {
   const { t, lang } = useI18n();
   const [selectedUserMap, setSelectedUserMap] = useState({});
   const [suggestions, setSuggestions] = useState([]);
@@ -57,16 +57,16 @@ export function DeviceInbox({ devices = [], users = [], onAssign, onScan, isScan
     }
   };
 
-  // Fetch smart suggestions when devices change
+  // Fetch smart suggestions when devices change or the router is switched
   useEffect(() => {
     loadSuggestions();
-  }, [devices]);
+  }, [devices, activeRouterId]);
 
   const loadSuggestions = async () => {
     try {
       const [merge, links] = await Promise.all([
-        api.getMergeSuggestions().catch(() => ({ data: [] })),
-        api.getLinkSuggestions().catch(() => ({ data: [] })),
+        api.getMergeSuggestions(activeRouterId).catch(() => ({ data: [] })),
+        api.getLinkSuggestions(activeRouterId).catch(() => ({ data: [] })),
       ]);
       setSuggestions(merge.data || []);
       setLinkSuggestions(links.data || []);

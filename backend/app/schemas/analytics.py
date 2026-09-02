@@ -74,8 +74,15 @@ class BillingCycleConfig(BaseModel):
 
 
 class DailyTrafficPoint(BaseModel):
-    """Daily aggregated bandwidth datapoint for timeline charting."""
+    """One point on a traffic timeline.
+
+    Usually a calendar day (``record_date``); for the 1D intraday view it is a
+    30-minute window, and ``label`` then carries the ``HH:MM`` start time while
+    ``record_date`` stays the day the window belongs to. Clients that only know
+    about daily points render ``label`` when present, ``record_date`` otherwise.
+    """
     record_date: date
+    label: Optional[str] = None
     bytes_in: int = 0   # Download bytes
     bytes_out: int = 0  # Upload bytes
     total_bytes: int = 0
@@ -280,11 +287,15 @@ class EntityTrafficHistoryResponse(BaseModel):
     range_preset: str
     start_date: date
     end_date: date
+    # 'day' - one point per calendar day (every preset except 1D).
+    # 'half_hour' - the 1D view, one point per 30-minute window.
+    resolution: str = "day"
     total_bytes_in: int = 0
     total_bytes_out: int = 0
     total_bytes: int = 0
     daily_average_bytes: int = 0
     peak_date: Optional[date] = None
+    peak_label: Optional[str] = None
     peak_bytes: int = 0
     timeline: List[DailyTrafficPoint] = Field(default_factory=list)
     devices: Optional[List[DeviceTrafficSummary]] = None

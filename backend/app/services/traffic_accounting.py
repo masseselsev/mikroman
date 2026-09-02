@@ -28,10 +28,10 @@ as the interface counters are handled.
 import json
 import logging
 import time
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.db.models import (
@@ -40,6 +40,7 @@ from backend.app.db.models import (
     DeviceTrafficRollup,
     RouterSelfTrafficRollup,
     TrafficRollup,
+    UserTrafficBucket,
 )
 from backend.app.services.rollups import split_bytes_by_day
 from backend.app.services.router_time import router_local_date, router_local_now
@@ -79,6 +80,24 @@ REBOOT_SLACK_SECONDS = 90
 # direction -> RouterOS match field. A device is the *source* of its uploads and
 # the *destination* of its downloads.
 DIRECTION_FIELDS = {"up": "src-address", "down": "dst-address"}
+
+# --- intraday buckets ------------------------------------------------------------
+#
+# Width of one :class:`UserTrafficBucket` window, and how long those rows are
+# kept. Only the history modal's 1D view reads them; everything coarser reads
+# the daily rollups, so two weeks is comfortably enough and keeps the row count
+# to at most 48/user/day.
+BUCKET_MINUTES = 30
+BUCKET_RETENTION_DAYS = 14
+
+
+def bucket_start_for(moment: datetime) -> datetime:
+    """Floor a router-local datetime to the start of its 30-minute window."""
+    return moment.replace(
+        minute=(moment.minute // BUCKET_MINUTES) * BUCKET_MINUTES,
+        second=0,
+        microsecond=0,
+    )
 
 # --- the router's own traffic ------------------------------------------------
 #
@@ -259,6 +278,10 @@ class TrafficAccountingService:
 
         The same setting the gateway rollups are measured from, so the two
         figures describe the same link and can be compared meaningfully.
+
+        Returns ``[]`` until the admin picks a WAN in the selector - no
+        self-traffic passthrough rules are created and nothing is accounted
+        for a router whose uplink has not been chosen.
         """
         key = (
             f"monitored_interfaces_{self.router_id}"
@@ -272,7 +295,7 @@ class TrafficAccountingService:
                     return [str(n) for n in names]
             except (json.JSONDecodeError, TypeError):
                 logger.debug(f"Could not parse {key} for self-traffic accounting")
-        return ["ether1"]
+        return []
 
     async def sync_counter_rules(self, session: AsyncSession) -> Dict[str, int]:
         """Create, correct and prune the per-device accounting rules.
@@ -381,7 +404,10 @@ class TrafficAccountingService:
                     final_deltas[device_id] = (down, up + delta)
 
             if final_deltas:
-                await self._flush_deltas(session, await router_local_date(session), final_deltas)
+                now_local = await router_local_now(session)
+                await self._flush_deltas(
+                    session, now_local.date(), final_deltas, span_end=now_local
+                )
             await self._save_baselines(session, baselines, self.router_id)
 
             # bytes for these device ids, so their redirects have done their job.
@@ -686,6 +712,7 @@ class TrafficAccountingService:
                 )
 
         await self._save_baselines(session, baselines, self.router_id)
+        await self._prune_old_buckets(session, now_local)
         await session.commit()
 
         return {"devices": len(per_device), "bytes_in": total_in, "bytes_out": total_out}
@@ -736,6 +763,12 @@ class TrafficAccountingService:
         total_in = total_out = 0
         # (user_id, date) -> (down, up)
         user_totals: Dict[Tuple[int, date], Tuple[int, int]] = {}
+        # user_id -> (down, up) for the intraday bucket. The daily split above
+        # handles day attribution for the rollups; the buckets only need the
+        # shape of the current day, so this tick's whole per-user delta is
+        # credited to the 30-minute window it ended in. A tick that straddles a
+        # bucket edge misattributes a few seconds - invisible at this width.
+        user_bucket_totals: Dict[int, Tuple[int, int]] = {}
         successors: Optional[Dict[str, int]] = None
 
         for device_id, (down, up) in per_device.items():
@@ -761,6 +794,9 @@ class TrafficAccountingService:
                 if device.user_id:
                     prev = user_totals.get((device.user_id, day), (0, 0))
                     user_totals[(device.user_id, day)] = (prev[0] + d_in, prev[1] + d_out)
+            if device.user_id:
+                b_prev = user_bucket_totals.get(device.user_id, (0, 0))
+                user_bucket_totals[device.user_id] = (b_prev[0] + down, b_prev[1] + up)
             total_in += down
             total_out += up
 
@@ -768,6 +804,11 @@ class TrafficAccountingService:
             await self._add_rollup(
                 session, TrafficRollup, "user_id", user_id, day, down, up
             )
+
+        bucket = bucket_start_for(span_end)
+        for user_id, (down, up) in user_bucket_totals.items():
+            if down or up:
+                await self._add_bucket(session, user_id, bucket, down, up)
 
         return total_in, total_out
 
@@ -804,3 +845,44 @@ class TrafficAccountingService:
                 "bytes_in": bytes_in,
                 "bytes_out": bytes_out,
             }))
+
+    @staticmethod
+    async def _add_bucket(
+        session: AsyncSession,
+        user_id: int,
+        bucket_start: datetime,
+        bytes_in: int,
+        bytes_out: int,
+    ) -> None:
+        """Add this tick's per-user delta onto its 30-minute bucket, or create it.
+
+        Mirrors :meth:`_add_rollup` but keyed by ``(user_id, bucket_start)``.
+        Feeds only the history modal's 1D view; the daily rollups stay the
+        record of truth and these rows are pruned after ``BUCKET_RETENTION_DAYS``.
+        """
+        stmt = select(UserTrafficBucket).where(
+            UserTrafficBucket.user_id == user_id,
+            UserTrafficBucket.bucket_start == bucket_start,
+        )
+        existing = (await session.execute(stmt)).scalar_one_or_none()
+        if existing:
+            existing.bytes_in += bytes_in
+            existing.bytes_out += bytes_out
+        else:
+            session.add(UserTrafficBucket(
+                user_id=user_id,
+                bucket_start=bucket_start,
+                bytes_in=bytes_in,
+                bytes_out=bytes_out,
+            ))
+
+    @staticmethod
+    async def _prune_old_buckets(session: AsyncSession, now_local: datetime) -> None:
+        """Drop intraday buckets past the retention window.
+
+        One indexed DELETE; on the vast majority of ticks it matches nothing.
+        """
+        cutoff = now_local - timedelta(days=BUCKET_RETENTION_DAYS)
+        await session.execute(
+            delete(UserTrafficBucket).where(UserTrafficBucket.bucket_start < cutoff)
+        )

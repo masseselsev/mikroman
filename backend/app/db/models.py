@@ -39,6 +39,16 @@ class Router(Base):
     comment: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     is_default: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # RouterBoard serial, read from /system/routerboard on connect. The stable
+    # hardware identity: it survives a rename or an address change and is how an
+    # archived router is recognised when it is added again, so its history and
+    # settings can be reattached instead of starting fresh.
+    serial_number: Mapped[Optional[str]] = mapped_column(String(120), nullable=True, index=True)
+    # Set when the operator deletes the router but chooses to keep its data for
+    # a later re-add. An archived router is hidden from the picker, the Settings
+    # list and every background loop; its users, devices, rollups and settings
+    # stay exactly as they were. NULL means live.
+    archived_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
 
@@ -200,6 +210,35 @@ class DeviceTrafficRollup(Base):
     bytes_out: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)  # Upload
 
     device: Mapped["Device"] = relationship("Device", back_populates="traffic_rollups")
+
+
+class UserTrafficBucket(Base):
+    """Half-hour per-user volume, for the intraday (1D) history view only.
+
+    The daily rollups answer "how much yesterday / this week" but cannot show
+    the *shape* of a single day. This table records the same accounted deltas
+    the daily :class:`TrafficRollup` gets, bucketed to 30 minutes of
+    router-local time (``bucket_start`` is naive, in the router's own zone,
+    matching how ``record_date`` is derived).
+
+    Deliberately short-lived - pruned after roughly two weeks - because nothing
+    older is ever read at this resolution and the daily rollup stays the
+    permanent record. One active user produces at most 48 rows a day.
+    """
+    __tablename__ = "user_traffic_buckets"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    # Start of the 30-minute window, router-local naive datetime.
+    bucket_start: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    bytes_in: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)   # Download
+    bytes_out: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)  # Upload
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "bucket_start", name="uq_user_traffic_bucket"),
+    )
 
 
 class RouterTrafficRollup(Base):

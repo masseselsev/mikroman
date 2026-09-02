@@ -109,10 +109,18 @@ BUILTIN_OUIS: Dict[str, str] = {
 
 
 class VendorLookupService:
-    """Provides high-performance offline + cached online MAC vendor resolution."""
+    """Provides high-performance offline + cached online MAC vendor resolution.
+
+    The cache is keyed by the 8-character OUI prefix. A string value is a known
+    vendor; a ``None`` value is a *negative* cache entry - "the online services
+    were asked about this OUI and neither could name it". Negative entries stop
+    every discovery sweep from re-issuing the same two doomed HTTP calls for a
+    device whose manufacturer simply is not in the public databases. A network
+    error is never cached (it is transient), only a definitive "not found".
+    """
 
     def __init__(self):
-        self._cache: Dict[str, str] = dict(BUILTIN_OUIS)
+        self._cache: Dict[str, Optional[str]] = dict(BUILTIN_OUIS)
 
     def _clean_vendor_name(self, raw_name: str) -> str:
         """Format and beautify manufacturer names."""
@@ -145,7 +153,7 @@ class VendorLookupService:
         # vendor, so a cached value under that prefix would be meaningless and
         # would shadow the hostname-derived identity resolved below.
         if prefix in self._cache and not self.is_randomized_mac(clean_mac):
-            return self._cache[prefix]
+            return self._cache[prefix] or "Unknown Vendor"
 
         if self.is_randomized_mac(clean_mac):
             if hostname:
@@ -175,11 +183,12 @@ class VendorLookupService:
         clean_mac = mac.upper().replace("-", ":")
         prefix = clean_mac[:8]
 
-        # 1. Local cache hit. Skipped for randomized MACs: their first three
-        # bytes identify no vendor, so a cached entry there is meaningless and
-        # would shadow the hostname-derived identity resolved below.
+        # 1. Local cache hit (positive or negative). Skipped for randomized
+        # MACs: their first three bytes identify no vendor, so a cached entry
+        # there is meaningless and would shadow the hostname-derived identity
+        # resolved below.
         if prefix in self._cache and not self.is_randomized_mac(clean_mac):
-            return self._cache[prefix]
+            return self._cache[prefix] or "Unknown Vendor"
 
         # 2. Check if MAC is randomized / private
         if self.is_randomized_mac(clean_mac):
@@ -195,11 +204,15 @@ class VendorLookupService:
                     return "Xiaomi (Private MAC)"
             return "Private MAC (Randomized)"
 
-        # 3. Online API lookup
+        # 3. Online API lookup. A definitive "not found" from the services is
+        # cached negatively so the next discovery sweep does not repeat these
+        # two calls for the same OUI; a network error is left uncached because
+        # it says nothing about whether the OUI is knowable.
         try:
             async with httpx.AsyncClient(timeout=2.0) as client:
                 # Try maclookup.app v2 API (free JSON endpoint)
                 resp = await client.get(f"https://api.maclookup.app/v2/macs/{clean_mac}")
+                definitive_miss = False
                 if resp.status_code == 200:
                     data = resp.json()
                     company = data.get("company")
@@ -207,6 +220,8 @@ class VendorLookupService:
                         cleaned = self._clean_vendor_name(company)
                         self._cache[prefix] = cleaned
                         return cleaned
+                    # A 200 with found=false is an authoritative "no such OUI".
+                    definitive_miss = data.get("found") is False
 
                 # Fallback to macvendors.com
                 resp2 = await client.get(f"https://api.macvendors.com/{clean_mac}")
@@ -214,6 +229,9 @@ class VendorLookupService:
                     cleaned = self._clean_vendor_name(resp2.text)
                     self._cache[prefix] = cleaned
                     return cleaned
+                # 404 here is macvendors.com saying it has no record either.
+                if definitive_miss or resp2.status_code == 404:
+                    self._cache[prefix] = None
         except Exception as e:
             logger.debug(f"Online MAC vendor lookup failed for {clean_mac}: {e}")
 

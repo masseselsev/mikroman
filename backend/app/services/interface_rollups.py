@@ -147,6 +147,13 @@ async def recompute_interface_rollups(
         return 0
 
     monitored = set(await resolve_monitored_interfaces(session, router_id))
+    # No WAN chosen for this router yet: there is nothing to attribute the
+    # gateway total to, and rewriting the rows now would replace real history
+    # with zeroes. Leave every existing rollup untouched until an uplink is
+    # picked - the samples stay in interface_metrics, so the next run after a
+    # selection rebuilds the days correctly.
+    if not monitored:
+        return 0
 
     for day in target_days:
         await session.execute(

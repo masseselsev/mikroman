@@ -8,16 +8,10 @@ import {
   Download,
   Upload,
   BarChart2,
-  TrendingUp,
   User as UserIcon,
   Laptop,
-  Smartphone,
-  Server,
-  Activity,
-  ArrowRight,
   AlertCircle,
-  Loader2,
-  Maximize2
+  Loader2
 } from 'lucide-react';
 
 const PRESETS = [
@@ -100,6 +94,13 @@ export function TrafficHistoryModal({ isOpen, target, onClose, onSelectTarget })
   }, [timeline]);
 
   if (!isOpen || !target) return null;
+
+  // The 1D view returns 30-minute buckets: every point carries an HH:MM
+  // `label` and they all share one `record_date`, so the label is what
+  // identifies and captions a point. Every other range has one point per day
+  // and no label, so `record_date` does both jobs.
+  const isHalfHour = data?.resolution === 'half_hour';
+  const ptKey = (pt) => pt?.label || pt?.record_date;
 
   const activePoint = hoveredPoint || (timeline.length > 0 ? timeline[timeline.length - 1] : null);
 
@@ -229,7 +230,9 @@ export function TrafficHistoryModal({ isOpen, target, onClose, onSelectTarget })
                     {formatBytes(data.total_bytes)}
                   </div>
                   <div style={{ fontSize: 'var(--fs-3xs)', color: 'var(--text-muted)', marginTop: 2 }}>
-                    {timeline.length} {t('days_count', { count: timeline.length })}
+                    {isHalfHour
+                      ? t('intervals_count', { count: timeline.length })
+                      : t('days_count', { count: timeline.length })}
                   </div>
                 </div>
 
@@ -334,7 +337,7 @@ export function TrafficHistoryModal({ isOpen, target, onClose, onSelectTarget })
                     }}
                   >
                     <div style={{ fontWeight: 700 }} className="font-mono">
-                      📅 {activePoint.record_date}
+                      {isHalfHour ? '🕐' : '📅'} {isHalfHour ? `${activePoint.record_date} ${ptKey(activePoint)}` : activePoint.record_date}
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                       <span style={{ color: 'var(--text-muted)' }}>{t('table_total')}:</span>
@@ -367,14 +370,14 @@ export function TrafficHistoryModal({ isOpen, target, onClose, onSelectTarget })
                       position: 'relative'
                     }}
                   >
-                    {timeline.map((pt, idx) => {
+                    {timeline.map((pt) => {
                       const heightPct = Math.max((pt.total_bytes / maxDailyBytes) * 100, 3);
                       const rxPct = pt.total_bytes > 0 ? (pt.bytes_in / pt.total_bytes) * 100 : 50;
-                      const isHovered = hoveredPoint?.record_date === pt.record_date;
+                      const isHovered = hoveredPoint && ptKey(hoveredPoint) === ptKey(pt);
 
                       return (
                         <div
-                          key={pt.record_date}
+                          key={ptKey(pt)}
                           onMouseEnter={() => setHoveredPoint(pt)}
                           onMouseLeave={() => setHoveredPoint(null)}
                           style={{
@@ -417,9 +420,9 @@ export function TrafficHistoryModal({ isOpen, target, onClose, onSelectTarget })
                 {/* X-axis date range labels */}
                 {timeline.length > 0 && (
                   <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6, fontSize: 'var(--fs-3xs)', color: 'var(--text-muted)' }} className="font-mono">
-                    <span>{timeline[0]?.record_date}</span>
-                    {timeline.length > 2 && <span>{timeline[Math.floor(timeline.length / 2)]?.record_date}</span>}
-                    <span>{timeline[timeline.length - 1]?.record_date}</span>
+                    <span>{ptKey(timeline[0])}</span>
+                    {timeline.length > 2 && <span>{ptKey(timeline[Math.floor(timeline.length / 2)])}</span>}
+                    <span>{ptKey(timeline[timeline.length - 1])}</span>
                   </div>
                 )}
               </div>
@@ -525,7 +528,7 @@ export function TrafficHistoryModal({ isOpen, target, onClose, onSelectTarget })
                 <div>
                   <h4 style={{ fontSize: 'var(--fs-sm)', fontWeight: 700, marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
                     <Calendar size={15} style={{ color: 'var(--color-primary)' }} />
-                    <span>{t('daily_breakdown')}</span>
+                    <span>{isHalfHour ? t('intraday_breakdown') : t('daily_breakdown')}</span>
                   </h4>
 
                   <div
@@ -540,7 +543,7 @@ export function TrafficHistoryModal({ isOpen, target, onClose, onSelectTarget })
                     <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 'var(--fs-xs)' }}>
                       <thead>
                         <tr style={{ borderBottom: '1px solid var(--border-color)', background: 'var(--bg-card)', position: 'sticky', top: 0, zIndex: 1 }}>
-                          <th style={{ padding: '8px 12px', textAlign: 'left' }}>{t('date')}</th>
+                          <th style={{ padding: '8px 12px', textAlign: 'left' }}>{isHalfHour ? t('time_label') : t('date')}</th>
                           <th style={{ padding: '8px 12px', textAlign: 'right', color: 'var(--color-success)' }}>{t('download')}</th>
                           <th style={{ padding: '8px 12px', textAlign: 'right', color: '#3b82f6' }}>{t('upload')}</th>
                           <th style={{ padding: '8px 12px', textAlign: 'right' }}>{t('table_total')}</th>
@@ -549,14 +552,14 @@ export function TrafficHistoryModal({ isOpen, target, onClose, onSelectTarget })
                       <tbody>
                         {[...timeline].reverse().map(pt => (
                           <tr
-                            key={pt.record_date}
+                            key={ptKey(pt)}
                             style={{
                               borderBottom: '1px solid var(--border-color)',
                               background: pt.total_bytes > 0 ? 'transparent' : 'rgba(0,0,0,0.03)'
                             }}
                           >
                             <td style={{ padding: '6px 12px', fontWeight: 600 }} className="font-mono">
-                              {pt.record_date}
+                              {isHalfHour ? pt.label : pt.record_date}
                             </td>
                             <td style={{ padding: '6px 12px', textAlign: 'right', color: 'var(--color-success)' }} className="font-mono">
                               {formatBytes(pt.bytes_in)}

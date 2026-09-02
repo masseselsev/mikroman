@@ -14,6 +14,7 @@ from backend.app.db.models import (
     InterfaceTrafficRollup,
     TrafficRollup,
     User,
+    UserTrafficBucket,
 )
 from backend.app.schemas.analytics import (
     AccountingHealth,
@@ -269,19 +270,23 @@ class AnalyticsEngine:
         turns the extras off to skip four aggregate queries per call.
         """
 
-        # 1. Fetch User Profiles and Devices
+        # 1. Fetch User Profiles and Devices, scoped to the router being viewed.
+        # A NULL router_id predates multi-router support and belongs to every
+        # router; a row that names a *different* router must not leak in - that
+        # is what put router 1's profiles into router 2's "By Users" table with
+        # a row of zeros each.
         users_query = select(User)
-        users_res = await session.execute(users_query)
-        all_users = users_res.scalars().all()
-        user_map = {u.id: u for u in all_users}
-
         devices_query = select(Device)
         if router_id:
-            # Devices discovered before multi-router support have a NULL router_id.
-            # Filtering them out silently removed real clients from every view.
+            users_query = users_query.where(
+                (User.router_id == router_id) | (User.router_id.is_(None))
+            )
             devices_query = devices_query.where(
                 (Device.router_id == router_id) | (Device.router_id.is_(None))
             )
+        users_res = await session.execute(users_query)
+        all_users = users_res.scalars().all()
+        user_map = {u.id: u for u in all_users}
         dev_res = await session.execute(devices_query)
         all_devices = dev_res.scalars().all()
 
@@ -790,51 +795,107 @@ class AnalyticsEngine:
         start_date: date,
         end_date: date,
         range_preset: str = "7d",
+        intraday_now: Optional[datetime] = None,
     ) -> EntityTrafficHistoryResponse:
-        """Detailed historical traffic timeline and device split for a specific user."""
+        """Detailed historical traffic timeline and device split for a specific user.
+
+        ``intraday_now`` (the router-local clock) switches the timeline to
+        30-minute buckets for a single-day range - the history modal's 1D view.
+        The device breakdown and every total are unchanged; only the shape of
+        ``timeline`` differs, flagged by ``resolution`` on the response.
+        """
         user = await session.get(User, user_id)
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
 
-        # 1. Daily user rollups
-        stmt = (
-            select(
-                TrafficRollup.record_date,
-                TrafficRollup.bytes_in,
-                TrafficRollup.bytes_out,
-            )
-            .where(
-                TrafficRollup.user_id == user_id,
-                TrafficRollup.record_date >= start_date,
-                TrafficRollup.record_date <= end_date,
-            )
-            .order_by(TrafficRollup.record_date.asc())
-        )
-        res = await session.execute(stmt)
-        user_daily_map = {row[0]: (int(row[1] or 0), int(row[2] or 0)) for row in res.all()}
-
-        # 2. Build contiguous timeline
         timeline: List[DailyTrafficPoint] = []
-        cur_d = start_date
         total_in = 0
         total_out = 0
-        peak_date = None
+        peak_date: Optional[date] = None
+        peak_label: Optional[str] = None
         peak_bytes = 0
-        while cur_d <= end_date:
-            b_in, b_out = user_daily_map.get(cur_d, (0, 0))
-            day_total = b_in + b_out
-            total_in += b_in
-            total_out += b_out
-            if day_total > peak_bytes:
-                peak_bytes = day_total
-                peak_date = cur_d
-            timeline.append(DailyTrafficPoint(
-                record_date=cur_d,
-                bytes_in=b_in,
-                bytes_out=b_out,
-                total_bytes=day_total,
-            ))
-            cur_d += timedelta(days=1)
+        intraday = intraday_now is not None and start_date == end_date
+        resolution = "half_hour" if intraday else "day"
+
+        if intraday:
+            # 30-minute buckets for the day. Stop at the current window when the
+            # day is today, so a live view is not padded with empty future bars.
+            day_start = datetime.combine(start_date, datetime.min.time())
+            if intraday_now.date() == start_date:
+                last_start = intraday_now.replace(
+                    minute=(intraday_now.minute // 30) * 30, second=0, microsecond=0
+                )
+            else:
+                last_start = day_start + timedelta(hours=23, minutes=30)
+
+            rows = (await session.execute(
+                select(
+                    UserTrafficBucket.bucket_start,
+                    UserTrafficBucket.bytes_in,
+                    UserTrafficBucket.bytes_out,
+                ).where(
+                    UserTrafficBucket.user_id == user_id,
+                    UserTrafficBucket.bucket_start >= day_start,
+                    UserTrafficBucket.bucket_start <= last_start,
+                )
+            )).all()
+            bmap = {
+                r[0].replace(second=0, microsecond=0): (int(r[1] or 0), int(r[2] or 0))
+                for r in rows
+            }
+            cur = day_start
+            while cur <= last_start:
+                b_in, b_out = bmap.get(cur, (0, 0))
+                slot_total = b_in + b_out
+                total_in += b_in
+                total_out += b_out
+                if slot_total > peak_bytes:
+                    peak_bytes = slot_total
+                    peak_date = start_date
+                    peak_label = cur.strftime("%H:%M")
+                timeline.append(DailyTrafficPoint(
+                    record_date=start_date,
+                    label=cur.strftime("%H:%M"),
+                    bytes_in=b_in,
+                    bytes_out=b_out,
+                    total_bytes=slot_total,
+                ))
+                cur += timedelta(minutes=30)
+        else:
+            # 1. Daily user rollups
+            stmt = (
+                select(
+                    TrafficRollup.record_date,
+                    TrafficRollup.bytes_in,
+                    TrafficRollup.bytes_out,
+                )
+                .where(
+                    TrafficRollup.user_id == user_id,
+                    TrafficRollup.record_date >= start_date,
+                    TrafficRollup.record_date <= end_date,
+                )
+                .order_by(TrafficRollup.record_date.asc())
+            )
+            res = await session.execute(stmt)
+            user_daily_map = {row[0]: (int(row[1] or 0), int(row[2] or 0)) for row in res.all()}
+
+            # 2. Build contiguous timeline
+            cur_d = start_date
+            while cur_d <= end_date:
+                b_in, b_out = user_daily_map.get(cur_d, (0, 0))
+                day_total = b_in + b_out
+                total_in += b_in
+                total_out += b_out
+                if day_total > peak_bytes:
+                    peak_bytes = day_total
+                    peak_date = cur_d
+                timeline.append(DailyTrafficPoint(
+                    record_date=cur_d,
+                    bytes_in=b_in,
+                    bytes_out=b_out,
+                    total_bytes=day_total,
+                ))
+                cur_d += timedelta(days=1)
 
         total_bytes = total_in + total_out
         num_days = max(1, (end_date - start_date).days + 1)
@@ -911,11 +972,13 @@ class AnalyticsEngine:
             range_preset=range_preset,
             start_date=start_date,
             end_date=end_date,
+            resolution=resolution,
             total_bytes_in=total_in,
             total_bytes_out=total_out,
             total_bytes=total_bytes,
             daily_average_bytes=daily_avg,
             peak_date=peak_date,
+            peak_label=peak_label,
             peak_bytes=peak_bytes,
             timeline=timeline,
             devices=device_summaries,

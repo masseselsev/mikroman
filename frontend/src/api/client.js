@@ -33,12 +33,16 @@ export const api = {
   autoProvisionSslDirect: (data) => request('/routers/test-provision-ssl', { method: 'POST', body: JSON.stringify(data) }),
   getRouterCertificates: (id) => request(`/routers/${id}/certificates`),
   testListCertificates: (conn) => request('/routers/test-certificates', { method: 'POST', body: JSON.stringify(conn) }),
-  testBindCertificate: (conn, certName, port = 443) => request('/routers/test-bind-certificate', { method: 'POST', body: JSON.stringify({ cert_req: { certificate_name: certName, port }, conn }) }),
+  testBindCertificate: (conn, certName) => request('/routers/test-bind-certificate', { method: 'POST', body: JSON.stringify({ cert_req: { certificate_name: certName }, conn }) }),
   testUploadCertificate: (conn, uploadReq) => request('/routers/test-upload-certificate', { method: 'POST', body: JSON.stringify({ upload_req: uploadReq, conn }) }),
   getRouter: (id) => request(`/routers/${id}`),
   updateRouter: (id, data) => request(`/routers/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
-  deleteRouter: (id) => request(`/routers/${id}`, { method: 'DELETE' }),
+  // mode: 'archive' (default, keeps all data) | 'purge' (erases it)
+  deleteRouter: (id, mode = 'archive') => request(`/routers/${id}`, { method: 'DELETE', body: JSON.stringify({ mode }) }),
   activateRouter: (id) => request(`/routers/${id}/activate`, { method: 'POST' }),
+  getArchivedRouters: () => request('/routers/archived'),
+  restoreRouter: (id) => request(`/routers/${id}/restore`, { method: 'POST' }),
+  changeRouter: (id, data) => request(`/routers/${id}/change`, { method: 'POST', body: JSON.stringify(data) }),
 
   // Containers (optional RouterOS package)
   getContainers: (routerId) => request(`/routers/${routerId}/containers`),
@@ -108,11 +112,11 @@ export const api = {
     method: 'POST',
     body: JSON.stringify(config)
   }),
-  getMergeSuggestions: () => request('/devices/suggestions'),
+  getMergeSuggestions: (routerId) => request(`/devices/suggestions${routerId ? `?router_id=${routerId}` : ''}`),
   // Linking keeps both records and presents them as one machine with several
   // network adapters; merging collapses two records into one and exists for
   // MAC rotation, where only one address was ever real.
-  getLinkSuggestions: () => request('/devices/link-suggestions'),
+  getLinkSuggestions: (routerId) => request(`/devices/link-suggestions${routerId ? `?router_id=${routerId}` : ''}`),
   linkDevice: (id, primaryDeviceId) => request(`/devices/${id}/link`, {
     method: 'POST',
     body: JSON.stringify({ primary_device_id: primaryDeviceId })

@@ -112,8 +112,8 @@ export function RouterConnectionForm({ initial, mode = 'create', onSubmit, onCan
         password: form.password,
       });
       if (res.data?.success) {
-        setSslSuccessMsg(t('auto_ssl_success'));
-        const newPort = res.data.port || 443;
+        const newPort = res.data.port || form.port || 443;
+        setSslSuccessMsg(t('auto_ssl_success', { port: newPort }));
         const updated = {
           ...form,
           port: newPort,

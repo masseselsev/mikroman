@@ -1,46 +1,77 @@
-"""Public uplink identity: org-string parsing, caching and failure behaviour.
+"""Public uplink identity: per-router resolution, org parsing, caching, failure.
 
-None of these tests reach the internet - the fetch is stubbed - because the
-point under test is the resolver's contract, not a third-party service's
+None of these tests reach the internet - the HTTP calls are stubbed - because
+the point under test is the resolver's contract, not a third party's
 availability.
 """
 
 import pytest
 
 from backend.app.services.public_network import (
+    _IPWHOIS_URL,
     _MAX_NAME_LENGTH,
     FAILURE_TTL_SECONDS,
     SUCCESS_TTL_SECONDS,
-    PublicNetwork,
     PublicNetworkResolver,
+    brand_from_domain,
+    clean_trading_name,
+    public_ip_or_none,
     split_org_field,
 )
 
+_IP_API_PREFIX = "http://ip-api.com/json/"
 
-class _FakeHttp:
-    """Minimal stand-in for httpx.AsyncClient returning one JSON body."""
 
-    def __init__(self, body: dict, status_code: int = 200):
+class _Resp:
+    def __init__(self, body, status_code=200):
+        self.status_code = status_code
         self._body = body
-        self._status = status_code
 
-    async def get(self, _url):
-        class _Resp:
-            status_code = self._status
-            _payload = self._body
+    def json(self):
+        return self._body
 
-            def json(inner):
-                return inner._payload
 
-        resp = _Resp()
-        resp.status_code = self._status
-        resp._payload = self._body
-        return resp
+class _RoutedHttp:
+    """Fake httpx client answering by URL prefix, for the real parsers."""
+
+    def __init__(self, by_prefix: dict):
+        self._by_prefix = by_prefix
+
+    async def get(self, url):
+        for prefix, resp in self._by_prefix.items():
+            if url.startswith(prefix):
+                if isinstance(resp, Exception):
+                    raise resp
+                return resp
+        return _Resp({}, 404)
 
 
 class _FailingHttp:
     async def get(self, _url):
         raise OSError("network unreachable")
+
+
+def _resolver(*, echo_ip=None, identity=(None, None)):
+    """A resolver with its two network steps stubbed.
+
+    ``_echo_ip`` is the container-egress lookup; ``_identity_for_ip`` is the
+    per-address operator lookup. Both are counted so a test can assert the
+    cache actually suppressed a second round trip.
+    """
+    r = PublicNetworkResolver()
+    calls = {"echo": 0, "identity": 0}
+
+    async def fake_echo(_http):
+        calls["echo"] += 1
+        return echo_ip
+
+    async def fake_identity(_http, _ip):
+        calls["identity"] += 1
+        return identity
+
+    r._echo_ip = fake_echo
+    r._identity_for_ip = fake_identity
+    return r, calls
 
 
 class TestSplitOrgField:
@@ -71,154 +102,194 @@ class TestSplitOrgField:
         assert len(name) <= 64
 
 
-def _resolver_with(results, trading_name=None):
-    """Resolver whose fetch yields the given results in order.
-
-    The trading-name lookup is stubbed out too, and returns None unless a test
-    asks for a name. Without this the resolver would reach ip-api for real,
-    which would make every test here depend on a third-party service and on the
-    machine having internet.
-    """
-    resolver = PublicNetworkResolver()
-    calls = {"n": 0}
-
-    async def fake_fetch():
-        index = min(calls["n"], len(results) - 1)
-        calls["n"] += 1
-        return results[index]
-
-    async def fake_trading_name(_http):
-        return trading_name
-
-    resolver._fetch = fake_fetch
-    resolver._fetch_trading_name = fake_trading_name
-    return resolver, calls
+class TestPublicIpOrNone:
+    @pytest.mark.parametrize("value, expected", [
+        ("8.8.8.8", "8.8.8.8"),
+        ("109.206.139.141", "109.206.139.141"),
+        ("0.0.0.0", None),          # /ip/cloud before DDNS ever succeeded
+        ("192.168.1.1", None),      # RFC1918
+        ("10.5.5.5", None),
+        ("100.64.0.1", None),       # carrier-grade NAT
+        ("127.0.0.1", None),
+        ("", None),
+        ("not-an-ip", None),
+        (None, None),
+    ])
+    def test_only_a_routable_public_address_passes(self, value, expected):
+        assert public_ip_or_none(value) == expected
 
 
-class TestResolverCaching:
+class TestPerRouterResolution:
     @pytest.mark.asyncio
-    async def test_second_call_is_served_from_cache(self):
-        good = PublicNetwork(ip="203.0.113.9", isp="Example Telecom", asn="AS64500")
-        resolver, calls = _resolver_with([good])
+    async def test_router_hint_ip_is_used_directly_and_operator_looked_up_for_it(self):
+        resolver, calls = _resolver(identity=("Ucell", "AS49273"))
 
-        first = await resolver.resolve()
-        second = await resolver.resolve()
+        got = await resolver.resolve(router_id=2, hint_ip="109.206.139.141")
 
-        assert first.ip == second.ip == "203.0.113.9"
-        assert second.isp == "Example Telecom"
-        assert calls["n"] == 1, "a cached answer must not hit the network again"
+        assert got.ip == "109.206.139.141"
+        assert got.isp == "Ucell"
+        assert got.asn == "AS49273"
+        assert calls["echo"] == 0, "the router told us its IP; no need to echo"
+        assert calls["identity"] == 1
 
     @pytest.mark.asyncio
-    async def test_cache_expires_after_success_ttl(self):
-        first_answer = PublicNetwork(ip="203.0.113.9", isp="Old ISP")
-        second_answer = PublicNetwork(ip="198.51.100.4", isp="New ISP")
-        resolver, calls = _resolver_with([first_answer, second_answer])
+    async def test_falls_back_to_echo_when_the_router_has_no_usable_public_ip(self):
+        resolver, calls = _resolver(echo_ip="8.8.4.4", identity=("EchoNet", None))
 
-        await resolver.resolve()
-        # Rewind the clock past the success window instead of sleeping for it.
-        resolver._checked_at -= SUCCESS_TTL_SECONDS + 1
-        refreshed = await resolver.resolve()
+        got = await resolver.resolve(router_id=1, hint_ip="0.0.0.0")
 
-        assert calls["n"] == 2
-        assert refreshed.isp == "New ISP"
-
-
-class TestResolverFailureHandling:
-    @pytest.mark.asyncio
-    async def test_failure_keeps_last_known_good_answer(self):
-        good = PublicNetwork(ip="203.0.113.9", isp="Example Telecom")
-        resolver, _ = _resolver_with([good, PublicNetwork()])
-
-        await resolver.resolve()
-        resolver._checked_at -= SUCCESS_TTL_SECONDS + 1
-        after_failure = await resolver.resolve()
-
-        # A momentarily unreachable echo service says nothing about whether the
-        # router's own uplink is up, so the tile must not blank.
-        assert after_failure.ip == "203.0.113.9"
-        assert after_failure.isp == "Example Telecom"
+        assert got.ip == "8.8.4.4"
+        assert got.isp == "EchoNet"
+        assert calls["echo"] == 1
 
     @pytest.mark.asyncio
-    async def test_failure_retries_sooner_than_a_success_would(self):
-        resolver, calls = _resolver_with([PublicNetwork(), PublicNetwork(ip="203.0.113.9")])
+    async def test_cache_is_kept_per_router(self):
+        resolver, calls = _resolver(identity=("Op", "AS1"))
 
-        await resolver.resolve()
-        # Past the failure backoff but well inside the success window: a failed
-        # lookup must not suppress retries for the full fifteen minutes.
-        resolver._checked_at -= FAILURE_TTL_SECONDS + 1
-        recovered = await resolver.resolve()
+        a = await resolver.resolve(router_id=1, hint_ip="1.1.1.1")
+        b = await resolver.resolve(router_id=2, hint_ip="9.9.9.9")
+        again = await resolver.resolve(router_id=1, hint_ip="1.1.1.1")
 
-        assert calls["n"] == 2
-        assert recovered.ip == "203.0.113.9"
-
-    @pytest.mark.asyncio
-    async def test_total_failure_returns_empty_rather_than_raising(self):
-        resolver, _ = _resolver_with([PublicNetwork()])
-        result = await resolver.resolve()
-        assert result.is_empty()
-        assert result.ip is None
-
-
-class TestTradingNamePreference:
-    """The registry's legal entity is correct but not recognisable.
-
-    "COSCOM Liability Limited Company" is the entity that holds AS49273; the
-    operator its customers know is "Ucell", and that is the name the lookup
-    sites show. The trading name comes from a plaintext source, so it is scoped
-    to the display name and nothing else.
-    """
+        assert a.ip == "1.1.1.1"
+        assert b.ip == "9.9.9.9"
+        assert again.ip == "1.1.1.1"
+        assert calls["identity"] == 2, "two routers, then router 1 served from cache"
 
     @pytest.mark.asyncio
-    async def test_trading_name_replaces_the_registry_name(self):
-        resolver, _ = _resolver_with([PublicNetwork(
-            ip="188.113.204.70", isp="COSCOM Liability Limited Company", asn="AS49273",
-        )], trading_name="Ucell")
-
-        result = await resolver.resolve()
-        assert result.isp == "Ucell"
-        # The address and AS number stay with the authoritative HTTPS answer.
-        assert result.ip == "188.113.204.70"
-        assert result.asn == "AS49273"
+    async def test_success_cache_expires_after_the_ttl(self):
+        resolver, calls = _resolver(identity=("Op", "AS1"))
+        await resolver.resolve(router_id=1, hint_ip="1.1.1.1")
+        resolver._by_router[1].checked_at -= SUCCESS_TTL_SECONDS + 1
+        await resolver.resolve(router_id=1, hint_ip="1.1.1.1")
+        assert calls["identity"] == 2
 
     @pytest.mark.asyncio
-    async def test_registry_name_is_kept_when_no_trading_name_is_available(self):
-        resolver, _ = _resolver_with([PublicNetwork(
-            ip="188.113.204.70", isp="COSCOM Liability Limited Company", asn="AS49273",
-        )])
+    async def test_a_failed_refresh_keeps_the_last_good_answer(self):
+        resolver, _ = _resolver(echo_ip="8.8.8.8", identity=("GoodNet", "AS7"))
+        first = await resolver.resolve(router_id=1)
+        assert first.isp == "GoodNet"
 
-        result = await resolver.resolve()
-        assert result.isp == "COSCOM Liability Limited Company"
+        # Next refresh finds nothing at all (no hint, echo now blank).
+        async def blank_echo(_http):
+            return None
+        resolver._echo_ip = blank_echo
+        resolver._by_router[1].checked_at -= SUCCESS_TTL_SECONDS + 1
 
-    @pytest.mark.asyncio
-    async def test_no_trading_name_lookup_without_an_address(self):
-        # Nothing to attach a name to, and no reason to spend the request.
-        resolver, _ = _resolver_with([PublicNetwork()])
-        calls = []
-
-        async def record(_http):
-            calls.append(1)
-            return "Ucell"
-
-        resolver._fetch_trading_name = record
-
-        await resolver.resolve()
-        assert calls == [], "no address means nothing to name, so no request"
+        after = await resolver.resolve(router_id=1)
+        assert after.ip == "8.8.8.8"
+        assert after.isp == "GoodNet"
+        assert resolver._by_router[1].last_ok is False
 
     @pytest.mark.asyncio
-    async def test_a_hostile_trading_name_cannot_grow_without_bound(self):
-        # This source is plaintext, so its answer is treated as untrusted: a
-        # tampered response must not push unbounded text into the telemetry
-        # frame. Exercises the real parser against a fake HTTP client.
+    async def test_a_failure_retries_on_the_shorter_timer(self):
+        resolver, calls = _resolver(identity=(None, None))
+
+        async def blank_echo(_http):
+            return None
+        resolver._echo_ip = blank_echo
+
+        await resolver.resolve(router_id=1)                       # fails, empty
+        resolver._by_router[1].checked_at -= FAILURE_TTL_SECONDS + 1
+        await resolver.resolve(router_id=1)                       # retried already
+        assert calls["identity"] == 0  # no ip was ever resolved, so no identity call
+        assert resolver._by_router[1].last_ok is False
+
+    @pytest.mark.asyncio
+    async def test_reset_targets_one_router_or_all(self):
+        resolver, _ = _resolver(identity=("Op", "AS1"))
+        await resolver.resolve(router_id=1, hint_ip="1.1.1.1")
+        await resolver.resolve(router_id=2, hint_ip="9.9.9.9")
+
+        resolver.reset(1)
+        assert 1 not in resolver._by_router and 2 in resolver._by_router
+
+        resolver.reset()
+        assert resolver._by_router == {}
+
+
+class TestIdentityForIp:
+    @pytest.mark.asyncio
+    async def test_ipwhois_domain_gives_the_brand_and_asn(self):
         resolver = PublicNetworkResolver()
-        name = await resolver._fetch_trading_name(_FakeHttp({"status": "success", "isp": "x" * 500}))
-        assert len(name) <= _MAX_NAME_LENGTH
+        http = _RoutedHttp({
+            _IPWHOIS_URL: _Resp({
+                "success": True,
+                "connection": {"asn": 49273, "domain": "ucell.uz",
+                               "org": "Ucell Net 1",
+                               "isp": "COSCOM Liability Limited Company"},
+            }),
+        })
+        brand, asn = await resolver._identity_for_ip(http, "188.113.222.163")
+        assert brand == "Ucell"
+        assert asn == "AS49273"
 
     @pytest.mark.asyncio
-    async def test_a_failed_status_yields_no_name(self):
+    async def test_falls_back_to_ip_api_for_the_address(self):
         resolver = PublicNetworkResolver()
-        assert await resolver._fetch_trading_name(_FakeHttp({"status": "fail"})) is None
+        http = _RoutedHttp({
+            _IPWHOIS_URL: _Resp({"success": False, "message": "quota"}),
+            _IP_API_PREFIX: _Resp({
+                "status": "success", "isp": "CleanBrand",
+                "as": "AS64500 Example Holdings",
+            }),
+        })
+        brand, asn = await resolver._identity_for_ip(http, "8.8.8.8")
+        assert brand == "CleanBrand"
+        assert asn == "AS64500"
 
     @pytest.mark.asyncio
-    async def test_an_unreachable_source_yields_no_name_rather_than_raising(self):
+    async def test_a_hostile_name_cannot_grow_without_bound(self):
         resolver = PublicNetworkResolver()
-        assert await resolver._fetch_trading_name(_FailingHttp()) is None
+        http = _RoutedHttp({
+            _IPWHOIS_URL: _Resp({"success": True, "connection": {}}),
+            _IP_API_PREFIX: _Resp({"status": "success", "isp": "x" * 500}),
+        })
+        brand, _asn = await resolver._identity_for_ip(http, "8.8.8.8")
+        assert len(brand) <= _MAX_NAME_LENGTH
+
+    @pytest.mark.asyncio
+    async def test_an_unreachable_source_yields_nothing_rather_than_raising(self):
+        resolver = PublicNetworkResolver()
+        assert await resolver._identity_for_ip(_FailingHttp(), "8.8.8.8") == (None, None)
+
+
+class TestBrandFromDomain:
+    @pytest.mark.parametrize("domain, expected", [
+        ("ucell.uz", "Ucell"),
+        ("UCELL.UZ", "Ucell"),
+        ("bt.co.uk", "Bt"),
+        ("t-mobile.com", "T-Mobile"),
+        ("mts.com.ua", "Mts"),
+        ("comcast.net", "Comcast"),
+    ])
+    def test_registrable_label_becomes_the_brand(self, domain, expected):
+        assert brand_from_domain(domain) == expected
+
+    @pytest.mark.parametrize("bad", [
+        None, "", "   ", "localhost", "uz", "1.2.3.4",
+        "not a domain", "<script>.com", "a.b",
+    ])
+    def test_rubbish_yields_none(self, bad):
+        # "a.b" -> label "a" is too short to be a brand.
+        assert brand_from_domain(bad) is None
+
+
+class TestCleanTradingName:
+    @pytest.mark.parametrize("raw, expected", [
+        ("Ucell Net 1", "Ucell"),
+        ("Ucell Network", "Ucell"),
+        ("Deutsche Telekom", "Deutsche Telekom"),
+        ("Orange 42", "Orange"),
+    ])
+    def test_trailing_clutter_is_removed(self, raw, expected):
+        assert clean_trading_name(raw) == expected
+
+    @pytest.mark.parametrize("legal", [
+        "COSCOM Liability Limited Company",
+        "Example Telecom LLC",
+        "Foo Bar Ltd",
+        "Bar Inc.",
+        "", None,
+    ])
+    def test_legal_entities_are_rejected(self, legal):
+        assert clean_trading_name(legal) is None

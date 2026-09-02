@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -41,12 +41,40 @@ class RouterResponse(RouterBase):
     id: int
     created_at: datetime
     updated_at: datetime
+    serial_number: Optional[str] = None
+    archived_at: Optional[datetime] = None
     is_online: Optional[bool] = None
     ros_version: Optional[str] = None
     board_name: Optional[str] = None
     model: Optional[str] = None
     architecture: Optional[str] = None
     cpu_load: Optional[int] = None
+
+
+class RouterDeleteRequest(BaseModel):
+    """How a delete should treat the router's accumulated data.
+
+    ``archive`` keeps everything and hides the router so it can be re-added
+    later by serial; ``purge`` removes the router and every user, device,
+    rollup, metric and per-router setting that belonged to it.
+    """
+
+    mode: Literal["archive", "purge"] = "archive"
+
+
+class RouterChangeRequest(RouterCreate):
+    """Swap the hardware behind an existing router row.
+
+    Inherits the full connection payload from :class:`RouterCreate`. All users,
+    devices, traffic history and per-router settings stay attached to the row.
+    ``history_mode`` decides what happens to the *previous* hardware's health
+    series (system / interface metrics, speed tests): ``keep`` leaves them,
+    ``reset_hardware`` clears them so the new box starts a fresh graph. Gateway
+    and per-user/-device traffic totals are always kept - the internet line and
+    the billing cycle are the same.
+    """
+
+    history_mode: Literal["keep", "reset_hardware"] = "keep"
 
 
 class RouterTestConnectionRequest(BaseModel):
@@ -66,6 +94,7 @@ class RouterTestConnectionResponse(BaseModel):
     board_name: Optional[str] = None
     cpu_load: Optional[int] = None
     uptime: Optional[str] = None
+    serial_number: Optional[str] = None
     ssl_status: Optional[Dict[str, Any]] = None
     suggested_port: Optional[int] = None
     suggested_ssl: Optional[bool] = None
@@ -73,14 +102,16 @@ class RouterTestConnectionResponse(BaseModel):
 
 class RouterProvisionSslRequest(BaseModel):
     common_name: str = "mikrotik.local"
-    port: int = 443
 
 
 class RouterProvisionSslResponse(BaseModel):
     success: bool
     message: str
     certificate: Optional[str] = None
-    port: int = 443
+    port: int = Field(
+        default=443,
+        description="Port the router's www-ssl service listens on - read from the router, never changed by MikroMan.",
+    )
 
 
 class RouterCertificateDTO(BaseModel):
@@ -95,7 +126,6 @@ class RouterCertificateDTO(BaseModel):
 
 class RouterBindCertRequest(BaseModel):
     certificate_name: str
-    port: int = 443
 
 
 class RouterUploadCertRequest(BaseModel):
@@ -103,4 +133,3 @@ class RouterUploadCertRequest(BaseModel):
     key_content: Optional[str] = Field(None, description="Private key body in PEM format (.key)")
     cert_name: str = Field(default="custom-ssl", description="Certificate name to create on RouterOS")
     passphrase: Optional[str] = None
-    port: int = 443

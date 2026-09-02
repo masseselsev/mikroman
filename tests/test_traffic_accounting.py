@@ -8,14 +8,17 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from backend.app.db.models import (
+    AppSetting,
     Base,
     Device,
     DeviceTrafficRollup,
     TrafficRollup,
     User,
+    UserTrafficBucket,
 )
 from backend.app.services.traffic_accounting import (
     TrafficAccountingService,
+    bucket_start_for,
     parse_acct_comment,
     parse_self_comment,
 )
@@ -76,6 +79,14 @@ async def session():
 
 
 async def _seed(session, ip="192.168.88.50", router_id=1, user_name="Mark"):
+    # A WAN must be chosen for a router before any accounting runs for it.
+    # Pick one here so the accounting paths under test have something to
+    # measure; the "no WAN selected" case is covered separately.
+    key = f"monitored_interfaces_{router_id}" if router_id else "monitored_interfaces_default"
+    if await session.get(AppSetting, key) is None:
+        session.add(AppSetting(key=key, value='["ether1"]'))
+        await session.commit()
+
     user = User(name=user_name, speed_limit="unlimited")
     session.add(user)
     await session.commit()
@@ -195,9 +206,39 @@ async def test_sync_prunes_rules_for_removed_devices(session):
 
 
 @pytest.mark.asyncio
+async def test_no_self_traffic_rules_until_a_wan_is_chosen(session):
+    """A router with no WAN picked in the selector accounts nothing of its own.
+
+    The device rules are still created (they key off the device IP, not an
+    interface), but the input/output passthrough pair is withheld until an
+    uplink is chosen - the monitored set is never guessed.
+    """
+    user = User(name="Mark", speed_limit="unlimited")
+    session.add(user)
+    await session.commit()
+    await session.refresh(user)
+    session.add(Device(
+        user_id=user.id, router_id=1, mac_address="AA:BB:CC:00:11:22",
+        ip_address="192.168.88.50", custom_name="iPhone", is_active=True,
+    ))
+    await session.commit()
+
+    svc = TrafficAccountingService(FakeRouter(), router_id=1)
+    summary = await svc.sync_counter_rules(session)
+
+    assert summary["created"] == 2, "device pair only - no self-traffic pair"
+    tags = {r.get("comment") for r in svc.router_client.rules}
+    assert not any(t and t.startswith("mikroman:acct:self:") for t in tags)
+
+
+@pytest.mark.asyncio
 async def test_devices_without_router_id_are_still_accounted(session):
     """A NULL router_id previously excluded real clients from all analytics."""
     await _seed(session, router_id=None, user_name="Kristina")
+    # The service under test is scoped to router 1; give router 1 a WAN so the
+    # self-traffic rule pair is created alongside the device rules.
+    session.add(AppSetting(key="monitored_interfaces_1", value='["ether1"]'))
+    await session.commit()
     router = FakeRouter()
     svc = TrafficAccountingService(router, router_id=1)
 
@@ -240,6 +281,60 @@ async def test_collect_accumulates_deltas_not_absolute_counters(session):
     assert user_rollup[0].user_id == user.id
     assert user_rollup[0].bytes_in == 500_000
     assert user_rollup[0].bytes_out == 60_000
+
+    # The same delta is also credited to the user's 30-minute intraday bucket,
+    # aligned to the half hour, so the 1D history view has a shape to draw.
+    buckets = (await session.execute(select(UserTrafficBucket))).scalars().all()
+    assert len(buckets) == 1
+    assert buckets[0].user_id == user.id
+    assert buckets[0].bytes_in == 500_000
+    assert buckets[0].bytes_out == 60_000
+    assert buckets[0].bucket_start == bucket_start_for(buckets[0].bucket_start)
+    assert buckets[0].bucket_start.minute in (0, 30)
+
+
+@pytest.mark.asyncio
+async def test_intraday_buckets_accumulate_and_prune(session):
+    from datetime import timedelta
+
+    from backend.app.services import traffic_accounting as ta
+
+    user, device = await _seed(session)
+    router = FakeRouter()
+    svc = TrafficAccountingService(router, router_id=1)
+    await svc.sync_counter_rules(session)
+
+    router.set_bytes(device.id, "down", 1_000_000)
+    await svc.collect(session)                       # baseline
+    router.set_bytes(device.id, "down", 1_400_000)
+    await svc.collect(session)                       # +400_000 into the current bucket
+    router.set_bytes(device.id, "down", 1_500_000)
+    await svc.collect(session)                       # +100_000, same bucket
+
+    buckets = (await session.execute(select(UserTrafficBucket))).scalars().all()
+    assert len(buckets) == 1
+    assert buckets[0].bytes_in == 500_000
+
+    # A bucket older than the retention window is pruned on the next tick.
+    stale = UserTrafficBucket(
+        user_id=user.id,
+        bucket_start=bucket_start_for(buckets[0].bucket_start)
+        - timedelta(days=ta.BUCKET_RETENTION_DAYS + 1),
+        bytes_in=123,
+        bytes_out=0,
+    )
+    session.add(stale)
+    await session.commit()
+
+    router.set_bytes(device.id, "down", 1_600_000)
+    await svc.collect(session)
+
+    remaining = (await session.execute(select(UserTrafficBucket))).scalars().all()
+    assert all(
+        b.bucket_start > bucket_start_for(buckets[0].bucket_start) - timedelta(days=ta.BUCKET_RETENTION_DAYS)
+        for b in remaining
+    )
+    assert 123 not in [b.bytes_in for b in remaining]
 
 
 @pytest.mark.asyncio
@@ -338,7 +433,7 @@ async def test_range_predating_accounting_is_partial_not_degraded(session):
     """
     from datetime import date, timedelta
 
-    from backend.app.db.models import AppSetting, RouterTrafficRollup
+    from backend.app.db.models import RouterTrafficRollup
     from backend.app.services.analytics_engine import AnalyticsEngine
 
     await _seed(session)

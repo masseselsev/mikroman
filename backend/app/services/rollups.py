@@ -213,7 +213,13 @@ async def resolve_monitored_interfaces(
 ) -> List[str]:
     """WAN interface names for a router, from the same setting the gateway
     rollups are measured on, so a slice and the daily total describe the same
-    link. Defaults to ``["ether1"]`` when nothing is configured."""
+    link.
+
+    Returns ``[]`` when the admin has not chosen a WAN in the selector. The
+    monitored set is never guessed: an empty list means "measure nothing for
+    this router yet", which is what every caller here does with it. Accounting
+    for a router begins only once its WAN is picked.
+    """
     key = f"monitored_interfaces_{router_id}" if router_id else "monitored_interfaces_default"
     setting = await session.get(AppSetting, key)
     if setting and setting.value:
@@ -223,7 +229,7 @@ async def resolve_monitored_interfaces(
                 return [str(n) for n in names]
         except (json.JSONDecodeError, TypeError):
             pass
-    return ["ether1"]
+    return []
 
 
 async def slice_of_day_bytes(

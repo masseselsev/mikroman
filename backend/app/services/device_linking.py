@@ -182,13 +182,22 @@ async def build_device_groups(
     return result
 
 
-async def find_link_suggestions(session: AsyncSession) -> List[LinkSuggestion]:
+async def find_link_suggestions(
+    session: AsyncSession, router_id: Optional[int] = None
+) -> List[LinkSuggestion]:
     """Propose adapters that look like they belong to the same machine.
 
     The signal is a shared DHCP hostname across two different MAC addresses on
     different media - which is exactly what a dual-homed laptop reports.
+
+    ``router_id`` confines the search to one router (plus untagged legacy
+    rows); a shared hostname across two routers is two different machines, not
+    one dual-homed one, and linking them would cross the per-router boundary.
     """
-    devices = list((await session.execute(select(Device))).scalars().all())
+    stmt = select(Device)
+    if router_id is not None:
+        stmt = stmt.where((Device.router_id == router_id) | (Device.router_id.is_(None)))
+    devices = list((await session.execute(stmt)).scalars().all())
     unlinked = [d for d in devices if d.linked_to_device_id is None]
 
     # Group candidates by normalised hostname.

@@ -145,6 +145,40 @@ describe('TrafficHistoryModal component', () => {
     });
   });
 
+  it('renders the 1D view as a half-hour timeline with HH:MM labels', async () => {
+    api.getUserTrafficHistory.mockResolvedValueOnce({ data: mockUserData });
+    api.getUserTrafficHistory.mockResolvedValueOnce({
+      data: {
+        ...mockUserData,
+        range_preset: 'today',
+        resolution: 'half_hour',
+        start_date: '2026-09-02',
+        end_date: '2026-09-02',
+        peak_label: '09:00',
+        timeline: [
+          { record_date: '2026-09-02', label: '00:00', bytes_in: 0, bytes_out: 0, total_bytes: 0 },
+          { record_date: '2026-09-02', label: '08:30', bytes_in: 100000, bytes_out: 40000, total_bytes: 140000 },
+          { record_date: '2026-09-02', label: '09:00', bytes_in: 300000, bytes_out: 90000, total_bytes: 390000 },
+        ],
+      },
+    });
+
+    renderWithProviders(
+      <TrafficHistoryModal isOpen={true} target={{ type: 'user', id: 1, name: 'Alice' }} onClose={vi.fn()} />
+    );
+
+    await waitFor(() => expect(api.getUserTrafficHistory).toHaveBeenCalledWith(1, { preset: '7d' }));
+    fireEvent.click(screen.getByRole('button', { name: '1D' }));
+
+    await waitFor(() => expect(api.getUserTrafficHistory).toHaveBeenCalledWith(1, { preset: '1d' }));
+
+    // The breakdown table now has a Time column and HH:MM rows, not dates.
+    await waitFor(() => expect(screen.getByText('Half-hour breakdown')).toBeInTheDocument());
+    expect(screen.getByRole('columnheader', { name: 'Time' })).toBeInTheDocument();
+    expect(screen.getByText('3 intervals')).toBeInTheDocument();
+    expect(screen.getAllByText('09:00').length).toBeGreaterThanOrEqual(1);
+  });
+
   it('fetches and renders device traffic history', async () => {
     api.getDeviceTrafficHistory.mockResolvedValueOnce({ data: mockDeviceData });
 
