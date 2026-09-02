@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useI18n } from './context/I18nContext';
 import { useWebSocketTelemetry } from './hooks/useWebSocketTelemetry';
 import { api } from './api/client';
@@ -23,6 +23,12 @@ export function App() {
 
   const [routers, setRouters] = useState([]);
   const [activeRouter, setActiveRouter] = useState(null);
+  // The id of the router the UI is currently *for*, updated synchronously on a
+  // switch. loadData() runs asynchronously and its closure's activeRouter can
+  // be a switch behind, so it reads this instead - and discards its result if
+  // the id no longer matches by the time the responses land, which is what
+  // stopped the user list flickering between the two routers after a switch.
+  const activeRouterIdRef = useRef(null);
   const [activeTab, setActiveTab] = useState('users');
   const [users, setUsers] = useState([]);
   const [unassignedDevices, setUnassignedDevices] = useState([]);
@@ -56,33 +62,43 @@ export function App() {
   const { telemetry, isConnected } = useWebSocketTelemetry(activeRouter?.id);
 
   const loadData = async (routerIdOverride = null) => {
+    // The router this load is for: an explicit override wins, otherwise the ref
+    // (never the closure's activeRouter, which lags a switch).
+    const targetRouterId = routerIdOverride ?? activeRouterIdRef.current;
     try {
       const routersRes = await api.getRouters().catch(() => ({ data: [] }));
       const routerList = routersRes.data || [];
       setRouters(routerList);
 
-      let current = activeRouter;
-      if (routerIdOverride != null) {
-        current = routerList.find(r => r.id === routerIdOverride) || current;
-      } else if (!current && routerList.length > 0) {
+      let current = routerList.find(r => r.id === targetRouterId) || null;
+      if (!current && routerIdOverride == null && routerList.length > 0) {
+        // First load, before any selection - fall back to the default router.
         current = routerList.find(r => r.is_default) || routerList[0] || null;
-      } else if (current && routerList.length > 0) {
-        // Refresh activeRouter properties from the updated list
-        current = routerList.find(r => r.id === current.id) || current;
       }
 
-      if (current && (!activeRouter || activeRouter.id !== current.id || activeRouter.is_online !== current.is_online)) {
+      // A newer switch landed while getRouters was in flight - this load is for
+      // a router that is no longer selected. Drop it.
+      const stillCurrent = () =>
+        (routerIdOverride ?? current?.id ?? null) === (routerIdOverride ?? activeRouterIdRef.current);
+      if (!stillCurrent()) return;
+
+      if (current && (activeRouterIdRef.current !== current.id
+          || activeRouter?.is_online !== current.is_online)) {
+        activeRouterIdRef.current = current.id;
         setActiveRouter(current);
       }
 
-      const targetRouterId = routerIdOverride ?? current?.id ?? null;
-
+      const effectiveId = routerIdOverride ?? current?.id ?? null;
       const [usersRes, devsRes, ifacesRes, alertsRes] = await Promise.all([
-        api.getUsers(targetRouterId).catch(() => ({ data: [] })),
-        api.getDevices(true, showHiddenDevices, 'client', targetRouterId).catch(() => ({ data: [] })),
-        api.getInterfaces(targetRouterId).catch(() => ({ data: [] })),
-        api.getAlerts(targetRouterId).catch(() => ({ data: [] }))
+        api.getUsers(effectiveId).catch(() => ({ data: [] })),
+        api.getDevices(true, showHiddenDevices, 'client', effectiveId).catch(() => ({ data: [] })),
+        api.getInterfaces(effectiveId).catch(() => ({ data: [] })),
+        api.getAlerts(effectiveId).catch(() => ({ data: [] }))
       ]);
+
+      // Discard if a switch superseded this load while its data was in flight -
+      // otherwise the previous router's users briefly overwrite the new one's.
+      if (effectiveId !== activeRouterIdRef.current) return;
 
       setUsers(usersRes.data || []);
       setUnassignedDevices(devsRes.data || []);
@@ -182,8 +198,17 @@ export function App() {
     const routerObj = typeof routerOrId === 'object' && routerOrId !== null
       ? routerOrId
       : (routers.find(r => r.id === routerOrId) || null);
-    if (!routerObj) return;
+    if (!routerObj || routerObj.id === activeRouterIdRef.current) return;
+    // Mark the new selection first, so any in-flight loadData for the old
+    // router discards its result instead of repainting the list.
+    activeRouterIdRef.current = routerObj.id;
     setActiveRouter(routerObj);
+    // Clear the previous router's data rather than leave it on screen until the
+    // new fetch returns.
+    setUsers([]);
+    setUnassignedDevices([]);
+    setAlerts([]);
+    setIsLoading(true);
     try {
       await api.activateRouter(routerObj.id);
     } catch (err) {
@@ -253,6 +278,7 @@ export function App() {
         isConnected={isConnected}
         routerInfo={telemetry?.router}
         routers={routers}
+        activeRouter={activeRouter}
         onSelectRouter={handleSelectRouter}
         onOpenSettings={() => handleOpenSettings('general', false)}
         onAddRouter={() => handleOpenSettings('routers', true)}
