@@ -41,11 +41,17 @@ async def get_traffic_analytics(
 ):
     """Retrieve historical traffic metrics across Gateway, Users, Devices, and Timeline."""
 
+    eff_router_id = router_id
+    if eff_router_id is None:
+        active_r = await router_manager.get_active_router(db)
+        if active_r:
+            eff_router_id = active_r.id
+
     anchor_day = await AnalyticsEngine.get_billing_anchor_day(db)
     anchor_hour, anchor_minute = await AnalyticsEngine.get_billing_anchor_time(db)
-    # Presets follow the router's calendar, not the container's UTC one; one
+    # Presets follow this router's calendar, not the container's UTC one; one
     # clock read gives both the date and the instant the presets need.
-    now = await router_local_now(db)
+    now = await router_local_now(db, router_id=eff_router_id)
     today = now.date()
     resolved_start, resolved_end, range_label = resolve_date_range(
         preset=preset,
@@ -62,7 +68,7 @@ async def get_traffic_analytics(
         session=db,
         start_date=resolved_start,
         end_date=resolved_end,
-        router_id=router_id,
+        router_id=eff_router_id,
         range_preset=range_label,
         anchor_day=anchor_day
     )
@@ -188,7 +194,7 @@ async def build_quota_status(db: AsyncSession, router_id: Optional[int] = None) 
     config = await get_quota_config(db, router_id=eff_router_id)
     anchor_day = await AnalyticsEngine.get_billing_anchor_day(db, router_id=eff_router_id)
     anchor_hour, anchor_minute = await AnalyticsEngine.get_billing_anchor_time(db, router_id=eff_router_id)
-    now = await router_local_now(db)
+    now = await router_local_now(db, router_id=eff_router_id)
     today = now.date()
     non_midnight = anchor_hour != 0 or anchor_minute != 0
 
@@ -206,8 +212,8 @@ async def build_quota_status(db: AsyncSession, router_id: Optional[int] = None) 
     slice_interfaces: list = []
     slice_offset = 0
     if non_midnight:
-        slice_interfaces = await resolve_monitored_interfaces(db, router_id)
-        slice_offset = await get_router_offset(db) or 0
+        slice_interfaces = await resolve_monitored_interfaces(db, eff_router_id)
+        slice_offset = await get_router_offset(db, eff_router_id) or 0
 
     data = await AnalyticsEngine.get_historical_traffic(
         session=db,

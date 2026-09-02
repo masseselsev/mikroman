@@ -336,7 +336,7 @@ class AnalyticsEngine:
         iface_cycle: dict = {}
         iface_alltime: dict = {}
         if include_breakdown_extras:
-            now_local = await router_local_now(session)
+            now_local = await router_local_now(session, router_id=router_id)
             cyc_start, cyc_end = get_billing_cycle_dates(anchor_day, now_local.date())
             dev_cycle = await rollups.sum_by(
                 session, DeviceTrafficRollup, DeviceTrafficRollup.device_id, cyc_start, cyc_end, router_id=router_id,

@@ -11,9 +11,15 @@ import { ArrowDown, ArrowUp } from 'lucide-react';
  * explanatory hint differ, because a device limit is a child of its owner's
  * queue while a user limit is the parent.
  *
+ * The hint is not a permanent line of small print: it lives as a tooltip on the
+ * dotted-underlined Down / Up labels, matching the compact per-user footer in
+ * UserCard so both editors read the same.
+ *
  * Values are RouterOS rate strings ("50M", "500k"), kept as text rather than
  * numbers so the unit suffix survives editing.
  */
+const HINT_TEXT_STYLE = { borderBottom: '1px dotted currentColor', lineHeight: 1.1 };
+
 export function RateLimitInputs({
   down,
   up,
@@ -24,6 +30,14 @@ export function RateLimitInputs({
   hint
 }) {
   const { t } = useI18n();
+
+  const labelStyle = (color) => ({
+    color,
+    display: 'flex',
+    alignItems: 'center',
+    gap: 4,
+    ...(hint ? { cursor: 'help' } : null),
+  });
 
   return (
     <div style={{
@@ -37,8 +51,11 @@ export function RateLimitInputs({
     }}>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
         <div>
-          <label className="rate-label" style={{ color: 'var(--color-success)' }}>
-            <ArrowDown size={13} /> {t('download_limit')}
+          <label className="rate-label" style={labelStyle('var(--color-success)')} title={hint || undefined}>
+            <ArrowDown size={13} />
+            {hint
+              ? <span style={HINT_TEXT_STYLE}>{t('download_limit')}</span>
+              : t('download_limit')}
           </label>
           <input
             type="text"
@@ -50,8 +67,11 @@ export function RateLimitInputs({
           />
         </div>
         <div>
-          <label className="rate-label" style={{ color: 'var(--color-primary)' }}>
-            <ArrowUp size={13} /> {t('upload_limit')}
+          <label className="rate-label" style={labelStyle('var(--color-primary)')} title={hint || undefined}>
+            <ArrowUp size={13} />
+            {hint
+              ? <span style={HINT_TEXT_STYLE}>{t('upload_limit')}</span>
+              : t('upload_limit')}
           </label>
           <input
             type="text"
@@ -63,9 +83,6 @@ export function RateLimitInputs({
           />
         </div>
       </div>
-      {hint ? (
-        <div style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)' }}>{hint}</div>
-      ) : null}
     </div>
   );
 }

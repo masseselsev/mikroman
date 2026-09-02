@@ -272,7 +272,7 @@ async def slice_of_day_bytes(
     hi = datetime.combine(day, to_time or time(23, 59, 59, 999999))
 
     # Shift the router-local window back into the UTC frame the samples carry.
-    offset = offset_minutes if offset_minutes is not None else (await get_router_offset(session) or 0)
+    offset = offset_minutes if offset_minutes is not None else (await get_router_offset(session, router_id) or 0)
     lo -= timedelta(minutes=offset)
     hi -= timedelta(minutes=offset)
 

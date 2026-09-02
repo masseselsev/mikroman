@@ -724,15 +724,17 @@ export function UserCard({ user, users = [], onEdit, onDelete, onLimitChange, on
       {/* Footer: per-user bandwidth cap and the pause toggle.
           Down / Up / Apply are always on screen - no preset list, no expand
           step. Empty both fields and Apply to lift the cap. The K / M / G rule
-          lives in the fields' tooltip and the note beneath them. */}
+          is a tooltip on the dotted-underlined Down / Up labels, not a
+          permanent line of small print under a cramped row. */}
       <div style={{ borderTop: '1px solid var(--border-color)', paddingTop: 10 }}>
-        <div
-          style={{ display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap' }}
-          title={t('limit_units_hint')}
-        >
+        <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap' }}>
           <div style={{ flex: 1, minWidth: 84 }}>
-            <label style={{ fontSize: 'var(--fs-2xs)', color: 'var(--color-success)', fontWeight: 700, display: 'flex', alignItems: 'center', gap: 3, marginBottom: 3 }}>
-              <ArrowDown size={11} /> {t('download_limit')}
+            <label
+              title={t('limit_units_hint')}
+              style={{ fontSize: 'var(--fs-2xs)', color: 'var(--color-success)', fontWeight: 700, display: 'flex', alignItems: 'center', gap: 3, marginBottom: 3, cursor: 'help' }}
+            >
+              <ArrowDown size={11} />
+              <span style={{ borderBottom: '1px dotted currentColor', lineHeight: 1.1 }}>{t('download_limit')}</span>
             </label>
             <input
               type="text"
@@ -741,12 +743,15 @@ export function UserCard({ user, users = [], onEdit, onDelete, onLimitChange, on
               placeholder={downPlaceholder}
               value={customDown}
               onChange={e => setCustomDown(e.target.value)}
-              title={t('limit_units_hint')}
             />
           </div>
           <div style={{ flex: 1, minWidth: 84 }}>
-            <label style={{ fontSize: 'var(--fs-2xs)', color: 'var(--color-primary)', fontWeight: 700, display: 'flex', alignItems: 'center', gap: 3, marginBottom: 3 }}>
-              <ArrowUp size={11} /> {t('upload_limit')}
+            <label
+              title={t('limit_units_hint')}
+              style={{ fontSize: 'var(--fs-2xs)', color: 'var(--color-primary)', fontWeight: 700, display: 'flex', alignItems: 'center', gap: 3, marginBottom: 3, cursor: 'help' }}
+            >
+              <ArrowUp size={11} />
+              <span style={{ borderBottom: '1px dotted currentColor', lineHeight: 1.1 }}>{t('upload_limit')}</span>
             </label>
             <input
               type="text"
@@ -755,7 +760,6 @@ export function UserCard({ user, users = [], onEdit, onDelete, onLimitChange, on
               placeholder={upPlaceholder}
               value={customUp}
               onChange={e => setCustomUp(e.target.value)}
-              title={t('limit_units_hint')}
             />
           </div>
           <button
@@ -777,9 +781,6 @@ export function UserCard({ user, users = [], onEdit, onDelete, onLimitChange, on
             {isPaused ? <Play size={14} /> : <Pause size={14} />}
             {isPaused ? t('resume_btn') : t('pause_btn')}
           </button>
-        </div>
-        <div style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', marginTop: 5 }}>
-          {t('limit_units_hint')}
         </div>
       </div>
 

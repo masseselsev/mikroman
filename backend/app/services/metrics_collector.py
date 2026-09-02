@@ -12,9 +12,19 @@ from backend.app.schemas.metrics import (
     SystemMetricPoint,
     SystemMetricsResponse,
 )
+from backend.app.services.router_time import get_router_offset
 from backend.app.services.routeros import RouterOSClient
 
 logger = logging.getLogger("mikroman.metrics_collector")
+
+
+def _utc_epoch(dt: datetime) -> float:
+    """Seconds since the epoch for a naive-UTC timestamp.
+
+    ``datetime.timestamp()`` on a naive datetime assumes the *system* zone, so
+    on a non-UTC host the bucket index would drift; pin it to UTC explicitly.
+    """
+    return dt.replace(tzinfo=timezone.utc).timestamp()
 
 # Range duration and bucket aggregation interval mapping
 RANGE_CONFIG = {
@@ -126,11 +136,16 @@ class MetricsCollector:
         if not rows:
             return SystemMetricsResponse(range=range_key, points=[])
 
+        # Samples are stored naive-UTC; the chart axis must read in the router's
+        # local wall clock, like the header does. Shift each point out by the
+        # router's offset before it leaves here.
+        tz_shift = timedelta(minutes=await get_router_offset(session, router_id) or 0)
+
         # Bucket aggregation
         bucket_sec = cfg["bucket_seconds"]
         buckets: Dict[int, List[SystemMetric]] = {}
         for r in rows:
-            bucket_idx = int(r.timestamp.timestamp()) // bucket_sec
+            bucket_idx = int(_utc_epoch(r.timestamp)) // bucket_sec
             buckets.setdefault(bucket_idx, []).append(r)
 
         points: List[SystemMetricPoint] = []
@@ -146,7 +161,7 @@ class MetricsCollector:
             avg_volt = (sum(volts) / len(volts)) if volts else None
 
             points.append(SystemMetricPoint(
-                timestamp=items[-1].timestamp,
+                timestamp=items[-1].timestamp + tz_shift,
                 cpu_load=round(avg_cpu, 1),
                 memory_usage_pct=round(avg_ram_pct, 1),
                 memory_used_mb=round(avg_ram_used, 1),
@@ -193,11 +208,14 @@ class MetricsCollector:
         if not rows:
             return InterfaceHistoryResponse(range=range_key, interfaces=selected_interfaces or [], is_summed=True, points=[], current_rx_bps=0.0, current_tx_bps=0.0)
 
+        # Samples are naive-UTC; the axis reads in the router's local wall clock.
+        tz_shift = timedelta(minutes=await get_router_offset(session, router_id) or 0)
+
         bucket_sec = cfg["bucket_seconds"]
         # Group by bucket index -> list of metrics across selected interfaces
         buckets: Dict[int, Dict[str, List[InterfaceMetric]]] = {}
         for r in rows:
-            b_idx = int(r.timestamp.timestamp()) // bucket_sec
+            b_idx = int(_utc_epoch(r.timestamp)) // bucket_sec
             buckets.setdefault(b_idx, {}).setdefault(r.interface_name, []).append(r)
 
         points: List[InterfaceRatePoint] = []
@@ -215,7 +233,7 @@ class MetricsCollector:
                 latest_time = iface_rows[-1].timestamp
 
             points.append(InterfaceRatePoint(
-                timestamp=latest_time or now,
+                timestamp=(latest_time or now) + tz_shift,
                 rx_rate_bps=round(total_rx_bps, 1),
                 tx_rate_bps=round(total_tx_bps, 1),
                 rx_rate_formatted=format_rate(total_rx_bps),

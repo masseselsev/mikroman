@@ -65,7 +65,7 @@ async def _get_router_clock(client, router_id: Optional[int]) -> dict:
     # even before the first telemetry frame of a fresh process.
     try:
         async with AsyncSessionLocal() as session:
-            await store_router_offset(session, clock.get("gmt_offset_minutes"))
+            await store_router_offset(session, clock.get("gmt_offset_minutes"), router_id)
     except Exception as e:
         logger.debug(f"Could not persist router UTC offset: {e}")
     return clock

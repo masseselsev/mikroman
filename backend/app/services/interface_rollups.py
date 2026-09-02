@@ -87,7 +87,7 @@ async def recompute_interface_rollups(
 
     Returns the number of days rewritten. Commits its own work.
     """
-    offset = await get_router_offset(session) or 0
+    offset = await get_router_offset(session, router_id) or 0
     now_local = _naive_utc_now() + timedelta(minutes=offset)
     today = now_local.date()
 
@@ -209,7 +209,7 @@ async def recompute_interface_rollups(
 
 async def recompute_recent(session: AsyncSession, router_id: int) -> int:
     """The per-tick call: rebuild only the trailing :data:`RECOMPUTE_TRAILING_DAYS`."""
-    offset = await get_router_offset(session) or 0
+    offset = await get_router_offset(session, router_id) or 0
     today = (_naive_utc_now() + timedelta(minutes=offset)).date()
     return await recompute_interface_rollups(
         session, router_id, since_date=today - timedelta(days=RECOMPUTE_TRAILING_DAYS - 1)
