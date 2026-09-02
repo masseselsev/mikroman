@@ -6,6 +6,12 @@ export function useWebSocketTelemetry(routerId = null) {
   const wsRef = useRef(null);
 
   useEffect(() => {
+    // Drop the previous router's last frame the moment the selection changes,
+    // so its CPU / traffic / user list do not linger on screen until the new
+    // socket delivers its first tick.
+    setTelemetry(null);
+    setIsConnected(false);
+
     let reconnectTimeout = null;
     let isCancelled = false;
 
