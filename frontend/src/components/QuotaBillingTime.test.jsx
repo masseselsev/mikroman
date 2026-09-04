@@ -1,6 +1,6 @@
 import React from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, renderWithProviders, screen, waitFor } from '../test/render';
+import { act, fireEvent, renderWithProviders, screen, waitFor } from '../test/render';
 import { TrafficAnalytics } from './TrafficAnalytics';
 import { QuotaStrip } from './QuotaStrip';
 import { api } from '../api/client';
@@ -75,4 +75,43 @@ describe('QuotaStrip countdown', () => {
     renderWithProviders(<QuotaStrip activeRouterId={1} onOpenSettings={() => {}} />);
     expect(await screen.findByText(/2d 1[34]h left/)).toBeInTheDocument();
   });
+
+  it('updates threshold notches dynamically upon receiving quota-changed event', async () => {
+    vi.spyOn(api, 'getQuota').mockResolvedValue({ data: { ...base, thresholds: [50, 80] } });
+    renderWithProviders(<QuotaStrip activeRouterId={1} onOpenSettings={() => {}} />);
+
+    expect(await screen.findByText('50%')).toBeInTheDocument();
+    expect(screen.getByText('80%')).toBeInTheDocument();
+    expect(screen.queryByText('75%')).toBeNull();
+    expect(screen.queryByText('90%')).toBeNull();
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent('mikroman:quota-changed', {
+          detail: { ...base, thresholds: [50, 75, 90] },
+        })
+      );
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText('75%')).toBeInTheDocument();
+      expect(screen.getByText('90%')).toBeInTheDocument();
+    });
+  });
+
+  it('re-fetches quota when refreshKey prop changes', async () => {
+    const getQuotaSpy = vi.spyOn(api, 'getQuota').mockResolvedValue({ data: { ...base, thresholds: [50] } });
+    const { rerender } = renderWithProviders(<QuotaStrip activeRouterId={1} onOpenSettings={() => {}} refreshKey={0} />);
+
+    await screen.findByText('50%');
+    expect(getQuotaSpy).toHaveBeenCalledTimes(1);
+
+    rerender(<QuotaStrip activeRouterId={1} onOpenSettings={() => {}} refreshKey={1} />);
+
+    await waitFor(() => {
+      expect(getQuotaSpy).toHaveBeenCalledTimes(2);
+    });
+  });
 });
+
+

@@ -10,19 +10,10 @@ import {
   Pause,
   Play,
   EyeOff,
-  Trash2
+  Trash2,
+  Activity
 } from 'lucide-react';
-import { RateLimitInputs, LimitModeToggle } from './RateLimitInputs';
-
-const SPEED_PRESETS = [
-  { label: 'Inherit User Limit (Default)', value: 'default' },
-  { label: 'Unlimited (No Device Capping)', value: 'unlimited' },
-  { label: '↓ 5 Mbps (Down) / ↑ 2 Mbps (Up) — Low', value: '2M/5M' },
-  { label: '↓ 15 Mbps (Down) / ↑ 5 Mbps (Up) — Light', value: '5M/15M' },
-  { label: '↓ 30 Mbps (Down) / ↑ 10 Mbps (Up) — Standard', value: '10M/30M' },
-  { label: '↓ 50 Mbps (Down) / ↑ 20 Mbps (Up) — Media', value: '20M/50M' },
-  { label: '↓ 100 Mbps (Down) / ↑ 30 Mbps (Up) — Gaming / 4K', value: '30M/100M' },
-];
+import { RateLimitInputs } from './RateLimitInputs';
 
 function getDeviceIcon(vendor = '', hostname = '') {
   const text = `${vendor} ${hostname}`.toLowerCase();
@@ -38,21 +29,41 @@ function getDeviceIcon(vendor = '', hostname = '') {
   return <Globe size={20} />;
 }
 
-export function DeviceModal({ device, user, users = [], onClose, onUpdated }) {
+export function DeviceModal({ device, user, users = [], onClose, onUpdated, onViewConnections }) {
   const { t } = useI18n();
   const [userList, setUserList] = useState(users || []);
   const [selectedUserId, setSelectedUserId] = useState(device.user_id || (user?.id ? String(user.id) : ''));
   const [customName, setCustomName] = useState(device.custom_name || device.hostname || '');
-  const [speedLimit, setSpeedLimit] = useState(device.speed_limit || 'default');
   const [isPaused, setIsPaused] = useState(device.is_paused || false);
   const [isHidden, setIsHidden] = useState(device.is_hidden || false);
   const [priority, setPriority] = useState(device.priority ?? 1);
-  const [isCustomMode, setIsCustomMode] = useState(!SPEED_PRESETS.some(p => p.value === (device.speed_limit || 'default')));
-  const [customDown, setCustomDown] = useState(device.speed_limit && device.speed_limit.includes('/') ? device.speed_limit.split('/')[1] : '15M');
-  const [customUp, setCustomUp] = useState(device.speed_limit && device.speed_limit.includes('/') ? device.speed_limit.split('/')[0] : '5M');
+  // Manual rate only, same control as the user card. A device carries a
+  // `<up>/<down>` override or nothing; empty both fields means "inherit the
+  // owner's queue" (stored as `default`).
+  const _hasOverride = device.speed_limit && device.speed_limit.includes('/');
+  const [customDown, setCustomDown] = useState(_hasOverride ? device.speed_limit.split('/')[1] : '');
+  const [customUp, setCustomUp] = useState(_hasOverride ? device.speed_limit.split('/')[0] : '');
   const [isSaving, setIsSaving] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [pausing, setPausing] = useState(false);
   const [error, setError] = useState(null);
+
+  // The block is a firewall rule, so it must hit the router now - not wait for
+  // Save. Matches the per-user card and the device-row pause button.
+  const handlePauseToggle = async () => {
+    const next = !isPaused;
+    setPausing(true);
+    setError(null);
+    try {
+      await api.toggleDevicePause(device.id, next);
+      setIsPaused(next);
+      if (onUpdated) onUpdated();
+    } catch (err) {
+      setError(err.message || 'Failed to change pause state');
+    } finally {
+      setPausing(false);
+    }
+  };
 
   React.useEffect(() => {
     if (!users || users.length === 0) {
@@ -63,10 +74,6 @@ export function DeviceModal({ device, user, users = [], onClose, onUpdated }) {
       setUserList(users);
     }
   }, [users]);
-
-  const handleSpeedSelect = (val) => {
-    setSpeedLimit(val);
-  };
 
   const handleDelete = async () => {
     if (!window.confirm(t('delete_device_confirm'))) return;
@@ -88,10 +95,18 @@ export function DeviceModal({ device, user, users = [], onClose, onUpdated }) {
     setIsSaving(true);
     setError(null);
 
-    let effectiveLimit = speedLimit;
-    if (isCustomMode) {
-      const down = customDown.trim() || '15M';
-      const up = customUp.trim() || '5M';
+    // Empty both fields -> inherit the owner's queue. Otherwise a bare number
+    // is megabits, and a missing side mirrors the other (RouterOS: up/down).
+    let down = customDown.trim();
+    let up = customUp.trim();
+    let effectiveLimit;
+    if (!down && !up) {
+      effectiveLimit = 'default';
+    } else {
+      if (!down) down = up;
+      if (!up) up = down;
+      if (/^\d+$/.test(down)) down += 'M';
+      if (/^\d+$/.test(up)) up += 'M';
       effectiveLimit = `${up}/${down}`;
     }
 
@@ -169,47 +184,19 @@ export function DeviceModal({ device, user, users = [], onClose, onUpdated }) {
               </select>
             </div>
 
-            {/* Speed Limit */}
+            {/* Speed Limit - manual rate only, the same control the user card
+                uses. Empty both fields to inherit the owner's queue. */}
             <div className="form-group">
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-                <label className="form-label" style={{ marginBottom: 0, fontWeight: 600 }}>{t('speed_limit')}</label>
-                <LimitModeToggle
-                  isCustom={isCustomMode}
-                  onPresets={() => {
-                    setIsCustomMode(false);
-                    setSpeedLimit('default');
-                  }}
-                  onCustom={() => {
-                    setIsCustomMode(true);
-                    if (!customDown && !customUp) {
-                      setCustomDown('15M');
-                      setCustomUp('5M');
-                    }
-                  }}
-                />
-              </div>
-
-              {!isCustomMode ? (
-                <select
-                  className="form-select"
-                  value={speedLimit}
-                  onChange={e => handleSpeedSelect(e.target.value)}
-                >
-                  {SPEED_PRESETS.map(p => (
-                    <option key={p.value} value={p.value}>{p.label}</option>
-                  ))}
-                </select>
-              ) : (
-                <RateLimitInputs
-                  down={customDown}
-                  up={customUp}
-                  onChangeDown={setCustomDown}
-                  onChangeUp={setCustomUp}
-                  downPlaceholder="e.g. 15M or 50M"
-                  upPlaceholder="e.g. 5M or 20M"
-                  hint={t('device_queue_hint', { user: user?.name || 'group' })}
-                />
-              )}
+              <label className="form-label" style={{ marginBottom: 8, fontWeight: 600 }}>{t('speed_limit')}</label>
+              <RateLimitInputs
+                down={customDown}
+                up={customUp}
+                onChangeDown={setCustomDown}
+                onChangeUp={setCustomUp}
+                downPlaceholder={t('rate_inherit_ph')}
+                upPlaceholder={t('rate_inherit_ph')}
+                hint={t('device_queue_hint', { user: user?.name || 'group' })}
+              />
             </div>
 
             {/* Quick Pause & Status Toggle */}
@@ -227,7 +214,8 @@ export function DeviceModal({ device, user, users = [], onClose, onUpdated }) {
               <button
                 type="button"
                 className={`btn btn-sm ${isPaused ? 'btn-secondary' : 'btn-danger'}`}
-                onClick={() => setIsPaused(!isPaused)}
+                onClick={handlePauseToggle}
+                disabled={pausing}
               >
                 {isPaused ? t('resume_device') : t('pause_device')}
               </button>
@@ -269,7 +257,21 @@ export function DeviceModal({ device, user, users = [], onClose, onUpdated }) {
               <Trash2 size={14} />
               {t('delete_device')}
             </button>
-            <div style={{ display: 'flex', gap: 8 }}>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              {onViewConnections && (
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm"
+                  onClick={() => {
+                    onClose();
+                    onViewConnections(device.id);
+                  }}
+                  style={{ display: 'flex', alignItems: 'center', gap: 6 }}
+                >
+                  <Activity size={14} style={{ color: 'var(--color-primary)' }} />
+                  <span>{t('live_connections_title')}</span>
+                </button>
+              )}
               <button type="button" className="btn btn-secondary btn-sm" onClick={onClose}>
                 {t('cancel')}
               </button>

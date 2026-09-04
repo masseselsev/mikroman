@@ -133,3 +133,13 @@ class RouterUploadCertRequest(BaseModel):
     key_content: Optional[str] = Field(None, description="Private key body in PEM format (.key)")
     cert_name: str = Field(default="custom-ssl", description="Certificate name to create on RouterOS")
     passphrase: Optional[str] = None
+
+
+class RouterConfig(BaseModel):
+    host: str = "192.168.88.1"
+    username: str = "admin"
+    password: str = ""
+    port: int = 80
+    use_ssl: bool = False
+    ssl_verify: bool = False
+

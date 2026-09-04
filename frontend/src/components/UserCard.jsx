@@ -21,8 +21,22 @@ import {
   Check,
   Sliders,
   GripVertical,
-  BarChart2
+  BarChart2,
+  Activity
 } from 'lucide-react';
+
+// Apply and Pause share this exactly, so the footer's second row reads as two
+// mirrored halves - only colour and icon set them apart.
+const FOOTER_BTN_STYLE = {
+  flex: 1,
+  minWidth: 0,
+  height: 30,
+  padding: '2px 8px',
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  gap: 4,
+};
 
 function getDeviceIcon(vendor, hostname, size = 14) {
   const text = `${vendor || ''} ${hostname || ''}`.toLowerCase();
@@ -165,7 +179,7 @@ export function bandLabel(band) {
  *    row tooltip and the device modal, since the per-user panel above already
  *    carries the number the reader came for.
  */
-function DeviceRow({ group, t, lang, grandTotal = 0, onOpen, onUpdate, onViewTrafficHistory }) {
+function DeviceRow({ group, t, lang, grandTotal = 0, onOpen, onUpdate, onViewTrafficHistory, onViewConnections }) {
   const [busy, setBusy] = useState(false);
   // The adapter list under the "N×" chip, for pulling an adapter back out of a
   // bundle it was wrongly grouped into.
@@ -264,14 +278,6 @@ function DeviceRow({ group, t, lang, grandTotal = 0, onOpen, onUpdate, onViewTra
         </span>
         <span className="drow-name" title={deviceName}>{deviceName}</span>
 
-        {/* Live rate is placed on the left of volume stats to keep fixed statistics stable */}
-        {isMoving && (
-          <span className="drow-rate" style={{ flexShrink: 0 }}>
-            <span style={{ color: rateIn ? 'var(--color-success)' : 'var(--text-muted)' }}>↓ {formatSpeedShort(rateIn)}</span>
-            <span style={{ color: rateOut ? 'var(--color-primary)' : 'var(--text-muted)' }}>↑ {formatSpeedShort(rateOut)}</span>
-          </span>
-        )}
-
         {multiHomed && (
           <button
             type="button"
@@ -364,6 +370,20 @@ function DeviceRow({ group, t, lang, grandTotal = 0, onOpen, onUpdate, onViewTra
         )}
 
         <span className="drow-actions">
+          {onViewConnections && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onViewConnections(d.id);
+              }}
+              className="btn-icon"
+              style={{ width: 24, height: 24, background: 'var(--bg-card)' }}
+              title={t('live_connections_title')}
+            >
+              <Activity size={12} style={{ color: 'var(--color-primary)' }} />
+            </button>
+          )}
           {onViewTrafficHistory && (
             <button
               type="button"
@@ -411,10 +431,11 @@ function DeviceRow({ group, t, lang, grandTotal = 0, onOpen, onUpdate, onViewTra
         </span>
       </div>
 
-      {/* Line 3 — how it is connected. Present only for an active device with a
-          radio link; it wraps rather than truncates, since each token
-          (interface, band, signal) is meaningless cut in half. */}
-      {links.length > 0 && (
+      {/* Line 3 — how it is connected, plus the live rate pinned right so it
+          sits directly under the action buttons. Radio-link tokens wrap
+          rather than truncate; the line also shows for a wired device that is
+          currently moving traffic, just for the rate. */}
+      {(links.length > 0 || isMoving) && (
         <div className="drow-conn">
           {links.map(link => (
             <span
@@ -432,13 +453,19 @@ function DeviceRow({ group, t, lang, grandTotal = 0, onOpen, onUpdate, onViewTra
               )}
             </span>
           ))}
+          {isMoving && (
+            <span className="drow-rate" style={{ marginLeft: 'auto' }}>
+              <span style={{ color: rateIn ? 'var(--color-success)' : 'var(--text-muted)' }}>↓ {formatSpeedShort(rateIn)}</span>
+              <span style={{ color: rateOut ? 'var(--color-primary)' : 'var(--text-muted)' }}>↑ {formatSpeedShort(rateOut)}</span>
+            </span>
+          )}
         </div>
       )}
     </div>
   );
 }
 
-export function UserCard({ user, users = [], onEdit, onDelete, onLimitChange, onPauseToggle, onUpdate, onViewTrafficHistory, showHidden = false, autoSortActivity = false, gatewayTotal = 0, deviceGrandTotal = 0, dragIndex = null }) {
+export function UserCard({ user, users = [], onEdit, onDelete, onLimitChange, onPauseToggle, onUpdate, onViewTrafficHistory, onViewConnections, showHidden = false, autoSortActivity = false, gatewayTotal = 0, deviceGrandTotal = 0, dragIndex = null }) {
   const { t, lang } = useI18n();
   const [isUpdating, setIsUpdating] = useState(false);
   const [customDown, setCustomDown] = useState('');
@@ -704,6 +731,7 @@ export function UserCard({ user, users = [], onEdit, onDelete, onLimitChange, on
               onOpen={() => setSelectedDevice(g.primary)}
               onUpdate={onUpdate}
               onViewTrafficHistory={onViewTrafficHistory}
+              onViewConnections={onViewConnections}
             />
           ))}
           {deviceGroups.length === 0 && (
@@ -727,8 +755,11 @@ export function UserCard({ user, users = [], onEdit, onDelete, onLimitChange, on
           is a tooltip on the dotted-underlined Down / Up labels, not a
           permanent line of small print under a cramped row. */}
       <div style={{ borderTop: '1px solid var(--border-color)', paddingTop: 10 }}>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap' }}>
-          <div style={{ flex: 1, minWidth: 84 }}>
+        {/* Two deterministic rows - inputs, then buttons - so a longer set of
+            translated labels ("Применить" vs "Apply") cannot push a control
+            onto its own line and stretch the card. */}
+        <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
             <label
               title={t('limit_units_hint')}
               style={{ fontSize: 'var(--fs-2xs)', color: 'var(--color-success)', fontWeight: 700, display: 'flex', alignItems: 'center', gap: 3, marginBottom: 3, cursor: 'help' }}
@@ -745,7 +776,7 @@ export function UserCard({ user, users = [], onEdit, onDelete, onLimitChange, on
               onChange={e => setCustomDown(e.target.value)}
             />
           </div>
-          <div style={{ flex: 1, minWidth: 84 }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
             <label
               title={t('limit_units_hint')}
               style={{ fontSize: 'var(--fs-2xs)', color: 'var(--color-primary)', fontWeight: 700, display: 'flex', alignItems: 'center', gap: 3, marginBottom: 3, cursor: 'help' }}
@@ -762,24 +793,29 @@ export function UserCard({ user, users = [], onEdit, onDelete, onLimitChange, on
               onChange={e => setCustomUp(e.target.value)}
             />
           </div>
+        </div>
+        {/* Two mirrored halves: identical geometry, only the colour and the
+            icon differ so Apply / Pause read as a matched pair. */}
+        <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
           <button
             type="button"
             className="btn btn-primary btn-sm"
             onClick={handleApplyCustom}
             disabled={isUpdating}
-            style={{ height: 30, padding: '2px 12px', display: 'flex', alignItems: 'center', gap: 4 }}
+            style={FOOTER_BTN_STYLE}
           >
-            <Check size={12} />
-            {t('apply_limit')}
+            <Check size={13} style={{ flexShrink: 0 }} />
+            <span className="truncate">{t('apply_limit')}</span>
           </button>
           <button
+            type="button"
             className={`btn ${isPaused ? 'btn-primary' : 'btn-danger'} btn-sm`}
             onClick={handlePauseClick}
             disabled={isUpdating}
-            style={{ height: 30, whiteSpace: 'nowrap' }}
+            style={FOOTER_BTN_STYLE}
           >
-            {isPaused ? <Play size={14} /> : <Pause size={14} />}
-            {isPaused ? t('resume_btn') : t('pause_btn')}
+            {isPaused ? <Play size={13} style={{ flexShrink: 0 }} /> : <Pause size={13} style={{ flexShrink: 0 }} />}
+            <span className="truncate">{isPaused ? t('resume_btn') : t('pause_btn')}</span>
           </button>
         </div>
       </div>
@@ -791,6 +827,7 @@ export function UserCard({ user, users = [], onEdit, onDelete, onLimitChange, on
           users={users}
           onClose={() => setSelectedDevice(null)}
           onUpdated={onUpdate}
+          onViewConnections={onViewConnections}
         />
       )}
     </div>

@@ -91,10 +91,14 @@ describe('device row layout', () => {
     expect(name).toHaveAttribute('title', 'Pixel-9-Pro-XL');
   });
 
-  it('shows the live rate compactly, on the name line, only while it is moving', () => {
+  it('shows the live rate compactly, on the connection line under the buttons, only while it is moving', () => {
     const rate = document.querySelector('.drow-rate');
     expect(rate).not.toBeNull();
-    expect(rate.closest('.drow-main')).not.toBeNull();
+    // Moved off the name line into the third (connection) line, pinned right so
+    // it sits under the action buttons.
+    expect(rate.closest('.drow-main')).toBeNull();
+    expect(rate.closest('.drow-conn')).not.toBeNull();
+    expect(rate.style.marginLeft).toBe('auto');
     // Compact form: "12.4M" not "12.4 Mbps".
     expect(rate.textContent).toMatch(/↓\s*12\.4M/);
     expect(rate.textContent).toMatch(/↑\s*39\.5K/);

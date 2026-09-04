@@ -4,6 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.db.session import get_db
 from backend.app.schemas.common import APIResponse
 from backend.app.schemas.traffic import PauseStateUpdate, SpeedLimitUpdate
+from backend.app.services.guards import WriteGuardViolation
 from backend.app.services.router_manager import router_manager
 from backend.app.services.traffic_controller import TrafficController
 
@@ -22,7 +23,10 @@ async def set_user_limit(
     traffic_ctrl: TrafficController = Depends(get_traffic_controller)
 ):
     """Update speed limit for user (e.g. '10M/50M' or 'unlimited')."""
-    success = await traffic_ctrl.set_user_speed_limit(user_id, payload.speed_limit, db)
+    try:
+        success = await traffic_ctrl.set_user_speed_limit(user_id, payload.speed_limit, db)
+    except WriteGuardViolation as e:
+        raise HTTPException(status_code=400, detail=str(e))
     if not success:
         raise HTTPException(status_code=404, detail="User not found")
     return APIResponse(data=True, message=f"Speed limit set to {payload.speed_limit}")
@@ -36,12 +40,15 @@ async def toggle_pause_user(
     traffic_ctrl: TrafficController = Depends(get_traffic_controller)
 ):
     """Pause or resume internet access for a user."""
-    if payload.is_paused:
-        success = await traffic_ctrl.pause_user_internet(user_id, db)
-        msg = "Internet paused for user"
-    else:
-        success = await traffic_ctrl.resume_user_internet(user_id, db)
-        msg = "Internet resumed for user"
+    try:
+        if payload.is_paused:
+            success = await traffic_ctrl.pause_user_internet(user_id, db)
+            msg = "Internet paused for user"
+        else:
+            success = await traffic_ctrl.resume_user_internet(user_id, db)
+            msg = "Internet resumed for user"
+    except WriteGuardViolation as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
     if not success:
         raise HTTPException(status_code=404, detail="User not found")

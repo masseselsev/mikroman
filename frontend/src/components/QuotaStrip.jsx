@@ -20,7 +20,7 @@ import { Gauge, ExternalLink, Check, AlertTriangle } from 'lucide-react';
  * the portal link are configured. If a portal URL is set, its button links
  * straight to the ISP's own usage page (or the modem's).
  */
-export function QuotaStrip({ activeRouterId, onOpenSettings }) {
+export function QuotaStrip({ activeRouterId, onOpenSettings, refreshKey }) {
   const { t } = useI18n();
   const [q, setQ] = useState(null);
 
@@ -38,7 +38,28 @@ export function QuotaStrip({ activeRouterId, onOpenSettings }) {
     load();
     const id = setInterval(load, 30000);
     return () => clearInterval(id);
-  }, [load]);
+  }, [load, refreshKey]);
+
+  useEffect(() => {
+    const handleQuotaChanged = (e) => {
+      if (e.detail && (!e.detail.router_id || e.detail.router_id === activeRouterId)) {
+        setQ(e.detail);
+      }
+      load();
+    };
+    const handleStorage = (e) => {
+      if (e.key === 'mikroman:quota-updated-at') {
+        load();
+      }
+    };
+
+    window.addEventListener('mikroman:quota-changed', handleQuotaChanged);
+    window.addEventListener('storage', handleStorage);
+    return () => {
+      window.removeEventListener('mikroman:quota-changed', handleQuotaChanged);
+      window.removeEventListener('storage', handleStorage);
+    };
+  }, [load, activeRouterId]);
 
   if (!q || !q.enabled) return null;
 

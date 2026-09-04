@@ -16,11 +16,10 @@ Two behaviours live here because they cannot live at the call sites:
 import logging
 import time
 from contextlib import asynccontextmanager
-from typing import AsyncIterator, Optional
+from typing import Any, AsyncIterator, Optional
 
 import httpx
 
-from backend.app.core.config import Settings
 from backend.app.core.config import settings as global_settings
 from backend.app.schemas.routeros import RouterBoardInfo
 
@@ -77,7 +76,7 @@ class RouterOSTransport:
 
     def __init__(
         self,
-        config: Optional[Settings] = None,
+        config: Optional[Any] = None,
         host: Optional[str] = None,
         port: Optional[int] = None,
         use_ssl: Optional[bool] = None,
@@ -87,13 +86,15 @@ class RouterOSTransport:
         timeout: Optional[float] = None
     ):
         self.config = config or global_settings
-        self.host = host if host is not None else self.config.ROUTEROS_HOST
-        self.port = port if port is not None else self.config.ROUTEROS_PORT
-        self.use_ssl = use_ssl if use_ssl is not None else self.config.ROUTEROS_USE_SSL
-        self.ssl_verify = ssl_verify if ssl_verify is not None else (self.config.ROUTEROS_SSL_VERIFY if self.use_ssl else False)
-        self.username = username if username is not None else self.config.ROUTEROS_USER
-        self.password = password if password is not None else self.config.ROUTEROS_PASSWORD
-        timeout_val = timeout if timeout is not None else self.config.ROUTEROS_TIMEOUT_SECONDS
+        self.host = host if host is not None else getattr(self.config, "host", getattr(self.config, "ROUTEROS_HOST", "192.168.88.1"))
+        self.port = port if port is not None else getattr(self.config, "port", getattr(self.config, "ROUTEROS_PORT", 80))
+        self.use_ssl = use_ssl if use_ssl is not None else getattr(self.config, "use_ssl", getattr(self.config, "ROUTEROS_USE_SSL", False))
+        self.ssl_verify = ssl_verify if ssl_verify is not None else (
+            getattr(self.config, "ssl_verify", getattr(self.config, "ROUTEROS_SSL_VERIFY", False)) if self.use_ssl else False
+        )
+        self.username = username if username is not None else getattr(self.config, "username", getattr(self.config, "ROUTEROS_USER", "admin"))
+        self.password = password if password is not None else getattr(self.config, "password", getattr(self.config, "ROUTEROS_PASSWORD", ""))
+        timeout_val = timeout if timeout is not None else getattr(self.config, "timeout", getattr(self.config, "ROUTEROS_TIMEOUT_SECONDS", 5.0))
 
         protocol = "https" if self.use_ssl else "http"
         self.base_url = f"{protocol}://{self.host}:{self.port}/rest"

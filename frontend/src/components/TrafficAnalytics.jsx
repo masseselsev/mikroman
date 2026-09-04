@@ -41,7 +41,7 @@ const COVERAGE_DISMISS_KEY = 'mm_coverage_notice_dismissed';
 
 export function TrafficAnalytics({ activeRouter, initialBreakdownTab = 'overview' }) {
   const { t } = useI18n();
-  const [preset, setPreset] = useState('7d');
+  const [preset, setPreset] = useState('today');
   const [coverageDismissed, setCoverageDismissed] = useState(() => {
     try { return localStorage.getItem(COVERAGE_DISMISS_KEY) || ''; } catch { return ''; }
   });

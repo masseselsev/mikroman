@@ -10,6 +10,11 @@ import logging
 from typing import List, Optional
 
 from backend.app.schemas.traffic import SimpleQueueItem
+from backend.app.services.guards import (
+    guard_foreign_resources,
+    guard_immune_targets,
+    guard_queue_invariants,
+)
 
 logger = logging.getLogger("mikroman.routeros")
 
@@ -49,18 +54,32 @@ class QueuesMixin:
         target: str,
         max_limit: str = "0/0",
         comment: Optional[str] = None,
-        parent: Optional[str] = None
+        parent: Optional[str] = None,
+        limit_at: Optional[str] = None
     ) -> str:
         """Create a new Simple Queue (supporting hierarchical parent queue trees)."""
+        payload = {
+            "name": name,
+            "target": target,
+            "max-limit": max_limit,
+            "comment": comment or "mikroman:managed"
+        }
+        if parent:
+            payload["parent"] = parent
+        if limit_at:
+            payload["limit-at"] = limit_at
+
+        target_val = payload.get("target", "")
+        max_limit_val = payload.get("max-limit", "0/0")
+        limit_at_val = payload.get("limit-at")
+        name_val = payload.get("name")
+        parent_val = payload.get("parent")
+        guard_queue_invariants(target=target_val, max_limit=max_limit_val, limit_at=limit_at_val, parent=parent_val, name=name_val)
+        if max_limit_val not in ("0/0", "0") and target_val:
+            immune = self.get_immune_ips() if hasattr(self, "get_immune_ips") else set()
+            guard_immune_targets(target_val, immune, action="queue")
+
         async with self._get_client() as client:
-            payload = {
-                "name": name,
-                "target": target,
-                "max-limit": max_limit,
-                "comment": comment or "mikroman:managed"
-            }
-            if parent:
-                payload["parent"] = parent
             resp = await client.put("/queue/simple", json=payload)
             resp.raise_for_status()
             res_data = resp.json()
@@ -74,29 +93,46 @@ class QueuesMixin:
         target: Optional[str] = None,
         disabled: Optional[bool] = None,
         comment: Optional[str] = None,
-        parent: Optional[str] = None
+        parent: Optional[str] = None,
+        limit_at: Optional[str] = None
     ) -> None:
         """Update an existing Simple Queue."""
-        async with self._get_client() as client:
-            payload = {}
-            if name is not None:
-                payload["name"] = name
-            if max_limit is not None:
-                payload["max-limit"] = max_limit
-            if target is not None:
-                payload["target"] = target
-            if disabled is not None:
-                payload["disabled"] = "true" if disabled else "false"
-            if comment is not None:
-                payload["comment"] = comment
-            if parent is not None:
-                payload["parent"] = parent
+        payload = {}
+        if name is not None:
+            payload["name"] = name
+        if max_limit is not None:
+            payload["max-limit"] = max_limit
+        if target is not None:
+            payload["target"] = target
+        if disabled is not None:
+            payload["disabled"] = "true" if disabled else "false"
+        if comment is not None:
+            payload["comment"] = comment
+        if parent is not None:
+            payload["parent"] = parent
+        if limit_at is not None:
+            payload["limit-at"] = limit_at
 
+        target_val = payload.get("target", "")
+        max_limit_val = payload.get("max-limit", "0/0")
+        limit_at_val = payload.get("limit-at")
+        name_val = payload.get("name")
+        parent_val = payload.get("parent")
+        guard_queue_invariants(target=target_val, max_limit=max_limit_val, limit_at=limit_at_val, parent=parent_val, name=name_val)
+        if max_limit_val not in ("0/0", "0") and target_val:
+            immune = self.get_immune_ips() if hasattr(self, "get_immune_ips") else set()
+            guard_immune_targets(target_val, immune, action="queue")
+
+        async with self._get_client() as client:
             resp = await client.patch(f"/queue/simple/{queue_id}", json=payload)
             resp.raise_for_status()
 
-    async def delete_simple_queue(self, queue_id: str) -> None:
+    async def delete_simple_queue(self, queue_id: str, comment: Optional[str] = None) -> None:
         """Delete a Simple Queue."""
+        if comment is not None:
+            guard_foreign_resources(comment, action="delete", resource_type="queue")
+
         async with self._get_client() as client:
             resp = await client.delete(f"/queue/simple/{queue_id}")
             resp.raise_for_status()
+
