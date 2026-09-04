@@ -6,18 +6,24 @@ import { ArrowDown, ArrowUp } from 'lucide-react';
  * Paired download/upload rate fields for a manual bandwidth limit.
  *
  * The user and device dialogs each carried their own copy of this markup, which
- * is how they drifted to different field heights and label sizes for the same
- * control. One component keeps them identical; only the placeholders and the
- * explanatory hint differ, because a device limit is a child of its owner's
- * queue while a user limit is the parent.
+ * is how they drifted apart. This is now the *same* control as the per-user
+ * card footer in UserCard - a bare two-field row (no panel box), tiny colour-
+ * coded labels, 30px inputs - so the limit editor reads identically in the
+ * card and in both dialogs. Only the placeholders and the tooltip hint differ.
  *
- * The hint is not a permanent line of small print: it lives as a tooltip on the
- * dotted-underlined Down / Up labels, matching the compact per-user footer in
- * UserCard so both editors read the same.
- *
- * Values are RouterOS rate strings ("50M", "500k"), kept as text rather than
- * numbers so the unit suffix survives editing.
+ * The hint is a tooltip on the dotted-underlined Down / Up labels, not a line
+ * of small print. Values are RouterOS rate strings ("50M", "500k"), kept as
+ * text so the unit suffix survives editing.
  */
+const FIELD_LABEL_STYLE = {
+  fontSize: 'var(--fs-2xs)',
+  fontWeight: 700,
+  display: 'flex',
+  alignItems: 'center',
+  gap: 3,
+  marginBottom: 3,
+};
+const INPUT_STYLE = { padding: '4px 6px', fontSize: 'var(--fs-sm)', height: 30, width: '100%' };
 const HINT_TEXT_STYLE = { borderBottom: '1px dotted currentColor', lineHeight: 1.1 };
 
 export function RateLimitInputs({
@@ -31,58 +37,32 @@ export function RateLimitInputs({
 }) {
   const { t } = useI18n();
 
-  const labelStyle = (color) => ({
-    color,
-    display: 'flex',
-    alignItems: 'center',
-    gap: 4,
-    ...(hint ? { cursor: 'help' } : null),
-  });
+  const field = (Icon, color, labelKey, value, onChange, placeholder) => (
+    <div style={{ flex: 1, minWidth: 0 }}>
+      <label
+        title={hint || undefined}
+        style={{ ...FIELD_LABEL_STYLE, color, ...(hint ? { cursor: 'help' } : null) }}
+      >
+        <Icon size={11} />
+        {hint
+          ? <span style={HINT_TEXT_STYLE}>{t(labelKey)}</span>
+          : t(labelKey)}
+      </label>
+      <input
+        type="text"
+        className="form-input font-mono"
+        style={INPUT_STYLE}
+        placeholder={placeholder}
+        value={value}
+        onChange={e => onChange(e.target.value)}
+      />
+    </div>
+  );
 
   return (
-    <div style={{
-      background: 'var(--bg-secondary)',
-      padding: '12px 14px',
-      borderRadius: 'var(--radius-md)',
-      border: '1px solid var(--border-color)',
-      display: 'flex',
-      flexDirection: 'column',
-      gap: 10
-    }}>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-        <div>
-          <label className="rate-label" style={labelStyle('var(--color-success)')} title={hint || undefined}>
-            <ArrowDown size={13} />
-            {hint
-              ? <span style={HINT_TEXT_STYLE}>{t('download_limit')}</span>
-              : t('download_limit')}
-          </label>
-          <input
-            type="text"
-            className="form-input font-mono"
-            placeholder={downPlaceholder}
-            value={down}
-            onChange={e => onChangeDown(e.target.value)}
-            style={{ height: 'var(--control-h-sm)', fontSize: 'var(--fs-sm)' }}
-          />
-        </div>
-        <div>
-          <label className="rate-label" style={labelStyle('var(--color-primary)')} title={hint || undefined}>
-            <ArrowUp size={13} />
-            {hint
-              ? <span style={HINT_TEXT_STYLE}>{t('upload_limit')}</span>
-              : t('upload_limit')}
-          </label>
-          <input
-            type="text"
-            className="form-input font-mono"
-            placeholder={upPlaceholder}
-            value={up}
-            onChange={e => onChangeUp(e.target.value)}
-            style={{ height: 'var(--control-h-sm)', fontSize: 'var(--fs-sm)' }}
-          />
-        </div>
-      </div>
+    <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
+      {field(ArrowDown, 'var(--color-success)', 'download_limit', down, onChangeDown, downPlaceholder)}
+      {field(ArrowUp, 'var(--color-primary)', 'upload_limit', up, onChangeUp, upPlaceholder)}
     </div>
   );
 }

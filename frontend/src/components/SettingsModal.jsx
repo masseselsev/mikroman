@@ -12,6 +12,7 @@ export function SettingsModal({
   onClose,
   onReboot,
   onRoutersChanged,
+  onQuotaChanged,
   initialTab = 'general',
   autoOpenAddRouter = false,
   activeRouter = null,
@@ -25,7 +26,13 @@ export function SettingsModal({
     telegram_bot_token: '',
     telegram_admin_ids: '',
     telegram_mode: 'polling',
-    telegram_webhook_url: ''
+    telegram_webhook_url: '',
+    backup_enabled: 'true',
+    backup_interval_hours: '24',
+    backup_retention_days: '90',
+    backup_max_count: '30',
+    log_scraping_enabled: 'true',
+    log_retention_days: '14',
   });
   const [isSaving, setIsSaving] = useState(false);
   const [testResult, setTestResult] = useState(null);
@@ -159,14 +166,18 @@ export function SettingsModal({
       setActiveTab(initialTab || 'general');
       setShowAddRouter(!!autoOpenAddRouter);
       setEditingRouterId(null);
-      loadSettingsAndRouters();
-      loadQuota();
+      const rid = activeRouter?.id ?? selectedRouterId;
+      if (activeRouter?.id && activeRouter.id !== selectedRouterId) {
+        setSelectedRouterId(activeRouter.id);
+      }
+      loadSettingsAndRouters(rid);
+      loadQuota(rid);
       loadIpLookup();
       setIpLookupError('');
       setTestResult(null);
       setStatusMsg('');
     }
-  }, [isOpen, initialTab, autoOpenAddRouter]);
+  }, [isOpen, initialTab, autoOpenAddRouter, activeRouter?.id]);
 
   if (!isOpen) return null;
 
@@ -175,13 +186,13 @@ export function SettingsModal({
     setIsSaving(true);
     try {
       await api.saveSettings(settings);
-      await api.saveQuota({
+      const quotaRes = await api.saveQuota({
         limit_bytes: Math.max(0, Math.round(quota.limit_gb * (1024 ** 3))),
         thresholds: quota.thresholds,
         notify_telegram: quota.notify_telegram,
         portal_url: quota.portal_url.trim() || null,
         portal_label: quota.portal_label.trim() || null,
-      });
+      }, selectedRouterId || activeRouter?.id || null);
       // Only the user's own entries travel back; the built-in catalogue is the
       // server's and is reconstructed there.
       await api.saveIpLookup({
@@ -191,6 +202,17 @@ export function SettingsModal({
           id: sv.id, name: sv.name, url_template: sv.url_template,
         })),
       });
+
+      if (onQuotaChanged) {
+        onQuotaChanged(quotaRes?.data);
+      }
+      window.dispatchEvent(new CustomEvent('mikroman:quota-changed', { detail: quotaRes?.data }));
+      try {
+        localStorage.setItem('mikroman:quota-updated-at', Date.now().toString());
+      } catch {
+        // localStorage error non-fatal
+      }
+
       setStatusMsg(t('save') + ' OK');
       setTimeout(() => {
         onClose();
@@ -796,6 +818,116 @@ export function SettingsModal({
                       {net}
                     </span>
                   ))}
+                </div>
+              </div>
+
+              <div style={{ height: 1, background: 'var(--border-color)', margin: '6px 0' }}></div>
+
+              {/* Automated Backups & Retention Policy */}
+              <div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                  <h3 style={{ fontSize: 'var(--fs-md)', fontWeight: 700, color: 'var(--color-primary)' }}>
+                    {t('backup_settings_title')}
+                  </h3>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
+                    <input
+                      type="checkbox"
+                      checked={settings.backup_enabled !== 'false'}
+                      onChange={e => setSettings({ ...settings, backup_enabled: e.target.checked ? 'true' : 'false' })}
+                      style={{ width: 18, height: 18, cursor: 'pointer', accentColor: 'var(--color-primary)' }}
+                    />
+                    <span style={{ fontSize: 'var(--fs-sm)', fontWeight: 600 }}>
+                      {settings.backup_enabled !== 'false' ? t('backup_enabled_label') : 'Backups Disabled'}
+                    </span>
+                  </label>
+                </div>
+                <p style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginBottom: 10 }}>
+                  {t('backup_settings_desc')}
+                </p>
+
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10, marginBottom: 8 }}>
+                  <div className="form-group">
+                    <label className="form-label">{t('backup_interval_label')}</label>
+                    <select
+                      className="form-select font-mono"
+                      value={settings.backup_interval_hours || '24'}
+                      onChange={e => setSettings({ ...settings, backup_interval_hours: e.target.value })}
+                      style={{ width: '100%', height: 36, fontSize: 'var(--fs-sm)' }}
+                    >
+                      <option value="6">Every 6 Hours</option>
+                      <option value="12">Every 12 Hours</option>
+                      <option value="24">Daily (24h) — Recommended</option>
+                      <option value="48">Every 2 Days (48h)</option>
+                      <option value="168">Weekly (7 Days)</option>
+                    </select>
+                  </div>
+
+                  <div className="form-group">
+                    <label className="form-label">{t('backup_retention_days_label')}</label>
+                    <input
+                      type="number"
+                      min="7"
+                      max="365"
+                      className="form-input font-mono"
+                      value={settings.backup_retention_days || '90'}
+                      onChange={e => setSettings({ ...settings, backup_retention_days: e.target.value })}
+                      placeholder="90"
+                    />
+                  </div>
+
+                  <div className="form-group">
+                    <label className="form-label">{t('backup_max_count_label')}</label>
+                    <input
+                      type="number"
+                      min="5"
+                      max="100"
+                      className="form-input font-mono"
+                      value={settings.backup_max_count || '30'}
+                      onChange={e => setSettings({ ...settings, backup_max_count: e.target.value })}
+                      placeholder="30"
+                    />
+                  </div>
+                </div>
+
+                <p style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)' }}>
+                  📌 {t('backup_pinning_hint')}
+                </p>
+              </div>
+
+              <div style={{ height: 1, background: 'var(--border-color)', margin: '6px 0' }}></div>
+
+              {/* Background Log Collection */}
+              <div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                  <h3 style={{ fontSize: 'var(--fs-md)', fontWeight: 700, color: 'var(--color-primary)' }}>
+                    {t('log_scraping_enabled_label')}
+                  </h3>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
+                    <input
+                      type="checkbox"
+                      checked={settings.log_scraping_enabled !== 'false'}
+                      onChange={e => setSettings({ ...settings, log_scraping_enabled: e.target.checked ? 'true' : 'false' })}
+                      style={{ width: 18, height: 18, cursor: 'pointer', accentColor: 'var(--color-primary)' }}
+                    />
+                    <span style={{ fontSize: 'var(--fs-sm)', fontWeight: 600 }}>
+                      {settings.log_scraping_enabled !== 'false' ? t('enabled') : t('disabled')}
+                    </span>
+                  </label>
+                </div>
+                <p style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginBottom: 10 }}>
+                  {t('log_scraping_enabled_desc')}
+                </p>
+                <div className="form-group" style={{ maxWidth: 220 }}>
+                  <label className="form-label">{t('log_retention_days_label')}</label>
+                  <input
+                    type="number"
+                    min="1"
+                    max="365"
+                    className="form-input font-mono"
+                    value={settings.log_retention_days || '14'}
+                    onChange={e => setSettings({ ...settings, log_retention_days: e.target.value })}
+                    style={{ height: 36, fontSize: 'var(--fs-sm)' }}
+                  />
                 </div>
               </div>
 

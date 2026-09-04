@@ -13,6 +13,7 @@ from backend.app.schemas.routeros import (
     RouterSystemHealth,
     RouterSystemResource,
 )
+from backend.app.services.guards import guard_foreign_resources
 from backend.app.services.routeros.parsing import parse_gmt_offset_minutes
 
 logger = logging.getLogger("mikroman.routeros")
@@ -173,18 +174,60 @@ class SystemMixin:
             raw = resp.json()
             return raw if isinstance(raw, list) else [raw]
 
-    async def add_logging_rule(self, topics: str, action: str = "memory") -> str:
+    async def get_logs(self, limit: int = 300, topics: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Alias of :meth:`get_log` with the argument order the log scraper uses.
+
+        Both names are kept: ``get_log`` reads as "the log" for the container
+        console it was written for, ``get_logs`` as "the entries" for the log
+        viewer and the scraper. Same RouterOS menu either way.
+        """
+        return await self.get_log(topics=topics, limit=limit)
+
+    async def add_logging_rule(
+        self, topics: str, action: str = "memory", prefix: Optional[str] = None
+    ) -> str:
         """Start recording a topic RouterOS does not log by default.
 
         ``container`` is one of those: without a rule for it, a container's
         output is produced and discarded, so anything that reads results back
         out of the log has to make sure the rule exists first.
+
+        The rule is stamped ``mikroman:log:<topics>`` so the write guard can
+        later tell a rule MikroMan added from one the administrator wrote by
+        hand - only the former may be deleted again.
         """
+        payload: Dict[str, Any] = {
+            "topics": topics,
+            "action": action,
+            "comment": f"mikroman:log:{topics}",
+        }
+        if prefix:
+            payload["prefix"] = prefix
         async with self._get_client() as client:
-            resp = await client.put("/system/logging", json={"topics": topics, "action": action})
+            resp = await client.put("/system/logging", json=payload)
             resp.raise_for_status()
             body = resp.json()
             return body.get(".id", "") if isinstance(body, dict) else ""
+
+    async def remove_logging_rule(self, rule_id: str, comment: Optional[str] = None) -> bool:
+        """Delete a `/system/logging` rule that MikroMan created.
+
+        Deleting the router's default rules would silence its log entirely, so
+        the comment is checked first: when the caller does not supply one, the
+        rule is read back from the router and its own comment is used. A rule
+        without the ``mikroman:`` prefix belongs to the administrator and the
+        guard refuses it.
+        """
+        if comment is None:
+            for rule in await self.get_logging_rules():
+                if rule.get(".id") == rule_id:
+                    comment = rule.get("comment")
+                    break
+        guard_foreign_resources(comment, action="delete", resource_type="logging-rule")
+
+        async with self._get_client() as client:
+            resp = await client.delete(f"/system/logging/{rule_id}")
+            return resp.status_code in (200, 204)
 
     async def get_system_clock(self) -> Dict[str, Any]:
         """Router date, time and timezone.

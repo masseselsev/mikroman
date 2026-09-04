@@ -22,7 +22,7 @@ class FakeRouter:
     async def get_simple_queues(self):
         return list(self.queues)
 
-    async def delete_simple_queue(self, queue_id):
+    async def delete_simple_queue(self, queue_id, comment=None):
         self.deleted.append(queue_id)
         self.queues = [q for q in self.queues if q.id != queue_id]
 

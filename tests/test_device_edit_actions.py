@@ -94,7 +94,7 @@ async def test_detach_subtracts_the_device_share_and_clamps_at_zero(api_client):
         assert (rolls[date(2026, 8, 21)].bytes_in, rolls[date(2026, 8, 21)].bytes_out) == (0, 0)
 
 
-# --- DELETE keeps the traffic on the profile --------------------------------
+@pytest.mark.asyncio
 
 @pytest.mark.asyncio
 async def test_deleting_a_device_keeps_its_traffic_on_the_profile(api_client):
@@ -277,3 +277,54 @@ async def test_split_rejects_the_current_address(api_client):
 
     res = await api_client.post(f"/api/v1/devices/{dev_id}/split", json={"mac_address": mac})
     assert res.status_code == 400
+
+
+# --- PATCH: is_paused enforces the firewall block, not just the DB flag -----
+
+@pytest.mark.asyncio
+async def test_patch_is_paused_pushes_the_block_to_the_router(api_client, monkeypatch):
+    """The Device Settings modal saves the whole form through PATCH. Setting
+    'Paused' there must add the firewall block - a DB flag alone let the phone
+    keep browsing over Wi-Fi.
+    """
+    from backend.app.services.traffic_controller import TrafficController
+
+    calls = []
+
+    async def _fake_pause(self, device_id, session):
+        calls.append(("pause", device_id))
+        return True
+
+    async def _fake_resume(self, device_id, session):
+        calls.append(("resume", device_id))
+        return True
+
+    monkeypatch.setattr(TrafficController, "pause_device_internet", _fake_pause)
+    monkeypatch.setattr(TrafficController, "resume_device_internet", _fake_resume)
+
+    async with api_client.session_factory() as s:
+        _, dev = await _seed_user_device(s, with_traffic=False)
+        dev_id = dev.id
+
+    r1 = await api_client.patch(f"/api/v1/devices/{dev_id}", json={"is_paused": True})
+    assert r1.status_code == 200
+    assert r1.json()["data"]["is_paused"] is True
+    assert ("pause", dev_id) in calls
+
+    # Saving again with the flag already true must STILL re-assert the block -
+    # an earlier flag-only save could have left the router unblocked.
+    calls.clear()
+    r2 = await api_client.patch(f"/api/v1/devices/{dev_id}", json={"is_paused": True})
+    assert r2.status_code == 200
+    assert calls == [("pause", dev_id)]
+
+    calls.clear()
+    r3 = await api_client.patch(f"/api/v1/devices/{dev_id}", json={"is_paused": False})
+    assert r3.status_code == 200
+    assert calls == [("resume", dev_id)]
+
+    # An unrelated PATCH (no is_paused key) must not touch the router block.
+    calls.clear()
+    r4 = await api_client.patch(f"/api/v1/devices/{dev_id}", json={"custom_name": "Renamed"})
+    assert r4.status_code == 200
+    assert calls == []

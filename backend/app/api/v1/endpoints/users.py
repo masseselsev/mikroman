@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, timedelta
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -316,9 +316,13 @@ async def get_user_traffic_history(
         today=today,
         now_dt=now,
     )
-    # The 1D preset resolves to a single day ("today"); pass the router-local
-    # clock so the engine returns a 30-minute-bucket timeline for it.
-    intraday_now = now if (resolved_start == resolved_end and preset in ("today", "day", "1d")) else None
+    intraday_now = None
+    intraday_start = None
+    if range_label == "24h":
+        intraday_now = now
+        intraday_start = now - timedelta(hours=24)
+    elif resolved_start == resolved_end and preset in ("today", "day", "1d"):
+        intraday_now = now
     data = await AnalyticsEngine.get_user_traffic_history(
         session=db,
         user_id=user_id,
@@ -326,5 +330,6 @@ async def get_user_traffic_history(
         end_date=resolved_end,
         range_preset=range_label,
         intraday_now=intraday_now,
+        intraday_start=intraday_start,
     )
     return APIResponse(data=data)
