@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { formatBytes, formatBytesCompact, formatDateTime, formatGbWhole, formatLastActive, formatRelativeTime, formatSpeed, formatSpeedShort, formatUptime, parseUtcDate } from './formatters';
+import { formatBytes, formatBytesCompact, formatDateTime, formatGbWhole, formatLastActive, formatRelativeTime, formatRouterDateTime, formatSpeed, formatSpeedShort, formatUptime, parseUtcDate } from './formatters';
 
 /**
  * These decide what every figure on the dashboard actually reads as, so their
@@ -230,5 +230,33 @@ describe('formatUptime', () => {
 
   it('falls back to spacing an unrecognised string rather than dropping it', () => {
     expect(formatUptime('3h junk')).toBe('3h  junk');
+  });
+});
+
+describe('formatRouterDateTime', () => {
+  it('shifts a UTC timestamp into the router\'s own timezone rather than the browser\'s', () => {
+    // The bug this guards: `System Events` used a plain `toLocaleString()`,
+    // which reads the *viewer's* timezone. Two people in different timezones
+    // looking at the same event would see two different times.
+    const utc = '2026-09-05T09:50:36';
+    // Tashkent, UTC+5.
+    expect(formatRouterDateTime(utc, 300)).toBe('05.09.2026, 14:50:36');
+  });
+
+  it('handles a negative offset that rolls the date back a day', () => {
+    expect(formatRouterDateTime('2026-09-05T02:00:00', -180)).toBe('04.09.2026, 23:00:00');
+  });
+
+  it('is independent of the string\'s own timezone suffix', () => {
+    expect(formatRouterDateTime('2026-09-05T09:50:36Z', 300)).toBe('05.09.2026, 14:50:36');
+  });
+
+  it('falls back to the browser-local formatter when no offset is known', () => {
+    expect(formatRouterDateTime('2026-09-05T09:50:36', null)).toBe(formatDateTime('2026-09-05T09:50:36'));
+  });
+
+  it('returns empty for an unparseable timestamp', () => {
+    expect(formatRouterDateTime('not a date', 300)).toBe('');
+    expect(formatRouterDateTime(null, 300)).toBe('');
   });
 });

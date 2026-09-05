@@ -11,15 +11,24 @@ import { MetricCharts } from './components/MetricCharts';
 import { TrafficAnalytics } from './components/TrafficAnalytics';
 import { SettingsModal } from './components/SettingsModal';
 import { TrafficHistoryModal } from './components/TrafficHistoryModal';
-import { formatBytes } from './utils/formatters';
+import { LiveConnectionsModal } from './components/LiveConnectionsModal';
+import RouterLogsModal from './components/RouterLogsModal';
+import RouterBackupsModal from './components/RouterBackupsModal';
+import RouterFirmwareModal from './components/RouterFirmwareModal';
+import { formatBytes, formatRouterDateTime } from './utils/formatters';
 import { mergeTelemetryIntoUsers } from './utils/telemetryMerge';
 import { SetupWizard } from './components/SetupWizard';
 import { AppFooter } from './components/AppFooter';
 import { QuotaStrip } from './components/QuotaStrip';
 import { ContainersPage } from './components/ContainersPage';
-import { Users, Laptop, Activity, BarChart2, Plus, AlertCircle, EyeOff, ChevronDown, ChevronRight, AlertTriangle, Container, ArrowUpDown } from 'lucide-react';
+import { Users, Laptop, Activity, BarChart2, Plus, AlertCircle, EyeOff, ChevronDown, ChevronRight, AlertTriangle, Container, ArrowUpDown, Radio } from 'lucide-react';
+// Firmware status and log counters change on the order of days, not seconds,
+// and each firmware check costs the router two REST calls. Riding the 6 s data
+// poll at its own rate would be pure noise on the box.
+const SLOW_POLL_MS = 5 * 60 * 1000;
+
 export function App() {
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
 
   const [routers, setRouters] = useState([]);
   const [activeRouter, setActiveRouter] = useState(null);
@@ -51,6 +60,23 @@ export function App() {
   const [settingsInitialTab, setSettingsInitialTab] = useState('general');
   const [settingsAutoAddRouter, setSettingsAutoAddRouter] = useState(false);
   const [trafficHistoryTarget, setTrafficHistoryTarget] = useState(null);
+  const [connectionsModalOpen, setConnectionsModalOpen] = useState(false);
+  const [connectionsDeviceId, setConnectionsDeviceId] = useState(null);
+  const [firmwareModalOpen, setFirmwareModalOpen] = useState(false);
+  const [backupsModalOpen, setBackupsModalOpen] = useState(false);
+  const [firmwareStatus, setFirmwareStatus] = useState(null);
+  const [logsModalOpen, setLogsModalOpen] = useState(false);
+  const [logStats, setLogStats] = useState(null);
+  // Firmware and log-stat polls ride the 6 s data poll but must not run at
+  // its rate: each firmware check is two REST calls to the router, and the
+  // answer changes about once a month. Keyed by router id so a switch
+  // refreshes immediately instead of waiting out the previous router's window.
+  const slowPollAtRef = useRef({});
+
+  const handleOpenConnections = (deviceId = null) => {
+    setConnectionsDeviceId(deviceId);
+    setConnectionsModalOpen(true);
+  };
 
   const handleOpenSettings = (tab = 'general', autoAdd = false) => {
     setSettingsInitialTab(tab);
@@ -118,6 +144,35 @@ export function App() {
       setUnassignedDevices(devsRes.data || []);
       setInterfaces(ifacesRes.data || []);
       setAlerts(alertsRes.data || []);
+
+      const lastSlow = slowPollAtRef.current[effectiveId] || 0;
+      if (Date.now() - lastSlow > SLOW_POLL_MS) {
+        slowPollAtRef.current[effectiveId] = Date.now();
+
+        api.getFirmwareStatus(effectiveId)
+          .then(fw => {
+            if (effectiveId === activeRouterIdRef.current) {
+              setFirmwareStatus(fw);
+            }
+          })
+          .catch(() => {
+            if (effectiveId === activeRouterIdRef.current) {
+              setFirmwareStatus(null);
+            }
+          });
+
+        api.getLogStats({ router_id: effectiveId })
+          .then(res => {
+            if (effectiveId === activeRouterIdRef.current) {
+              setLogStats(res?.data || null);
+            }
+          })
+          .catch(() => {
+            if (effectiveId === activeRouterIdRef.current) {
+              setLogStats(null);
+            }
+          });
+      }
     } catch (err) {
       console.error('Failed to load initial data', err);
     } finally {
@@ -304,6 +359,14 @@ export function App() {
         onSelectRouter={handleSelectRouter}
         onOpenSettings={() => handleOpenSettings('general', false)}
         onAddRouter={() => handleOpenSettings('routers', true)}
+        onOpenLogs={() => setLogsModalOpen(true)}
+        logErrorCount={(logStats?.error_count || 0) + (logStats?.critical_count || 0)}
+        logWarningCount={logStats?.warning_count || 0}
+        logAuthFailCount={logStats?.auth_failures_count || 0}
+        onOpenBackups={() => setBackupsModalOpen(true)}
+        onOpenFirmware={() => setFirmwareModalOpen(true)}
+        hasFirmwareUpdate={Boolean(firmwareStatus?.packages?.update_available)}
+        firmwareVersion={firmwareStatus?.packages?.latest_version}
         onRouterCommentSaved={(comment) => {
           setActiveRouter(prev => (prev ? { ...prev, comment } : prev));
           setRouters(prev => prev.map(r => (r.id === activeRouter?.id ? { ...r, comment } : r)));
@@ -373,6 +436,14 @@ export function App() {
                 {hiddenUnassignedCount}
               </span>
             )}
+          </button>
+
+          <button
+            className={`nav-tab ${activeTab === 'connections' ? 'active' : ''}`}
+            onClick={() => setActiveTab('connections')}
+          >
+            <Radio size={18} />
+            {t('live_connections_title')}
           </button>
 
           <button
@@ -489,6 +560,7 @@ export function App() {
                     onPauseToggle={handlePauseToggle}
                     onUpdate={loadData}
                     onViewTrafficHistory={setTrafficHistoryTarget}
+                    onViewConnections={handleOpenConnections}
                     gatewayTotal={gatewayTodayTotal}
                     deviceGrandTotal={deviceGrandTotal}
                   />
@@ -505,6 +577,15 @@ export function App() {
         )}
 
         {/* Tab Content: RouterOS Containers */}
+        {activeTab === 'connections' && (
+          <LiveConnectionsModal
+            isOpen
+            inline
+            initialRouterId={activeRouter?.id}
+            onClose={() => {}}
+          />
+        )}
+
         {activeTab === 'containers' && (
           <ContainersPage activeRouter={activeRouter} />
         )}
@@ -670,7 +751,7 @@ export function App() {
                         <div style={{ flex: 1 }}>
                           <div>{a.message}</div>
                           <div style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)' }}>
-                            {new Date(a.created_at).toLocaleString()}
+                            {formatRouterDateTime(a.created_at, telemetry?.router?.clock?.gmt_offset_minutes, lang)}
                           </div>
                         </div>
                       </div>
@@ -709,6 +790,42 @@ export function App() {
         target={trafficHistoryTarget}
         onClose={() => setTrafficHistoryTarget(null)}
         onSelectTarget={setTrafficHistoryTarget}
+      />
+
+      {/* Live Connections Modal */}
+      <LiveConnectionsModal
+        isOpen={connectionsModalOpen}
+        initialDeviceId={connectionsDeviceId}
+        initialRouterId={activeRouter?.id}
+        onClose={() => {
+          setConnectionsModalOpen(false);
+          setConnectionsDeviceId(null);
+        }}
+      />
+
+      {/* Router Log Stream & Logging Topics */}
+      <RouterLogsModal
+        isOpen={logsModalOpen}
+        onClose={() => setLogsModalOpen(false)}
+        routerId={activeRouter?.id}
+        routerName={activeRouter?.name}
+      />
+
+      {/* Router Backups & Visual Diff Modal */}
+      <RouterBackupsModal
+        isOpen={backupsModalOpen}
+        onClose={() => setBackupsModalOpen(false)}
+        routerId={activeRouter?.id}
+        routerName={activeRouter?.name}
+      />
+
+      {/* Router Firmware & Updates Modal */}
+      <RouterFirmwareModal
+        isOpen={firmwareModalOpen}
+        onClose={() => setFirmwareModalOpen(false)}
+        routerId={activeRouter?.id}
+        routerName={activeRouter?.name}
+        onUpgradeSuccess={reloadAll}
       />
 
       <AppFooter />

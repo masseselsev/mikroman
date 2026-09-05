@@ -1,6 +1,6 @@
 import React from 'react';
 import { describe, expect, it, vi } from 'vitest';
-import { renderWithProviders, screen } from '../test/render';
+import { fireEvent, renderWithProviders, screen } from '../test/render';
 import { RouterSelector } from './RouterSelector';
 
 /**
@@ -66,5 +66,65 @@ describe('RouterSelector status dot', () => {
       />
     );
     expect(screen.getByText('Edge')).toBeInTheDocument();
+  });
+});
+
+/**
+ * Board model and firmware version used to sit in the header beside the app
+ * name, where they crowded the brand and described only one of several
+ * routers. They belong to the expanded list instead: that is where you compare
+ * routers, and it is the moment the version is actually worth reading.
+ */
+describe('RouterSelector firmware version', () => {
+  const base = { onSelectRouter: vi.fn(), onAddRouter: vi.fn() };
+  const routers = [
+    { id: 1, name: 'Main', is_default: true, is_online: true, board_name: 'hAP be3 Media', ros_version: '7.24.2 (stable)' },
+  ];
+
+  it('keeps the version out of the collapsed trigger', () => {
+    const { container } = renderWithProviders(
+      <RouterSelector {...base} routers={routers} activeRouter={routers[0]} />
+    );
+    const trigger = container.querySelector('.router-selector > button');
+    expect(trigger).toHaveTextContent('Main');
+    expect(trigger.textContent).not.toMatch(/7\.24\.2/);
+    expect(trigger.textContent).not.toMatch(/hAP be3/);
+  });
+
+  it('shows the board and version once the list is expanded', () => {
+    const { container } = renderWithProviders(
+      <RouterSelector {...base} routers={routers} activeRouter={routers[0]} />
+    );
+    fireEvent.click(container.querySelector('.router-selector > button'));
+    expect(screen.getByText(/hAP be3 Media · v7\.24\.2 \(stable\)/)).toBeInTheDocument();
+  });
+
+  it('prefers the live telemetry version for the selected router over the stored one', () => {
+    // The stored `ros_version` comes from the periodic /routers probe, which
+    // lags a firmware upgrade until the next sweep.
+    const { container } = renderWithProviders(
+      <RouterSelector
+        {...base}
+        routers={routers}
+        activeRouter={routers[0]}
+        currentVersion="7.25.1 (stable)"
+      />
+    );
+    fireEvent.click(container.querySelector('.router-selector > button'));
+    expect(screen.getByText(/v7\.25\.1/)).toBeInTheDocument();
+    expect(screen.queryByText(/v7\.24\.2/)).toBeNull();
+  });
+
+  it('uses each other router\'s own stored version, not the live one', () => {
+    const { container } = renderWithProviders(
+      <RouterSelector
+        {...base}
+        routers={[...routers, { id: 2, name: 'Edge', board_name: 'hEX', ros_version: '7.19.4' }]}
+        activeRouter={routers[0]}
+        currentVersion="7.25.1 (stable)"
+      />
+    );
+    fireEvent.click(container.querySelector('.router-selector > button'));
+    expect(screen.getByText(/hEX · v7\.19\.4/)).toBeInTheDocument();
   });
 });

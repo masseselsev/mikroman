@@ -141,6 +141,35 @@ export function formatDateTime(timestamp, lang = 'en') {
   });
 }
 
+/**
+ * Absolute date and time in the router's own timezone, e.g. "05.09.2026,
+ * 09:50:36" - not the viewer's browser timezone. Every other router-anchored
+ * reading (the header clock, the historical rollups) is shown in the
+ * router's local wall-clock rather than wherever the dashboard happens to be
+ * open; the System Events list previously used a plain `toLocaleString()`,
+ * which reads out the *browser's* timezone and made repeated same-second
+ * events across two open dashboards look like they landed at different times.
+ *
+ * Formatted manually (not via `toLocaleString`) so the result is the same
+ * regardless of the viewer's own locale or timezone: `gmtOffsetMinutes` is
+ * added to the UTC instant and the result read back with the UTC getters,
+ * the same trick the header clock uses.
+ */
+export function formatRouterDateTime(timestamp, gmtOffsetMinutes, lang = 'en') {
+  const d = parseUtcDate(timestamp);
+  if (!d) return '';
+  if (gmtOffsetMinutes == null) return formatDateTime(timestamp, lang);
+
+  const shifted = new Date(d.getTime() + gmtOffsetMinutes * 60000);
+  const dd = String(shifted.getUTCDate()).padStart(2, '0');
+  const mm = String(shifted.getUTCMonth() + 1).padStart(2, '0');
+  const yyyy = shifted.getUTCFullYear();
+  const hh = String(shifted.getUTCHours()).padStart(2, '0');
+  const min = String(shifted.getUTCMinutes()).padStart(2, '0');
+  const ss = String(shifted.getUTCSeconds()).padStart(2, '0');
+  return `${dd}.${mm}.${yyyy}, ${hh}:${min}:${ss}`;
+}
+
 export function formatUptime(uptime, lang = 'en') {
   const isRu = lang === 'ru';
   const dUnit = isRu ? 'д' : 'd';
