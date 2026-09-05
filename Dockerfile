@@ -6,7 +6,9 @@
 # generated output and is not committed, so a Dockerfile that COPYied it could
 # only ever build on a machine that had already run `npm run build` - which made
 # the documented `git clone && docker compose up -d` fail on the COPY step.
-FROM node:22-alpine AS frontend
+# Using --platform=$BUILDPLATFORM builds the static frontend bundle natively on
+# the runner host rather than under slow QEMU emulation during multi-arch builds.
+FROM --platform=$BUILDPLATFORM node:22-alpine AS frontend
 
 WORKDIR /build
 
