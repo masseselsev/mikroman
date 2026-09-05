@@ -20,6 +20,8 @@ const IMPORTS = /import\s+(?:\{([^}]*)\}|(\w+))\s+from/gs;
 const DEFINED = /(?:function|const|class)\s+([A-Za-z_$][\w$]*)/g;
 // `function Card({ icon: Icon })` renames a prop into a component position.
 const DESTRUCTURED = /(?:\{|,)\s*\w+\s*:\s*([A-Z][A-Za-z0-9_]*)/g;
+// Function parameters or direct destructuring: `(Icon, ...)`, `({ id, Icon })`
+const ARGS = /(?:\{|,|\()\s*([A-Z][A-Za-z0-9_]*)\s*(?:,|\}|:|\))/g;
 
 function walk(dir, out = []) {
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -56,6 +58,7 @@ for (const file of walk(ROOT)) {
   }
   for (const name of matchAll(DEFINED, src)) known.add(name);
   for (const name of matchAll(DESTRUCTURED, src)) known.add(name);
+  for (const name of matchAll(ARGS, src)) known.add(name);
 
   const missing = [...new Set(matchAll(JSX, src))].filter((n) => !known.has(n)).sort();
   if (missing.length) {
