@@ -77,3 +77,45 @@ describe('TelemetryBar client tile', () => {
     expect(screen.getByText('5 / 5 devices')).toBeInTheDocument();
   });
 });
+
+describe('TelemetryBar tile layout', () => {
+  it('puts the value on the same row as the icon and label rather than a line below', () => {
+    const { container } = renderWithProviders(<TelemetryBar router={router} activeRouter={{ id: 1 }} />);
+    // CPU tile: label and value are both direct children of one `.tile-head`.
+    const cpuLabel = screen.getByText('CPU');
+    const head = cpuLabel.closest('.tile-head');
+    expect(head).not.toBeNull();
+    const value = head.querySelector('.tile-value');
+    expect(value).not.toBeNull();
+    expect(value.textContent).toBe('5%');
+  });
+
+  it('drops the "WAN IP" text label but keeps the globe icon and the address', () => {
+    const { container } = renderWithProviders(<TelemetryBar router={router} activeRouter={{ id: 1 }} />);
+    expect(screen.queryByText('WAN IP')).toBeNull();
+    expect(screen.getByText('10.0.0.2')).toBeInTheDocument();
+    // Its tile-head still carries an icon even with no label span.
+    const wanValue = screen.getByText('10.0.0.2');
+    const head = wanValue.closest('.tile-head');
+    expect(head.querySelector('.tile-icon')).not.toBeNull();
+  });
+});
+
+describe('TelemetryBar redesigned tile labels', () => {
+  it('drops the Download/Upload/Uptime text labels - the icon and value carry the meaning alone', () => {
+    // Regression: at the narrower tile width, a full-word label competing
+    // with the value on one row made both get cut off mid-word ("DOWN...",
+    // "UPL...", "UPT...").
+    renderWithProviders(<TelemetryBar router={router} activeRouter={{ id: 1 }} />);
+    expect(screen.queryByText('Download')).toBeNull();
+    expect(screen.queryByText('Upload')).toBeNull();
+    expect(screen.queryByText('Uptime')).toBeNull();
+  });
+
+  it('shortens the RAM and Users labels to fit their tile at any supported language', () => {
+    renderWithProviders(<TelemetryBar router={router} activeRouter={{ id: 1 }} />);
+    expect(screen.queryByText('RAM Free')).toBeNull();
+    expect(screen.getByText('RAM')).toBeInTheDocument();
+    expect(screen.getByText('Users')).toBeInTheDocument();
+  });
+});

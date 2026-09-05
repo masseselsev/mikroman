@@ -106,8 +106,16 @@ function PublicIpLink({ ip, service, t }) {
  * several related facts (the WAN tile shows the interface address, the public
  * address and the operator) without each caller inventing its own layout.
  * Falsy entries are dropped, which keeps the call sites free of conditionals.
+ *
+ * The value sits on the same line as the icon and label, pushed to the far
+ * right, rather than on a line of its own below them - the tile used to
+ * spend two lines (caption, then a large figure) on what a single row says
+ * just as clearly, which is what let the tiles shrink a quarter narrower
+ * without feeling cramped. `label` is optional: the WAN tile drops it
+ * entirely, since its globe icon already says what the row is about and the
+ * text was the tightest-fitting thing in the row.
  */
-function Tile({ icon, tone, label, value, sub, history, historyMax, onClick, title, valueSize = 'var(--fs-lg)' }) {
+function Tile({ icon, tone, label, value, sub, history, historyMax, onClick, title, valueSize = 'var(--fs-md)' }) {
   const subLines = (Array.isArray(sub) ? sub : [sub]).filter(Boolean);
 
   return (
@@ -118,11 +126,10 @@ function Tile({ icon, tone, label, value, sub, history, historyMax, onClick, tit
     >
       <div className="tile-head">
         <span className="tile-icon" style={{ color: tone }}>{icon}</span>
-        <span className="section-label truncate">{label}</span>
-      </div>
-
-      <div className="tile-value truncate" style={{ fontSize: valueSize, color: tone }}>
-        {value}
+        {label ? <span className="section-label truncate">{label}</span> : null}
+        <span className="tile-value truncate" style={{ fontSize: valueSize, color: tone }}>
+          {value}
+        </span>
       </div>
 
       {history ? (
@@ -363,15 +370,19 @@ export function TelemetryBar({ router, activeRouter, interfaces = [], onNavigate
     <>
       <div style={{
         display: 'grid',
-        gridTemplateColumns: 'repeat(auto-fit, minmax(148px, 1fr))',
+        // A quarter narrower than the original 148px floor, now that the
+        // value moved onto the label's row instead of needing a line of its own.
+        gridTemplateColumns: 'repeat(auto-fit, minmax(111px, 1fr))',
         gap: 10,
         marginBottom: 18,
         alignItems: 'stretch'
       }}>
+        {/* No label: the arrow icon already says download vs upload, and
+            "Download"/"Upload" were two of the four strings that no longer
+            fit once the value moved onto the same row as the label. */}
         <Tile
           icon={<ArrowDown size={15} />}
           tone={wanTone || 'var(--color-success)'}
-          label={t('total_rx')}
           value={formatSpeed(router.wan_rx_bps)}
           sub={wanSub}
           history={rxHistory}
@@ -382,7 +393,6 @@ export function TelemetryBar({ router, activeRouter, interfaces = [], onNavigate
         <Tile
           icon={<ArrowUp size={15} />}
           tone={wanTone || 'var(--color-primary)'}
-          label={t('total_tx')}
           value={formatSpeed(router.wan_tx_bps)}
           sub={wanSub}
           history={txHistory}
@@ -409,7 +419,10 @@ export function TelemetryBar({ router, activeRouter, interfaces = [], onNavigate
         <Tile
           icon={<HardDrive size={15} />}
           tone="var(--color-primary)"
-          label={t('ram_free')}
+          // "RAM Free" (and its Russian equivalent, wider still) doesn't fit
+          // beside the value at this width; the sub-line's "N% used" already
+          // frames the headline figure as the free side of that split.
+          label={t('tile_ram_label')}
           value={`${Math.round(router.free_memory_mb || 0)} MB`}
           sub={memPct !== null ? `${memPct}% ${t('used_label')}` : ''}
           history={memHistory}
@@ -432,7 +445,9 @@ export function TelemetryBar({ router, activeRouter, interfaces = [], onNavigate
         <Tile
           icon={<Users size={15} />}
           tone="var(--color-primary)"
-          label={t('clients_label')}
+          // A dedicated (shorter) label rather than the shared `clients_label`
+          // used on the Users tab header, where the full word has room.
+          label={t('tile_users_label')}
           value={String(userCount)}
           sub={t('clients_devices_sub', { online: onlineDevices, total: clientDevices })}
           onClick={goUsers}
@@ -442,7 +457,8 @@ export function TelemetryBar({ router, activeRouter, interfaces = [], onNavigate
         <Tile
           icon={<Globe size={15} />}
           tone="var(--text-secondary)"
-          label={t('wan_ip')}
+          // No label: the globe icon already says what this row is, and
+          // "WAN IP" was the single tightest-fitting piece of text in the bar.
           value={router.wan_ip || '—'}
           valueSize="var(--fs-sm)"
           title={router.isp
@@ -465,10 +481,12 @@ export function TelemetryBar({ router, activeRouter, interfaces = [], onNavigate
           ]}
         />
 
+        {/* No label: a duration like "1d 18h" reads as uptime on its own,
+            and "Uptime" (longer still in Russian) was the fourth string that
+            no longer fit once the value shared its row with the label. */}
         <Tile
           icon={<Clock size={15} />}
           tone="var(--text-secondary)"
-          label={t('uptime')}
           value={formatUptime(router.uptime, lang)}
           valueSize="var(--fs-md)"
           sub={router.board_name || ''}

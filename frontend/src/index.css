@@ -308,6 +308,34 @@ body {
   height: var(--control-h-sm);
 }
 
+/* Language switcher: a single button showing the current language's flag
+   (SVG, not emoji - see the comment on `FlagGB`/`FlagRU` in Navbar.jsx for
+   why). Sized and framed like the other icon buttons beside it. */
+.lang-switch-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--control-h-sm);
+  height: var(--control-h-sm);
+  padding: 0;
+  border-radius: var(--radius-sm);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  flex-shrink: 0;
+}
+
+.lang-switch-toggle:hover {
+  background: var(--bg-card-hover);
+  border-color: var(--border-focus);
+}
+
+.lang-switch-toggle svg {
+  display: block;
+  border-radius: 2px;
+}
+
 .btn-icon {
   padding: 0;
   width: var(--control-h-sm);
@@ -837,7 +865,9 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
   border: 1px solid var(--border-color);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-sm);
-  padding: 9px 11px;
+  /* 9px horizontal at the 111px tile floor left barely any room for the
+     value once it shares a row with an icon and (on most tiles) a label. */
+  padding: 9px 8px;
   display: flex;
   flex-direction: column;
   gap: 3px;
@@ -855,21 +885,28 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
 
 .tile-head {
   display: flex;
-  align-items: center;
+  align-items: baseline;
   gap: 6px;
   min-width: 0;
 }
 
 .tile-head > .tile-icon {
   display: flex;
+  align-self: center;
   flex-shrink: 0;
 }
 
+/* Pushed to the far right of the head row: label (optional) and value now
+   share one line instead of the value sitting on a line of its own below,
+   which is what let the tiles shrink a quarter narrower. */
 .tile-value {
+  margin-left: auto;
+  padding-left: 6px;
   font-family: var(--font-mono);
-  font-size: var(--fs-lg);
   font-weight: 800;
   line-height: 1.15;
+  flex-shrink: 1;
+  min-width: 0;
 }
 
 .tile-sub {
@@ -1295,6 +1332,36 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
   flex-shrink: 0;
 }
 
+/* Tagline under the app name in the header, and the matching text in the
+   footer - one class for both so they stay visually consistent (same size,
+   same colour). */
+.brand-subtitle {
+  font-size: var(--fs-3xs);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+/* Header-only: clips the tagline to the app name's own rendered width
+   instead of guessing a font-size small enough to never overhang it - which
+   still overhung ("RouterOS Companion" is a longer string than "MikroMan" at
+   any shared font). The wrapping title block gets `position: relative` and
+   reserves a line of height below the title; the tagline is taken out of
+   flow with `position: absolute; inset: 100% 0 auto 0`, so it can no longer
+   grow that block's width - only the title can - and is hard-clipped with
+   `text-overflow: ellipsis` to whatever width the title actually rendered
+   at, in either language. */
+.brand-title-block {
+  position: relative;
+  padding-bottom: 13px;
+}
+
+.brand-subtitle--clipped {
+  position: absolute;
+  inset: 100% 0 auto 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* Round presence indicator. Written inline as a 7px or 8px circle in a dozen
    places; one size means online/offline reads the same everywhere. */
 .status-dot {
@@ -1480,6 +1547,103 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
 }
 
 /* ============================================================
+   Top bar layout
+   ============================================================ */
+
+/* One row, three zones: brand and router-scoped tools on the left, the router
+   note taking up the slack in the middle, app-wide controls pinned right.
+   The note is the only element allowed to shrink, so the two control groups
+   never get pushed onto a second line - which is exactly what a plain
+   `flex-wrap: wrap` did, dropping the clock, language, theme and settings
+   below the fold. */
+.navbar-row {
+  max-width: 1360px;
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.navbar-left,
+.navbar-actions {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.navbar-left {
+  gap: 14px;
+}
+
+/* `margin-left: auto` rather than `justify-content: space-between`: with no
+   router selected there is no note to push against, and the controls must
+   still sit on the right edge. */
+.navbar-actions {
+  gap: 10px;
+  margin-left: auto;
+}
+
+/* Router tools, grouped against the selector they act on. */
+.navbar-tools {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+}
+
+.navbar-tool {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  width: auto;
+  height: 26px;
+  padding: 0 8px;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  border-radius: var(--radius-xs);
+}
+
+.navbar-tool-badge {
+  padding: 0 5px;
+  height: 14px;
+  line-height: 14px;
+  border-radius: var(--radius-full);
+  color: #fff;
+  font-size: 9px;
+  font-weight: 700;
+}
+
+/* Labels give way before the layout does: icon-only router tools buy back
+   roughly 150px, and the note gives up part of its floor, which together hold
+   the single row together down to a 13" laptop. */
+@media (max-width: 1240px) {
+  .navbar-tool-label {
+    display: none;
+  }
+
+  .navbar-row .router-comment {
+    flex-basis: 160px;
+    min-width: 120px;
+  }
+}
+
+/* Below this there is no single-row arrangement left to defend: drop the
+   remaining button labels and let the three zones stack rather than overflow
+   sideways. */
+@media (max-width: 1100px) {
+  .navbar-row {
+    flex-wrap: wrap;
+  }
+
+  .hide-mobile {
+    display: none;
+  }
+}
+
+/* ============================================================
    Router comment bar (header, between selector and clock)
    ============================================================ */
 .router-comment {
@@ -1613,6 +1777,15 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
   gap: 10px;
   font-size: var(--fs-2xs);
   color: var(--text-muted);
+}
+
+/* Inline-flex so the version chip sits on the text's centre line instead of
+   riding on the baseline. */
+.app-footer-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
 }
 
 .app-footer-link {
