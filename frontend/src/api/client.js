@@ -1,5 +1,20 @@
 const API_BASE = '/api/v1';
 
+/**
+ * Build a query string from an object, dropping empty values.
+ *
+ * Returns '' rather than '?' when nothing survives, so it can be appended to
+ * any path unconditionally.
+ */
+function qs(params = {}) {
+  const q = new URLSearchParams();
+  Object.entries(params).forEach(([k, v]) => {
+    if (v !== undefined && v !== null && v !== '') q.append(k, v);
+  });
+  const out = q.toString();
+  return out ? `?${out}` : '';
+}
+
 async function request(endpoint, options = {}) {
   const url = `${API_BASE}${endpoint}`;
   const headers = {
@@ -67,6 +82,7 @@ export const api = {
   // Users
   getUsers: (routerId = null) => request(`/users${routerId ? `?router_id=${routerId}` : ''}`),
   getUser: (id) => request(`/users/${id}`),
+  createUser: (data) => request('/users', { method: 'POST', body: JSON.stringify(data) }),
   updateUser: (id, data) => request(`/users/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
   deleteUser: (id) => request(`/users/${id}`, { method: 'DELETE' }),
   getUserTrafficHistory: (userId, { preset = '7d', startDate = null, endDate = null } = {}) => {
@@ -192,4 +208,49 @@ export const api = {
   saveSettings: (settings, routerId = null) => request(`/system/settings${routerId ? `?router_id=${routerId}` : ''}`, { method: 'POST', body: JSON.stringify(settings) }),
   rebootRouter: (routerId = null) => request(`/system/reboot${routerId ? `?router_id=${routerId}` : ''}`, { method: 'POST' }),
   testTelegram: (data = {}) => request('/telegram/test', { method: 'POST', body: JSON.stringify(data) }),
+
+  // Live Connections & Geo-IP
+  getLiveConnections: (params = {}) => request(`/connections${qs(params)}`),
+  killConnection: (connectionId, payload = {}) =>
+    request(`/connections/${encodeURIComponent(connectionId)}/kill`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  getUserDestinations: (userId, params = {}) => request(`/analytics/users/${userId}/destinations${qs(params)}`),
+
+  // Firmware & Upgrades
+  getFirmwareStatus: (routerId) => request(`/routers/${routerId}/firmware`),
+  checkFirmwareUpdates: (routerId) => request(`/routers/${routerId}/firmware/check`, { method: 'POST' }),
+  setFirmwareChannel: (routerId, channel) => request(`/routers/${routerId}/firmware/channel`, { method: 'PUT', body: JSON.stringify({ channel }) }),
+  getChangelog: (routerId, version) => request(`/routers/${routerId}/firmware/changelog?version=${encodeURIComponent(version)}`),
+  upgradeRouterFirmware: (routerId, payload) => request(`/routers/${routerId}/firmware/upgrade`, { method: 'POST', body: JSON.stringify(payload) }),
+  upgradeBootloader: (routerId, payload) => request(`/routers/${routerId}/firmware/bootloader`, { method: 'POST', body: JSON.stringify(payload) }),
+
+  // Config-drift backups.
+  // These endpoints answer with the payload itself, not the {success,data}
+  // envelope the rest of the API uses, so callers read `.items` / the record
+  // directly rather than `.data`.
+  getRouterBackups: (routerId, params = {}) => request(`/routers/${routerId}/backups${qs(params)}`),
+  triggerRouterBackup: (routerId) => request(`/routers/${routerId}/backups/run`, { method: 'POST' }),
+  getRouterBackup: (routerId, backupId) => request(`/routers/${routerId}/backups/${backupId}`),
+  updateRouterBackup: (routerId, backupId, data) =>
+    request(`/routers/${routerId}/backups/${backupId}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  deleteRouterBackup: (routerId, backupId) =>
+    request(`/routers/${routerId}/backups/${backupId}`, { method: 'DELETE' }),
+  getBackupDiff: (routerId, params = {}) => request(`/routers/${routerId}/backups/diff${qs(params)}`),
+  // Plain hrefs: the browser downloads these, they never pass through fetch().
+  getBackupRscDownloadUrl: (routerId, backupId) =>
+    `${API_BASE}/routers/${routerId}/backups/${backupId}/download/rsc`,
+  getBackupBinaryDownloadUrl: (routerId, backupId) =>
+    `${API_BASE}/routers/${routerId}/backups/${backupId}/download/backup`,
+
+  // Router log stream, stored history and /system/logging topic rules
+  getLogs: (params = {}) => request(`/logs${qs(params)}`),
+  getLogStats: (params = {}) => request(`/logs/stats${qs(params)}`),
+  clearStoredLogs: (params = {}) => request(`/logs${qs(params)}`, { method: 'DELETE' }),
+  getLoggingRules: (routerId = null) => request(`/logs/rules${qs({ router_id: routerId })}`),
+  createLoggingRule: (data, routerId = null) =>
+    request(`/logs/rules${qs({ router_id: routerId })}`, { method: 'POST', body: JSON.stringify(data) }),
+  deleteLoggingRule: (ruleId, routerId = null) =>
+    request(`/logs/rules/${encodeURIComponent(ruleId)}${qs({ router_id: routerId })}`, { method: 'DELETE' }),
 };

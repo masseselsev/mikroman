@@ -194,15 +194,77 @@ async def test_sync_prunes_rules_for_removed_devices(session):
     svc = TrafficAccountingService(router, router_id=1)
     await svc.sync_counter_rules(session)
 
-    device.is_active = False
+    device.is_deleted = True
     await session.commit()
 
     summary = await svc.sync_counter_rules(session)
     assert summary["removed"] == 2
     # The device's rules are gone; the router's own self-traffic pair is not a
-    # device rule and must survive a device going inactive.
+    # device rule and must survive a device disappearing.
     assert not any(parse_acct_comment(r.get("comment")) for r in router.rules)
     assert sum(1 for r in router.rules if parse_self_comment(r.get("comment"))) == 2
+
+
+@pytest.mark.asyncio
+async def test_an_idle_device_keeps_its_counter_rules(session):
+    """`is_active` flaps with discovery and must not prune a counter.
+
+    It used to. A machine that went quiet for one discovery pass had its
+    passthrough rules deleted, so everything it moved before the next pass saw
+    it again crossed the WAN matching no rule and was attributed to nobody. On
+    a real router that was 6.6 GB of a 20.7 GB day, with a desktop live in the
+    router's own ARP table and no counter on it at all.
+    """
+    _, device = await _seed(session)
+    router = FakeRouter()
+    svc = TrafficAccountingService(router, router_id=1)
+    await svc.sync_counter_rules(session)
+
+    device.is_active = False
+    await session.commit()
+
+    summary = await svc.sync_counter_rules(session)
+    assert summary["removed"] == 0
+    assert len([r for r in router.rules if parse_acct_comment(r.get("comment"))]) == 2
+
+    # And it keeps counting: the bytes it moves while "inactive" are credited.
+    router.set_bytes(device.id, "down", 4_000_000)
+    await svc.collect(session)
+    router.set_bytes(device.id, "down", 9_000_000)
+    await svc.collect(session)
+
+    roll = (await session.execute(
+        select(DeviceTrafficRollup).where(DeviceTrafficRollup.device_id == device.id)
+    )).scalar_one()
+    assert roll.bytes_in == 5_000_000
+
+
+@pytest.mark.asyncio
+async def test_two_rows_sharing_an_ip_get_one_rule_between_them(session):
+    """Otherwise both rules match the same packets and every byte counts twice.
+
+    Two device rows on one address is not hypothetical - a rotated MAC recorded
+    twice, or a host that re-DHCPed into an address another record still holds.
+    """
+    _, device = await _seed(session)
+    twin = Device(
+        mac_address="AA:BB:CC:DD:EE:99",
+        hostname="same-ip-twin",
+        ip_address=device.ip_address,
+        router_id=1,
+        is_active=False,
+    )
+    session.add(twin)
+    await session.commit()
+
+    router = FakeRouter()
+    svc = TrafficAccountingService(router, router_id=1)
+    await svc.sync_counter_rules(session)
+
+    acct = [parse_acct_comment(r.get("comment")) for r in router.rules]
+    acct = [a for a in acct if a]
+    assert len(acct) == 2                      # one pair, not two
+    assert {a[0] for a in acct} == {device.id}  # held by the active row
 
 
 @pytest.mark.asyncio
@@ -659,8 +721,10 @@ class TestOutageWithoutReboot:
     @pytest.mark.asyncio
     async def test_a_device_pruned_while_going_inactive_flushes_its_last_bytes(self, session):
         """The prune-before-collect hole: sync_counter_rules deletes the rule of
-        a device that has gone inactive, so its final interval must be flushed
-        first or it is lost - and across an outage that interval is not small."""
+        a device that is no longer accountable, so its final interval must be
+        flushed first or it is lost - and across an outage that interval is not
+        small. Going merely idle no longer prunes anything (see
+        `test_an_idle_device_keeps_its_counter_rules`); being deleted does."""
         _, device = await _seed(session)
         router = FakeRouter()
         svc = TrafficAccountingService(router, router_id=1)
@@ -669,9 +733,9 @@ class TestOutageWithoutReboot:
         router.set_bytes(device.id, "down", 2_000_000)
         await svc.collect(session)  # baseline
 
-        # 3 MB more, then the device drops off and discovery marks it inactive.
+        # 3 MB more, then the record is removed.
         router.set_bytes(device.id, "down", 5_000_000)
-        device.is_active = False
+        device.is_deleted = True
         await session.commit()
 
         summary = await svc.sync_counter_rules(session)

@@ -13,14 +13,18 @@ import {
   AlertCircle,
   Loader2
 } from 'lucide-react';
+import { UserDestinationsSection } from './UserDestinationsSection';
 
+// Compact labels of their own: the modal's row of six has no room for the
+// "7 Days" / "Custom Dates" wording the metric charts and the analytics tab
+// use, and re-declaring `range_7d` short here silently shortened theirs too.
 const PRESETS = [
-  { id: '1d', labelKey: 'range_1d', days: 1 },
-  { id: '7d', labelKey: 'range_7d', days: 7 },
-  { id: '30d', labelKey: 'range_30d', days: 30 },
-  { id: '1y', labelKey: 'range_1y', days: 365 },
+  { id: '24h', labelKey: 'hist_range_24h', days: 1 },
+  { id: '7d', labelKey: 'hist_range_7d', days: 7 },
+  { id: '30d', labelKey: 'hist_range_30d', days: 30 },
+  { id: '1y', labelKey: 'hist_range_1y', days: 365 },
   { id: 'all_time', labelKey: 'range_all_time', days: 9999 },
-  { id: 'custom', labelKey: 'range_custom' }
+  { id: 'custom', labelKey: 'hist_range_custom' }
 ];
 
 export function TrafficHistoryModal({ isOpen, target, onClose, onSelectTarget }) {
@@ -95,11 +99,14 @@ export function TrafficHistoryModal({ isOpen, target, onClose, onSelectTarget })
 
   if (!isOpen || !target) return null;
 
-  // The 1D view returns 30-minute buckets: every point carries an HH:MM
-  // `label` and they all share one `record_date`, so the label is what
-  // identifies and captions a point. Every other range has one point per day
-  // and no label, so `record_date` does both jobs.
+  // Three timeline shapes, from `data.resolution`:
+  //  - half_hour (24H): each point carries an HH:MM `label`; `record_date` is
+  //    the point's calendar day (the window spans two dates).
+  //  - week (1Y / All Time): each point is an ISO week, `record_date` is its
+  //    Monday and `label` is that Monday as "Sep 01".
+  //  - day (everything else): one point per calendar day, no `label`.
   const isHalfHour = data?.resolution === 'half_hour';
+  const isWeek = data?.resolution === 'week';
   const ptKey = (pt) => pt?.label || pt?.record_date;
 
   const activePoint = hoveredPoint || (timeline.length > 0 ? timeline[timeline.length - 1] : null);
@@ -232,7 +239,9 @@ export function TrafficHistoryModal({ isOpen, target, onClose, onSelectTarget })
                   <div style={{ fontSize: 'var(--fs-3xs)', color: 'var(--text-muted)', marginTop: 2 }}>
                     {isHalfHour
                       ? t('intervals_count', { count: timeline.length })
-                      : t('days_count', { count: timeline.length })}
+                      : isWeek
+                        ? t('weeks_count', { count: timeline.length })
+                        : t('days_count', { count: timeline.length })}
                   </div>
                 </div>
 
@@ -337,7 +346,12 @@ export function TrafficHistoryModal({ isOpen, target, onClose, onSelectTarget })
                     }}
                   >
                     <div style={{ fontWeight: 700 }} className="font-mono">
-                      {isHalfHour ? '🕐' : '📅'} {isHalfHour ? `${activePoint.record_date} ${ptKey(activePoint)}` : activePoint.record_date}
+                      {isHalfHour ? '🕐' : '📅'}{' '}
+                      {isHalfHour
+                        ? `${activePoint.record_date} ${ptKey(activePoint)}`
+                        : isWeek
+                          ? t('week_of', { date: activePoint.label || activePoint.record_date })
+                          : activePoint.record_date}
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                       <span style={{ color: 'var(--text-muted)' }}>{t('table_total')}:</span>
@@ -528,7 +542,7 @@ export function TrafficHistoryModal({ isOpen, target, onClose, onSelectTarget })
                 <div>
                   <h4 style={{ fontSize: 'var(--fs-sm)', fontWeight: 700, marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
                     <Calendar size={15} style={{ color: 'var(--color-primary)' }} />
-                    <span>{isHalfHour ? t('intraday_breakdown') : t('daily_breakdown')}</span>
+                    <span>{isHalfHour ? t('intraday_breakdown') : isWeek ? t('weekly_breakdown') : t('daily_breakdown')}</span>
                   </h4>
 
                   <div
@@ -543,7 +557,7 @@ export function TrafficHistoryModal({ isOpen, target, onClose, onSelectTarget })
                     <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 'var(--fs-xs)' }}>
                       <thead>
                         <tr style={{ borderBottom: '1px solid var(--border-color)', background: 'var(--bg-card)', position: 'sticky', top: 0, zIndex: 1 }}>
-                          <th style={{ padding: '8px 12px', textAlign: 'left' }}>{isHalfHour ? t('time_label') : t('date')}</th>
+                          <th style={{ padding: '8px 12px', textAlign: 'left' }}>{isHalfHour ? t('time_label') : isWeek ? t('week_label') : t('date')}</th>
                           <th style={{ padding: '8px 12px', textAlign: 'right', color: 'var(--color-success)' }}>{t('download')}</th>
                           <th style={{ padding: '8px 12px', textAlign: 'right', color: '#3b82f6' }}>{t('upload')}</th>
                           <th style={{ padding: '8px 12px', textAlign: 'right' }}>{t('table_total')}</th>
@@ -559,7 +573,7 @@ export function TrafficHistoryModal({ isOpen, target, onClose, onSelectTarget })
                             }}
                           >
                             <td style={{ padding: '6px 12px', fontWeight: 600 }} className="font-mono">
-                              {isHalfHour ? pt.label : pt.record_date}
+                              {isHalfHour || isWeek ? pt.label : pt.record_date}
                             </td>
                             <td style={{ padding: '6px 12px', textAlign: 'right', color: 'var(--color-success)' }} className="font-mono">
                               {formatBytes(pt.bytes_in)}
@@ -576,6 +590,14 @@ export function TrafficHistoryModal({ isOpen, target, onClose, onSelectTarget })
                     </table>
                   </div>
                 </div>
+              )}
+
+              {/* Destinations & Domains Table */}
+              {target.type === 'user' && (
+                <UserDestinationsSection userId={target.id} />
+              )}
+              {target.type === 'device' && (target.user_id || target.id) && (
+                <UserDestinationsSection userId={target.user_id} deviceId={target.id} />
               )}
             </>
           ) : null}

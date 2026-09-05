@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1.7
 # ==========================================
 # Frontend build
 # ==========================================
@@ -12,7 +13,8 @@ WORKDIR /build
 # Manifest first, so `npm ci` is only re-run when the dependencies change and
 # not on every source edit.
 COPY frontend/package.json frontend/package-lock.json ./
-RUN npm ci
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci --prefer-offline --fetch-timeout=180000
 
 COPY frontend/ ./
 RUN npm run build
@@ -32,9 +34,18 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-# Install Python requirements
+# Install Python requirements.
+#
+# The pip download cache is a BuildKit cache mount rather than `--no-cache-dir`.
+# On a slow or flaky link to files.pythonhosted.org a single read timeout fails
+# the whole layer, and with no cache every retry re-downloaded all 43 wheels
+# from scratch - so a build could never make forward progress. With the mount,
+# each attempt keeps whatever it managed to fetch and picks up where it left
+# off. The cache lives in the builder, not in the image, so the image stays the
+# same size.
 COPY backend/requirements.txt /app/backend/requirements.txt
-RUN pip install --no-cache-dir --default-timeout=120 --retries=10 -r /app/backend/requirements.txt
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --default-timeout=180 --retries=15 -r /app/backend/requirements.txt
 
 # Copy backend code
 COPY backend/ /app/backend/

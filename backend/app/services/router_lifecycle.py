@@ -13,6 +13,7 @@ children before parents, inside the caller's transaction.
 """
 import logging
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Dict, Optional
 
 from sqlalchemy import delete, func, select, update
@@ -23,16 +24,20 @@ from backend.app.db.models import (
     AppSetting,
     Device,
     DeviceHistory,
+    DeviceTrafficBucket,
     DeviceTrafficRollup,
     InterfaceMetric,
     InterfaceTrafficRollup,
     Router,
+    RouterBackup,
+    RouterLog,
     RouterSelfTrafficRollup,
     RouterTrafficRollup,
     SpeedTestResult,
     SystemMetric,
     TrafficRollup,
     User,
+    UserDestinationStat,
     UserTrafficBucket,
 )
 
@@ -148,9 +153,21 @@ async def purge_router(session: AsyncSession, router: Router) -> Dict[str, int]:
 
     counts["device_traffic_rollups"] = await _count(DeviceTrafficRollup, DeviceTrafficRollup.device_id.in_(device_ids))
     await session.execute(delete(DeviceTrafficRollup).where(DeviceTrafficRollup.device_id.in_(device_ids)))
+    counts["device_traffic_buckets"] = await _count(DeviceTrafficBucket, DeviceTrafficBucket.device_id.in_(device_ids))
+    await session.execute(delete(DeviceTrafficBucket).where(DeviceTrafficBucket.device_id.in_(device_ids)))
 
     counts["device_history"] = await _count(DeviceHistory, DeviceHistory.device_id.in_(device_ids))
     await session.execute(delete(DeviceHistory).where(DeviceHistory.device_id.in_(device_ids)))
+
+    counts["user_destination_stats"] = await _count(
+        UserDestinationStat,
+        UserDestinationStat.user_id.in_(user_ids) | UserDestinationStat.device_id.in_(device_ids),
+    )
+    await session.execute(
+        delete(UserDestinationStat).where(
+            UserDestinationStat.user_id.in_(user_ids) | UserDestinationStat.device_id.in_(device_ids)
+        )
+    )
 
     # An adapter on another router must not be left pointing at a device that
     # is about to disappear.
@@ -181,6 +198,24 @@ async def purge_router(session: AsyncSession, router: Router) -> Dict[str, int]:
 
     counts["alert_logs"] = await _count(AlertLog, AlertLog.router_id == rid)
     await session.execute(delete(AlertLog).where(AlertLog.router_id == rid))
+
+    counts["router_logs"] = await _count(RouterLog, RouterLog.router_id == rid)
+    await session.execute(delete(RouterLog).where(RouterLog.router_id == rid))
+
+    # Backups own files on disk; drop those before the rows that name them,
+    # otherwise the archives are stranded with nothing pointing at them.
+    backups = (
+        await session.execute(select(RouterBackup).where(RouterBackup.router_id == rid))
+    ).scalars().all()
+    counts["router_backups"] = len(backups)
+    for b in backups:
+        if getattr(b, "backup_file_path", None):
+            try:
+                from backend.app.services.backup_service import BACKUP_STORAGE_DIR
+                (Path(BACKUP_STORAGE_DIR) / b.backup_file_path).unlink(missing_ok=True)
+            except Exception as err:
+                logger.warning(f"Could not remove backup file for router {rid}: {err}")
+    await session.execute(delete(RouterBackup).where(RouterBackup.router_id == rid))
 
     # 4. Per-router settings: every `<base>_<id>` key. The `_<id>` suffix with a
     #    literal underscore is how all router-scoped settings are written, so an

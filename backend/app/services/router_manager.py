@@ -158,12 +158,37 @@ class RouterManager:
                 await self._close_quietly(cached)
 
             client = self._create_client_from_model(router)
+            client._immune_ips = await self._configured_immune_ips(session)
             self._clients[router.id] = client
             self._fingerprints[router.id] = fingerprint
             return client
         finally:
             if should_close_session:
                 await session.close()
+
+    @staticmethod
+    async def _configured_immune_ips(session: AsyncSession) -> set:
+        """Operator-declared addresses that write guards must never touch.
+
+        Stored in the ``immune_ips`` app setting as a comma or newline separated
+        list. These widen the guard's built-in pair (router host + this
+        container) - typically to cover a jump host or a second admin
+        workstation that must keep management access no matter what a
+        reconciliation pass decides.
+        """
+        from backend.app.db.models import AppSetting
+        try:
+            setting = await session.get(AppSetting, "immune_ips")
+        except Exception as e:
+            logger.debug(f"Could not read immune_ips setting: {e}")
+            return set()
+        if not setting or not setting.value:
+            return set()
+        return {
+            part.strip()
+            for part in str(setting.value).replace("\n", ",").split(",")
+            if part.strip()
+        }
 
     @staticmethod
     async def _close_quietly(client: RouterOSClient) -> None:

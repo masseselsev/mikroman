@@ -161,6 +161,48 @@ async def init_db() -> None:
                 logger.warning(f"Could not apply users schema additions: {e}")
 
 
+async def encrypt_legacy_secrets() -> int:
+    """Rewrite any still-plain-text credential in the database as ciphertext.
+
+    ``EncryptedString`` encrypts on write, so rows written before that column
+    type existed stay readable but remain plain text on disk until something
+    happens to save them again - which for a router nobody edits is never. This
+    runs once at startup and closes that gap, reading the raw column so it can
+    tell an encrypted value from a legacy one.
+
+    Returns the number of values rewritten.
+    """
+    from backend.app.core.secrets import PREFIX, encrypt_secret
+
+    targets = (
+        ("routers", "password"),
+        ("router_backups", "backup_password"),
+    )
+    rewritten = 0
+    async with engine.begin() as conn:
+        for table, column in targets:
+            try:
+                rows = (await conn.execute(
+                    text(f"SELECT id, {column} FROM {table} WHERE {column} IS NOT NULL AND {column} != ''")
+                )).fetchall()
+            except Exception as e:
+                logger.debug(f"Skipping secret migration for {table}.{column}: {e}")
+                continue
+
+            for row_id, raw in rows:
+                if str(raw).startswith(PREFIX):
+                    continue
+                await conn.execute(
+                    text(f"UPDATE {table} SET {column} = :val WHERE id = :id"),
+                    {"val": encrypt_secret(str(raw)), "id": row_id},
+                )
+                rewritten += 1
+
+    if rewritten:
+        logger.info(f"Encrypted {rewritten} stored credential(s) that were still in plain text")
+    return rewritten
+
+
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
     """Dependency for providing database session to FastAPI endpoints."""
     async with AsyncSessionLocal() as session:

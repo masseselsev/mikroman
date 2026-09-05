@@ -37,6 +37,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.db.models import (
     AppSetting,
     Device,
+    DeviceTrafficBucket,
     DeviceTrafficRollup,
     RouterSelfTrafficRollup,
     TrafficRollup,
@@ -257,21 +258,45 @@ class TrafficAccountingService:
     # --- rule lifecycle ---------------------------------------------------
 
     async def _accountable_devices(self, session: AsyncSession) -> List[Device]:
-        """Active devices with an IP address that belong to this router.
+        """Every known device with an IP that belongs to this router.
 
         Devices with a NULL ``router_id`` are included: they are legitimate
         clients discovered before multi-router support attributed them, and
         excluding them silently dropped them from every analytics view.
+
+        Deliberately NOT filtered on ``is_active``. It used to be, and that lost
+        traffic: ``is_active`` flaps with discovery, so a machine that went quiet
+        for one pass had its counter rules pruned, and everything it moved
+        before the next pass noticed it again crossed the WAN matching no rule.
+        On the developer's own router that left 6.6 GB of a 20.7 GB day
+        attributed to nobody, with a desktop live in ARP and no counter on it at
+        all. A passthrough rule is a counter and nothing else - keeping one for
+        an idle device costs a rule slot, while dropping it costs data.
+
+        At most one device may hold the rules for a given IP. Two rows sharing
+        an address (a rotated MAC recorded twice, a re-DHCPed host) would each
+        get a rule matching the same packets, counting every byte twice.
         """
         stmt = select(Device).where(
-            Device.is_active, Device.is_deleted.is_(False), Device.ip_address.is_not(None)
+            Device.is_deleted.is_(False), Device.ip_address.is_not(None)
         )
         if self.router_id is not None:
             stmt = stmt.where(
                 (Device.router_id == self.router_id) | (Device.router_id.is_(None))
             )
         result = await session.execute(stmt)
-        return [d for d in result.scalars().all() if (d.ip_address or "").strip()]
+        candidates = [d for d in result.scalars().all() if (d.ip_address or "").strip()]
+
+        # One winner per IP: the active row, then the most recently seen, then
+        # the lowest id - deterministic, so the choice does not flip between
+        # ticks and churn the rules.
+        by_ip: Dict[str, Device] = {}
+        for device in sorted(
+            candidates,
+            key=lambda d: (not d.is_active, -(d.last_seen.timestamp() if d.last_seen else 0), d.id),
+        ):
+            by_ip.setdefault((device.ip_address or "").strip(), device)
+        return list(by_ip.values())
 
     async def _monitored_interfaces(self, session: AsyncSession) -> List[str]:
         """WAN interfaces to measure the router's own traffic on.
@@ -768,6 +793,7 @@ class TrafficAccountingService:
         # credited to the 30-minute window it ended in. A tick that straddles a
         # bucket edge misattributes a few seconds - invisible at this width.
         user_bucket_totals: Dict[int, Tuple[int, int]] = {}
+        device_bucket_totals: Dict[int, Tuple[int, int]] = {}
         successors: Optional[Dict[str, int]] = None
 
         for device_id, (down, up) in per_device.items():
@@ -796,6 +822,8 @@ class TrafficAccountingService:
             if device.user_id:
                 b_prev = user_bucket_totals.get(device.user_id, (0, 0))
                 user_bucket_totals[device.user_id] = (b_prev[0] + down, b_prev[1] + up)
+            d_prev = device_bucket_totals.get(device_id, (0, 0))
+            device_bucket_totals[device_id] = (d_prev[0] + down, d_prev[1] + up)
             total_in += down
             total_out += up
 
@@ -807,7 +835,14 @@ class TrafficAccountingService:
         bucket = bucket_start_for(span_end)
         for user_id, (down, up) in user_bucket_totals.items():
             if down or up:
-                await self._add_bucket(session, user_id, bucket, down, up)
+                await self._add_bucket(
+                    session, UserTrafficBucket, "user_id", user_id, bucket, down, up
+                )
+        for dev_id, (down, up) in device_bucket_totals.items():
+            if down or up:
+                await self._add_bucket(
+                    session, DeviceTrafficBucket, "device_id", dev_id, bucket, down, up
+                )
 
         return total_in, total_out
 
@@ -848,32 +883,36 @@ class TrafficAccountingService:
     @staticmethod
     async def _add_bucket(
         session: AsyncSession,
-        user_id: int,
+        model,
+        fk_name: str,
+        fk_value: int,
         bucket_start: datetime,
         bytes_in: int,
         bytes_out: int,
     ) -> None:
-        """Add this tick's per-user delta onto its 30-minute bucket, or create it.
+        """Add this tick's delta onto its 30-minute bucket, or create it.
 
-        Mirrors :meth:`_add_rollup` but keyed by ``(user_id, bucket_start)``.
-        Feeds only the history modal's 1D view; the daily rollups stay the
-        record of truth and these rows are pruned after ``BUCKET_RETENTION_DAYS``.
+        Mirrors :meth:`_add_rollup` but keyed by ``(owner, bucket_start)`` and
+        parameterised over the two bucket tables - per-user and per-device -
+        which are written from the very same accounted deltas. Feeds only the
+        history modal's 24H view; the daily rollups stay the record of truth and
+        these rows are pruned after ``BUCKET_RETENTION_DAYS``.
         """
-        stmt = select(UserTrafficBucket).where(
-            UserTrafficBucket.user_id == user_id,
-            UserTrafficBucket.bucket_start == bucket_start,
+        stmt = select(model).where(
+            getattr(model, fk_name) == fk_value,
+            model.bucket_start == bucket_start,
         )
         existing = (await session.execute(stmt)).scalar_one_or_none()
         if existing:
             existing.bytes_in += bytes_in
             existing.bytes_out += bytes_out
         else:
-            session.add(UserTrafficBucket(
-                user_id=user_id,
-                bucket_start=bucket_start,
-                bytes_in=bytes_in,
-                bytes_out=bytes_out,
-            ))
+            session.add(model(**{
+                fk_name: fk_value,
+                "bucket_start": bucket_start,
+                "bytes_in": bytes_in,
+                "bytes_out": bytes_out,
+            }))
 
     @staticmethod
     async def _prune_old_buckets(session: AsyncSession, now_local: datetime) -> None:
@@ -884,4 +923,7 @@ class TrafficAccountingService:
         cutoff = now_local - timedelta(days=BUCKET_RETENTION_DAYS)
         await session.execute(
             delete(UserTrafficBucket).where(UserTrafficBucket.bucket_start < cutoff)
+        )
+        await session.execute(
+            delete(DeviceTrafficBucket).where(DeviceTrafficBucket.bucket_start < cutoff)
         )

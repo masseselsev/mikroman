@@ -8,6 +8,7 @@ from backend.app.db.models import (
     AppSetting,
     Base,
     Device,
+    DeviceTrafficBucket,
     DeviceTrafficRollup,
     InterfaceMetric,
     RouterTrafficRollup,
@@ -653,6 +654,8 @@ async def test_entity_traffic_history_endpoints(api_client):
         # time the suite runs, so the whole test volume goes there.
         day0 = datetime.combine(today, time())
         s.add(UserTrafficBucket(user_id=user.id, bucket_start=day0, bytes_in=1500, bytes_out=600))
+        # Devices get the same treatment - their modal offers the same 24H view.
+        s.add(DeviceTrafficBucket(device_id=device.id, bucket_start=day0, bytes_in=1500, bytes_out=600))
         await s.commit()
 
         user_id = user.id
@@ -690,6 +693,34 @@ async def test_entity_traffic_history_endpoints(api_client):
     assert u_1d["timeline"][0]["bytes_in"] == 1500
     assert u_1d["timeline"][0]["bytes_out"] == 600
 
+    # 2b. The 24H preset is a rolling half-hour window ending "now" - it spans
+    # two calendar dates, so the first point sits on yesterday.
+    res_24h = await api_client.get(f"/api/v1/users/{user_id}/traffic-history?preset=24h")
+    assert res_24h.status_code == 200
+    u_24h = res_24h.json()["data"]
+    assert u_24h["resolution"] == "half_hour"
+    assert len(u_24h["timeline"]) >= 40
+    assert u_24h["timeline"][0]["record_date"] == (today - timedelta(days=1)).isoformat()
+    assert all(":" in p["label"] for p in u_24h["timeline"])
+    assert u_24h["total_bytes"] == 2100  # only the 00:00-today bucket is in range
+
+    # 2c. 1Y and All Time aggregate the daily rollups into ISO weeks.
+    res_1y = await api_client.get(f"/api/v1/users/{user_id}/traffic-history?preset=1y")
+    u_1y = res_1y.json()["data"]
+    assert u_1y["resolution"] == "week"
+    assert len(u_1y["timeline"]) >= 52
+    assert all(p["label"] for p in u_1y["timeline"])
+    assert u_1y["total_bytes"] == 8500
+    # The 3 recent days land in the last week or two (a Monday can split them).
+    assert sum(p["total_bytes"] for p in u_1y["timeline"][-2:]) == 8500
+
+    res_all = await api_client.get(f"/api/v1/users/{user_id}/traffic-history?preset=all_time")
+    u_all = res_all.json()["data"]
+    assert u_all["resolution"] == "week"
+    # All Time starts at the week of the earliest recorded day, not year 2000.
+    assert 1 <= len(u_all["timeline"]) <= 2
+    assert u_all["total_bytes"] == 8500
+
     # 3. Test device traffic history 7d preset
     d_res = await api_client.get(f"/api/v1/devices/{device_id}/traffic-history?preset=7d")
     assert d_res.status_code == 200
@@ -700,6 +731,33 @@ async def test_entity_traffic_history_endpoints(api_client):
     assert d_data["user_name"] == "Alice"
     assert d_data["total_bytes"] == 8500
     assert len(d_data["timeline"]) == 7
+
+    # 3b. A device gets the same three timeline shapes the user does: the 24H
+    # preset must be a rolling half-hour window, not a single daily bar. It read
+    # `day` resolution before device buckets existed.
+    d_24h = (await api_client.get(
+        f"/api/v1/devices/{device_id}/traffic-history?preset=24h"
+    )).json()["data"]
+    assert d_24h["resolution"] == "half_hour"
+    assert len(d_24h["timeline"]) >= 40
+    assert d_24h["timeline"][0]["record_date"] == (today - timedelta(days=1)).isoformat()
+    assert all(":" in p["label"] for p in d_24h["timeline"])
+    assert d_24h["total_bytes"] == 2100  # the 00:00 bucket, not the 8500 daily total
+
+    d_1d = (await api_client.get(
+        f"/api/v1/devices/{device_id}/traffic-history?preset=1d"
+    )).json()["data"]
+    assert d_1d["resolution"] == "half_hour"
+    assert d_1d["timeline"][0]["label"] == "00:00"
+    assert d_1d["peak_label"] == "00:00"
+    assert (d_1d["total_bytes_in"], d_1d["total_bytes_out"]) == (1500, 600)
+
+    d_1y = (await api_client.get(
+        f"/api/v1/devices/{device_id}/traffic-history?preset=1y"
+    )).json()["data"]
+    assert d_1y["resolution"] == "week"
+    assert d_1y["total_bytes"] == 8500
+    assert all(p["label"] for p in d_1y["timeline"])
 
     # 4. Test custom range
     start_str = (today - timedelta(days=1)).isoformat()
