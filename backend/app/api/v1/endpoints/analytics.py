@@ -1,9 +1,11 @@
 from datetime import date
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.db.models import UserDestinationStat
 from backend.app.db.session import get_db
 from backend.app.schemas.analytics import (
     BillingCycleConfig,
@@ -12,12 +14,14 @@ from backend.app.schemas.analytics import (
     TrafficAnalyticsResponse,
 )
 from backend.app.schemas.common import APIResponse
+from backend.app.schemas.connection import UserDestinationStatItem
 from backend.app.services.analytics_engine import (
     AnalyticsEngine,
     get_billing_cycle_bounds,
     inclusive_end_date,
     resolve_date_range,
 )
+from backend.app.services.geoip import resolve_ip_location
 from backend.app.services.quota import (
     QuotaConfig,
     get_quota_config,
@@ -219,7 +223,7 @@ async def build_quota_status(db: AsyncSession, router_id: Optional[int] = None) 
         session=db,
         start_date=cycle_start,
         end_date=min(cycle_end, today),
-        router_id=router_id,
+        router_id=eff_router_id,
         range_preset="billing_current",
         anchor_day=anchor_day,
         include_breakdown_extras=False,
@@ -233,7 +237,7 @@ async def build_quota_status(db: AsyncSession, router_id: Optional[int] = None) 
     # its "used" figure stays byte-for-byte the pre-change one.
     if non_midnight:
         pre = await slice_of_day_bytes(
-            db, router_id, cycle_start, None, start_dt.time(), slice_interfaces,
+            db, eff_router_id, cycle_start, None, start_dt.time(), slice_interfaces,
             offset_minutes=slice_offset,
         )
         if pre is not None:
@@ -285,7 +289,7 @@ async def build_quota_status(db: AsyncSession, router_id: Optional[int] = None) 
         session=db,
         start_date=prev_start,
         end_date=prev_end,
-        router_id=router_id,
+        router_id=eff_router_id,
         range_preset="billing_previous",
         anchor_day=anchor_day,
         include_breakdown_extras=False,
@@ -300,7 +304,7 @@ async def build_quota_status(db: AsyncSession, router_id: Optional[int] = None) 
     # the same documented fallback as the current-cycle start-day slice.
     if non_midnight:
         s = await slice_of_day_bytes(
-            db, router_id, prev_end_dt.date(),
+            db, eff_router_id, prev_end_dt.date(),
             from_time=prev_end_dt.time(), to_time=None, interfaces=slice_interfaces,
             offset_minutes=slice_offset,
         )
@@ -399,3 +403,60 @@ async def set_quota_config(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     return APIResponse(data=await build_quota_status(db, eff_router_id))
+
+
+@router.get("/users/{user_id}/destinations", response_model=APIResponse[List[UserDestinationStatItem]])
+async def get_user_destinations(
+    user_id: int,
+    device_id: Optional[int] = Query(None, description="Filter by device ID"),
+    sort_by: str = Query("total_bytes", description="Sort by: total_bytes, bytes_in, bytes_out, hit_count, last_seen"),
+    order: str = Query("desc", description="Sort order: asc or desc"),
+    search: Optional[str] = Query(None, description="Filter by domain or IP"),
+    limit: int = Query(50, ge=1, le=500, description="Max records to return"),
+    db: AsyncSession = Depends(get_db),
+):
+    """Retrieve top target domains and destination IPs visited by a user's devices."""
+    stmt = select(UserDestinationStat).where(UserDestinationStat.user_id == user_id)
+    if device_id is not None:
+        stmt = stmt.where(UserDestinationStat.device_id == device_id)
+    if search:
+        s_pat = f"%{search.strip()}%"
+        stmt = stmt.where(
+            UserDestinationStat.domain.ilike(s_pat) | UserDestinationStat.destination_ip.ilike(s_pat)
+        )
+
+    sort_cols = {
+        "total_bytes": UserDestinationStat.total_bytes,
+        "bytes_in": UserDestinationStat.bytes_in,
+        "bytes_out": UserDestinationStat.bytes_out,
+        "hit_count": UserDestinationStat.hit_count,
+        "last_seen": UserDestinationStat.last_seen,
+    }
+    col = sort_cols.get(sort_by, UserDestinationStat.total_bytes)
+    order_expr = col.asc() if order.lower() == "asc" else col.desc()
+    stmt = stmt.order_by(order_expr).limit(limit)
+
+    rows = (await db.execute(stmt)).scalars().all()
+    items: List[UserDestinationStatItem] = []
+    for r in rows:
+        geo = resolve_ip_location(r.destination_ip)
+        items.append(
+            UserDestinationStatItem(
+                id=r.id,
+                user_id=r.user_id,
+                device_id=r.device_id,
+                destination_ip=r.destination_ip,
+                domain=r.domain,
+                country_code=r.country_code or geo.country_code,
+                country_name=geo.country_name,
+                flag_emoji=geo.flag_emoji,
+                bytes_in=r.bytes_in,
+                bytes_out=r.bytes_out,
+                total_bytes=r.total_bytes,
+                hit_count=r.hit_count,
+                last_seen=r.last_seen,
+            )
+        )
+
+    return APIResponse(data=items)
+

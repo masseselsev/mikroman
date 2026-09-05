@@ -9,9 +9,10 @@ from datetime import date, datetime
 from datetime import time as dtime
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from backend.app.db.models import AppSetting, Base, InterfaceMetric
+from backend.app.db.models import AlertLog, AppSetting, Base, InterfaceMetric, Router
 from backend.app.services.analytics_engine import (
     AnalyticsEngine,
     get_billing_cycle_bounds,
@@ -322,3 +323,104 @@ def test_quota_status_dto_has_a_precise_reset_instant_field():
     from backend.app.schemas.analytics import QuotaStatusDTO
 
     assert QuotaStatusDTO().cycle_end_at is None
+
+
+@pytest.mark.asyncio
+async def test_check_quota_thresholds_does_not_re_alert_on_the_next_poll(session, monkeypatch):
+    """Regression: a threshold alert kept firing on every background tick.
+
+    `check_quota_thresholds` (in `backend.app.main`) read `already_fired` from
+    the *per-router* key - `build_quota_status` calls
+    `unfired_for_cycle(db, cycle_start, router_id=router_id)` - but recorded a
+    newly-fired threshold with `mark_fired(session, cycle_start, threshold)`,
+    with no `router_id`, which writes the *global* key instead. The write and
+    the read never touched the same storage, so the same threshold alerted
+    again on every subsequent poll (roughly every `POLL_INTERVAL_SECONDS`) even
+    though usage had not newly crossed anything - four identical "50% reached"
+    alerts a minute apart on one live router is what surfaced this.
+    """
+    from backend.app.main import check_quota_thresholds
+    from backend.app.schemas.analytics import QuotaStatusDTO
+    from backend.app.services.quota import QuotaConfig, save_quota_config, unfired_for_cycle
+
+    router = Router(name="R1", host="192.168.88.1", username="admin", password="x")
+    session.add(router)
+    await session.commit()
+
+    # Populate both the per-router key and the legacy global key so this
+    # test exercises only the fired/unfired mismatch, not `get_quota_config`'s
+    # own None/router-1 fallback.
+    quota = QuotaConfig(limit_bytes=2 * 1024 ** 4, thresholds=[50, 80, 100])
+    await save_quota_config(session, quota, router_id=router.id)
+    await save_quota_config(session, quota, router_id=None)
+
+    cycle_start = date(2026, 9, 1)
+    base_status = QuotaStatusDTO(
+        limit_bytes=2 * 1024 ** 4,
+        used_bytes=int(1.3 * 1024 ** 4),
+        used_pct=65.0,
+        cycle_start=cycle_start,
+        cycle_end=date(2026, 9, 30),
+        thresholds=[50, 80, 100],
+        enabled=True,
+    )
+
+    import backend.app.api.v1.endpoints.analytics as analytics_endpoint
+
+    async def fake_build_quota_status(db, router_id=None):
+        # Exercises the real read path, exactly like the production function.
+        reached = await unfired_for_cycle(db, cycle_start, router_id=router_id)
+        return base_status.model_copy(update={"thresholds_reached": reached})
+
+    monkeypatch.setattr(analytics_endpoint, "build_quota_status", fake_build_quota_status)
+
+    await check_quota_thresholds(session, router.id, None)
+    alerts = (await session.execute(select(AlertLog))).scalars().all()
+    assert len(alerts) == 1
+    assert "50% reached" in alerts[0].message
+
+    # The next poll: usage has not moved, so nothing should alert again.
+    await check_quota_thresholds(session, router.id, None)
+    alerts = (await session.execute(select(AlertLog))).scalars().all()
+    assert len(alerts) == 1
+
+
+@pytest.mark.asyncio
+async def test_quota_used_bytes_is_scoped_to_the_active_router_not_summed_across_all(session):
+    """Regression: `build_quota_status` resolves `eff_router_id` (falling back
+    to the active router) for the quota config, the billing anchor and the
+    local clock - but then queried traffic with the raw, still-`None`
+    `router_id` parameter for both the current and previous cycle. `None`
+    means "every router combined" to `get_historical_traffic`, so on a
+    multi-router install, any caller that omits `router_id` (the frontend's
+    `QuotaStrip` does exactly this before `activeRouter` has loaded) got the
+    *sum of every router's traffic* compared against one router's limit -
+    live, a single-router install with ~230 GB of real cycle-to-date usage and
+    a 2 TB limit briefly showed "1.6 TB used, 78.7%, OVER LIMIT, projected
+    271%" because a second, heavier router's traffic was folded in.
+    """
+    from backend.app.api.v1.endpoints.analytics import build_quota_status
+    from backend.app.db.models import RouterTrafficRollup
+    from backend.app.services.quota import QuotaConfig, save_quota_config
+    from backend.app.services.router_time import ROUTER_OFFSET_SETTING_KEY
+
+    session.add(Router(name="Main", host="192.168.88.1", username="admin", password="x", is_default=True))
+    session.add(Router(id=2, name="Heavy", host="192.168.99.1", username="admin", password="x"))
+    await session.commit()
+
+    # router-local clock == container clock, so "today" is unambiguous
+    session.add(AppSetting(key=ROUTER_OFFSET_SETTING_KEY, value="0"))
+    today = date.today()
+    # The active router's own traffic this cycle: 10 GB.
+    session.add(RouterTrafficRollup(router_id=1, record_date=today, bytes_in=9_000_000_000, bytes_out=1_000_000_000))
+    # A second router's traffic - much heavier, and must never be added in.
+    session.add(RouterTrafficRollup(router_id=2, record_date=today, bytes_in=900_000_000_000, bytes_out=100_000_000_000))
+    await session.commit()
+
+    await save_quota_config(session, QuotaConfig(limit_bytes=100 * 1024 ** 3, thresholds=[50, 80]), router_id=None)
+
+    # No router_id at all - the exact call shape `QuotaStrip` makes before
+    # `activeRouter` has resolved, and what the live bug report reproduced.
+    status = await build_quota_status(session, None)
+
+    assert status.used_bytes == 10_000_000_000
