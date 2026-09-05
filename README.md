@@ -72,11 +72,23 @@ For detailed architectural specifications, algorithms, and configuration guides,
 
 ---
 
-## 🚀 Quick Start (Docker Compose)
+## 🚀 Quick Start (Docker)
 
-### 1. Launch Container
+Pre-built multi-architecture container images (`linux/amd64`, `linux/arm64`, `linux/arm/v7`) are automatically built and published to GitHub Container Registry upon every release.
+
+### Option A: Run Pre-built Image (Recommended)
 ```bash
-git clone https://github.com/mikroman/mikroman.git
+docker run -d \
+  --name mikroman \
+  --restart unless-stopped \
+  -p 1928:1928 \
+  -v mikroman_data:/data \
+  ghcr.io/masseselsev/mikroman:latest
+```
+
+### Option B: Build & Run via Docker Compose
+```bash
+git clone https://github.com/masseselsev/mikroman.git
 cd mikroman
 docker compose up -d
 ```
