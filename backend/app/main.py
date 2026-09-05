@@ -12,8 +12,10 @@ from backend.app.api.v1.endpoints.telegram import set_telegram_service
 from backend.app.api.v1.endpoints.ws import router as ws_router
 from backend.app.api.v1.router import api_v1_router
 from backend.app.core.config import settings
-from backend.app.db.session import AsyncSessionLocal, init_db
+from backend.app.db.session import AsyncSessionLocal, encrypt_legacy_secrets, init_db
+from backend.app.services.backup_scheduler import backup_scheduler
 from backend.app.services.device_manager import DeviceManager
+from backend.app.services.guards import WriteGuardViolation
 from backend.app.services.router_manager import NoRouterConfiguredError, router_manager
 from backend.app.services.telegram_bot import TelegramBotService
 
@@ -25,6 +27,7 @@ logger = logging.getLogger("mikroman.main")
 
 telegram_service: TelegramBotService = None
 bg_sync_task: asyncio.Task = None
+log_scrape_task: asyncio.Task = None
 
 
 async def check_quota_thresholds(session, router_id, tg_service) -> None:
@@ -38,7 +41,7 @@ async def check_quota_thresholds(session, router_id, tg_service) -> None:
     from backend.app.services.quota import crossed_thresholds, get_quota_config, mark_fired
     from backend.app.utils_format import format_bytes_human
 
-    config = await get_quota_config(session)
+    config = await get_quota_config(session, router_id=router_id)
     if not config.limit_bytes:
         return
 
@@ -69,7 +72,7 @@ async def check_quota_thresholds(session, router_id, tg_service) -> None:
             metadata_payload={"threshold": threshold, "used_bytes": status.used_bytes},
         ))
         await session.commit()
-        await mark_fired(session, status.cycle_start, threshold)
+        await mark_fired(session, status.cycle_start, threshold, router_id=router_id)
         logger.info(f"ISP quota threshold {threshold}% reached for router {router_id}")
 
         if config.notify_telegram and tg_service:
@@ -150,7 +153,12 @@ async def background_sync_worker():
                                         d.ip_address for d in u.devices
                                         if d.is_active and d.ip_address and (d.router_id == r.id or d.router_id is None)
                                     ]
-                                    await tc.sync_user_queue(u.id, u.name, active_ips, u.speed_limit)
+                                    try:
+                                        await tc.sync_user_queue(u.id, u.name, active_ips, u.speed_limit)
+                                    except WriteGuardViolation as e:
+                                        logger.warning(f"Skipped queue sync due to WriteGuard: {e}")
+                                    except Exception as e:
+                                        logger.debug(f"User queue sync error: {e}")
 
                                 # Sync unassigned quarantine devices and custom device queues for this router
                                 devs_res = await session.execute(
@@ -161,7 +169,12 @@ async def background_sync_worker():
                                     )
                                 )
                                 for dev in devs_res.scalars().all():
-                                    await tc.sync_device_queue(dev.id, session)
+                                    try:
+                                        await tc.sync_device_queue(dev.id, session)
+                                    except WriteGuardViolation as e:
+                                        logger.warning(f"Skipped queue sync due to WriteGuard: {e}")
+                                    except Exception as e:
+                                        logger.debug(f"Device queue sync error: {e}")
 
                                 # Remove managed queues whose owning user or device
                                 # is gone, or that no longer needs its own queue.
@@ -256,11 +269,91 @@ async def background_sync_worker():
         await asyncio.sleep(settings.POLL_INTERVAL_SECONDS)
 
 
+LOG_SCRAPE_INTERVAL_SECONDS = 60.0
+# ~6 hours at the interval above.
+DESTINATION_PRUNE_EVERY_TICKS = 360
+
+
+async def log_scrape_worker():
+    """Pull each active router's log into SQLite, then prune what aged out.
+
+    RouterOS keeps its log in a small memory ring - a busy box overwrites the
+    oldest lines within minutes, so anything not copied out is gone. This loop
+    is what makes `GET /api/v1/logs?source=db` able to answer for yesterday.
+
+    Off by default is not an option worth having here (an empty history is
+    indistinguishable from a quiet router), so it runs unless the operator
+    turns `log_scraping_enabled` off in Settings.
+    """
+    from backend.app.db.models import AppSetting
+    from backend.app.services.destination_collector import destination_collector
+    from backend.app.services.log_collector import LogCollector
+    from backend.app.services.security_audit import check_and_alert
+
+    collector = LogCollector()
+    ticks = 0
+    while True:
+        try:
+            async with AsyncSessionLocal() as session:
+                enabled = await session.get(AppSetting, "log_scraping_enabled")
+                if enabled and str(enabled.value).strip().lower() in ("false", "0", "no", "off"):
+                    await asyncio.sleep(LOG_SCRAPE_INTERVAL_SECONDS)
+                    continue
+
+                retention_setting = await session.get(AppSetting, "log_retention_days")
+                try:
+                    retention_days = int(retention_setting.value) if retention_setting else 14
+                except (TypeError, ValueError):
+                    retention_days = 14
+                retention_days = max(1, min(retention_days, 365))
+
+                for r in await router_manager.get_all_active_routers(session):
+                    try:
+                        client = await router_manager.get_client(r.id, session=session)
+                        if not client:
+                            continue
+                        await collector.collect_logs_for_router(session, r.id, client)
+                        await collector.prune_old_logs(session, r.id, retention_days=retention_days)
+                    except Exception as e:
+                        logger.debug(f"Log scrape failed for router {r.id}: {e}")
+
+                    # Same tick, same conntrack read cadence: fold the live
+                    # connections into the persistent per-destination history
+                    # that the "Destinations & Domains" tab reads.
+                    try:
+                        await destination_collector.sample_router(session, r.id, client)
+                    except Exception as e:
+                        logger.debug(f"Destination sample failed for router {r.id}: {e}")
+
+                    # Raise one alert a day while any management service still
+                    # accepts connections from any source address.
+                    try:
+                        await check_and_alert(session, r.id, client)
+                    except Exception as e:
+                        logger.debug(f"Security audit failed for router {r.id}: {e}")
+
+                ticks += 1
+                if ticks % DESTINATION_PRUNE_EVERY_TICKS == 0:
+                    try:
+                        await destination_collector.prune(session)
+                    except Exception as e:
+                        logger.debug(f"Destination prune failed: {e}")
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning(f"Log scrape worker tick failed: {e}")
+
+        await asyncio.sleep(LOG_SCRAPE_INTERVAL_SECONDS)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global telegram_service, bg_sync_task
+    global telegram_service, bg_sync_task, log_scrape_task
     logger.info("Initializing MikroMan Database...")
     await init_db()
+    # Router credentials are encrypted at rest; anything written by an older
+    # build is still plain text on disk until it is rewritten once.
+    await encrypt_legacy_secrets()
 
     telegram_service = TelegramBotService(
         router_manager=router_manager,
@@ -270,12 +363,20 @@ async def lifespan(app: FastAPI):
     await telegram_service.start()
 
     bg_sync_task = asyncio.create_task(background_sync_worker())
+    log_scrape_task = asyncio.create_task(log_scrape_worker())
+    # Config-drift snapshots. The scheduler re-reads `backup_enabled` and
+    # `backup_interval_hours` on every pass, so a change in Settings takes
+    # effect without a restart.
+    await backup_scheduler.start()
     logger.info("MikroMan Engine initialized successfully.")
 
     yield
 
     if bg_sync_task:
         bg_sync_task.cancel()
+    if log_scrape_task:
+        log_scrape_task.cancel()
+    await backup_scheduler.stop()
     if telegram_service:
         await telegram_service.stop()
     await router_manager.aclose()

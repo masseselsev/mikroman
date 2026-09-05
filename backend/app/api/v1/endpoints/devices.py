@@ -1,5 +1,5 @@
 import logging
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import List, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -38,6 +38,7 @@ from backend.app.services.device_linking import (
     unlink_device,
 )
 from backend.app.services.device_manager import DeviceManager, detach_device_traffic_from_user
+from backend.app.services.guards import WriteGuardViolation
 from backend.app.services.mac_rotation import canonical_pair, normalise_hostname
 from backend.app.services.router_manager import router_manager
 from backend.app.services.router_time import router_local_now
@@ -293,65 +294,72 @@ async def update_device(
 
     old_user_id = device.user_id
 
-    if payload.custom_name is not None:
-        device.custom_name = payload.custom_name
-    if "ip_address" in payload.model_fields_set:
-        # Explicit null clears a stale lease; the accounting rule and any queue
-        # for the old address are pruned on the next sync tick.
-        device.ip_address = payload.ip_address
-    if payload.is_active is not None:
-        device.is_active = payload.is_active
-    if payload.is_hidden is not None:
-        device.is_hidden = payload.is_hidden
-    if payload.speed_limit is not None:
-        device.speed_limit = payload.speed_limit
-    if payload.is_paused is not None:
-        device.is_paused = payload.is_paused
-    if payload.priority is not None:
-        device.priority = payload.priority
-    if payload.user_id is not None or "user_id" in payload.model_fields_set:
-        device.user_id = payload.user_id
+    try:
+        if payload.custom_name is not None:
+            device.custom_name = payload.custom_name
+        if "ip_address" in payload.model_fields_set:
+            # Explicit null clears a stale lease; the accounting rule and any queue
+            # for the old address are pruned on the next sync tick.
+            device.ip_address = payload.ip_address
+        if payload.is_active is not None:
+            device.is_active = payload.is_active
+        if payload.is_hidden is not None:
+            device.is_hidden = payload.is_hidden
+        if payload.speed_limit is not None:
+            device.speed_limit = payload.speed_limit
+        if payload.is_paused is not None:
+            if payload.is_paused:
+                await traffic_ctrl.pause_device_internet(device.id, db)
+            else:
+                await traffic_ctrl.resume_device_internet(device.id, db)
+            device.is_paused = payload.is_paused
+        if payload.priority is not None:
+            device.priority = payload.priority
+        if payload.user_id is not None or "user_id" in payload.model_fields_set:
+            device.user_id = payload.user_id
 
-    # Taking a device out of quarantine has to release the quarantine limit with
-    # it. Without this the device kept its 5M/5M child queue under its new
-    # owner's parent and stayed throttled, whatever the owner's own limit said.
-    # Only an untouched quarantine value is cleared: an explicit limit set for
-    # this device is the operator's decision and survives the move.
-    became_assigned = old_user_id is None and device.user_id is not None
-    if became_assigned and payload.speed_limit is None:
-        quarantine = await resolve_unassigned_limit(db)
-        if device.speed_limit in (quarantine, None):
-            device.speed_limit = "default"
+        # Taking a device out of quarantine has to release the quarantine limit with
+        # it. Without this the device kept its 5M/5M child queue under its new
+        # owner's parent and stayed throttled, whatever the owner's own limit said.
+        # Only an untouched quarantine value is cleared: an explicit limit set for
+        # this device is the operator's decision and survives the move.
+        became_assigned = old_user_id is None and device.user_id is not None
+        if became_assigned and payload.speed_limit is None:
+            quarantine = await resolve_unassigned_limit(db)
+            if device.speed_limit in (quarantine, None):
+                device.speed_limit = "default"
 
-    # Leaving a profile: unless told otherwise, take this device's recorded
-    # daily volume back out of that profile's totals, so the breakdown stays
-    # honest after the move.
-    became_unassigned = (
-        old_user_id is not None
-        and "user_id" in payload.model_fields_set
-        and payload.user_id is None
-    )
-    if became_unassigned and (payload.detach_traffic is None or payload.detach_traffic):
-        moved = await detach_device_traffic_from_user(db, device, old_user_id)
-        if moved:
-            logger.info(
-                f"Detached device {device.id} traffic from user {old_user_id} "
-                f"across {moved} day(s)"
-            )
+        # Leaving a profile: unless told otherwise, take this device's recorded
+        # daily volume back out of that profile's totals, so the breakdown stays
+        # honest after the move.
+        became_unassigned = (
+            old_user_id is not None
+            and "user_id" in payload.model_fields_set
+            and payload.user_id is None
+        )
+        if became_unassigned and (payload.detach_traffic is None or payload.detach_traffic):
+            moved = await detach_device_traffic_from_user(db, device, old_user_id)
+            if moved:
+                logger.info(
+                    f"Detached device {device.id} traffic from user {old_user_id} "
+                    f"across {moved} day(s)"
+                )
 
-    await db.commit()
-    await db.refresh(device)
+        await db.commit()
+        await db.refresh(device)
 
-    # Sync device queue and parent user queues
-    await traffic_ctrl.sync_device_queue(device.id, db)
-    affected_user_ids = {u for u in [old_user_id, device.user_id] if u is not None}
-    for uid in affected_user_ids:
-        user = await db.get(User, uid)
-        if user:
-            active_ips = [d.ip_address for d in user.devices if d.is_active and d.ip_address]
-            await traffic_ctrl.sync_user_queue(user.id, user.name, active_ips, user.speed_limit)
+        # Sync device queue and parent user queues
+        await traffic_ctrl.sync_device_queue(device.id, db)
+        affected_user_ids = {u for u in [old_user_id, device.user_id] if u is not None}
+        for uid in affected_user_ids:
+            user = await db.get(User, uid)
+            if user:
+                active_ips = [d.ip_address for d in user.devices if d.is_active and d.ip_address]
+                await traffic_ctrl.sync_user_queue(user.id, user.name, active_ips, user.speed_limit)
 
-    return APIResponse(data=DeviceDTO.model_validate(device))
+        return APIResponse(data=DeviceDTO.model_validate(device))
+    except WriteGuardViolation as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.post("/{device_id}/limit", response_model=APIResponse[bool])
@@ -362,7 +370,10 @@ async def set_device_limit(
     traffic_ctrl: TrafficController = Depends(get_traffic_controller)
 ):
     """Set an individual speed limit for a device."""
-    success = await traffic_ctrl.set_device_speed_limit(device_id, payload.speed_limit, db)
+    try:
+        success = await traffic_ctrl.set_device_speed_limit(device_id, payload.speed_limit, db)
+    except WriteGuardViolation as e:
+        raise HTTPException(status_code=400, detail=str(e))
     if not success:
         raise HTTPException(status_code=404, detail="Device not found")
     return APIResponse(data=True, message=f"Device speed limit set to {payload.speed_limit}")
@@ -376,12 +387,15 @@ async def toggle_device_pause(
     traffic_ctrl: TrafficController = Depends(get_traffic_controller)
 ):
     """Pause or resume internet access for an individual device."""
-    if payload.is_paused:
-        success = await traffic_ctrl.pause_device_internet(device_id, db)
-        msg = "Internet paused for device"
-    else:
-        success = await traffic_ctrl.resume_device_internet(device_id, db)
-        msg = "Internet resumed for device"
+    try:
+        if payload.is_paused:
+            success = await traffic_ctrl.pause_device_internet(device_id, db)
+            msg = "Internet paused for device"
+        else:
+            success = await traffic_ctrl.resume_device_internet(device_id, db)
+            msg = "Internet resumed for device"
+    except WriteGuardViolation as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
     if not success:
         raise HTTPException(status_code=404, detail="Device not found")
@@ -574,11 +588,24 @@ async def get_device_traffic_history(
         today=today,
         now_dt=now,
     )
+    # Same intraday rule as the per-user history: the 24H preset is a rolling
+    # window ending now, and a single-day range is drawn at half-hour
+    # resolution rather than as one bar.
+    intraday_now = None
+    intraday_start = None
+    if range_label == "24h":
+        intraday_now = now
+        intraday_start = now - timedelta(hours=24)
+    elif resolved_start == resolved_end and preset in ("today", "day", "1d"):
+        intraday_now = now
+
     data = await AnalyticsEngine.get_device_traffic_history(
         session=db,
         device_id=device_id,
         start_date=resolved_start,
         end_date=resolved_end,
         range_preset=range_label,
+        intraday_now=intraday_now,
+        intraday_start=intraday_start,
     )
     return APIResponse(data=data)

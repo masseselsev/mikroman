@@ -1,3 +1,6 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { translations } from './translations';
 
@@ -28,4 +31,34 @@ describe('translation parity', () => {
       }
     }
   });
+});
+
+/**
+ * A key written twice in the same block is invisible to the parity check above:
+ * a JS object literal simply keeps the last value, so both blocks still have the
+ * key and the counts still match. That is how a second `range_24h: "24H"` once
+ * silently retitled the metric charts' "24 Hours" range button. The source has
+ * to be read as text to see it.
+ */
+describe('translation source hygiene', () => {
+  const file = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 'translations.js');
+  const source = fs.readFileSync(file, 'utf8');
+
+  // Split at the `ru:` block opener so each language is scanned on its own.
+  const ruAt = source.indexOf('\n  ru: {');
+  const blocks = { en: source.slice(0, ruAt), ru: source.slice(ruAt) };
+
+  for (const [lang, block] of Object.entries(blocks)) {
+    it(`declares every ${lang} key exactly once`, () => {
+      const seen = new Map();
+      const duplicates = [];
+      for (const m of block.matchAll(/^\s{4}([A-Za-z_$][\w$]*)\s*:/gm)) {
+        const key = m[1];
+        if (seen.has(key)) duplicates.push(key);
+        seen.set(key, true);
+      }
+      expect(seen.size, `${lang} block looks empty - the scanner regex is wrong`).toBeGreaterThan(50);
+      expect(duplicates).toEqual([]);
+    });
+  }
 });

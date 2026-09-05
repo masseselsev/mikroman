@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.db.models import AppSetting, Device, User
 from backend.app.schemas.traffic import SimpleQueueItem
+from backend.app.services.guards import WriteGuardViolation
 from backend.app.services.queue_identity import (
     DEVICE_QUEUE_COMMENT,
     USER_QUEUE_COMMENT,
@@ -132,6 +133,12 @@ class TrafficController:
         # value read back on the next tick compares equal and no write is issued.
         target_str = ",".join(f"{ip}/32" if "/" not in ip else ip for ip in valid_ips)
 
+        if max_limit not in ("0/0", "0") and valid_ips:
+            immune = self.router_client.get_immune_ips() if hasattr(self.router_client, "get_immune_ips") else set()
+            from backend.app.services.guards import guard_immune_targets
+            for ip in valid_ips:
+                guard_immune_targets(ip, immune, action="queue")
+
         try:
             existing_queues: List[SimpleQueueItem] = await self.router_client.get_simple_queues()
         except Exception as e:
@@ -171,7 +178,9 @@ class TrafficController:
                         # Migrate a legacy name-based tag to the stable id-based one
                         item_id = matching_entry.get(".id")
                         if item_id:
-                            await self.router_client.remove_from_address_list(item_id)
+                            await self.router_client.remove_from_address_list(
+                                item_id, comment=matching_entry.get("comment")
+                            )
                             await self.router_client.add_to_address_list(
                                 address=ip,
                                 list_name="mikroman_queued",
@@ -183,7 +192,9 @@ class TrafficController:
                 for item in user_queued_entries:
                     item_id = item.get(".id")
                     if item_id:
-                        await self.router_client.remove_from_address_list(item_id)
+                        await self.router_client.remove_from_address_list(
+                            item_id, comment=item.get("comment")
+                        )
         except Exception as e:
             logger.warning(f"Failed to sync mikroman_queued address list: {e}")
 
@@ -191,7 +202,9 @@ class TrafficController:
             # If user has no active devices/IPs, delete or disable the queue
             if matched_queue and matched_queue.id:
                 try:
-                    await self.router_client.delete_simple_queue(matched_queue.id)
+                    await self.router_client.delete_simple_queue(
+                        matched_queue.id, comment=matched_queue.comment
+                    )
                 except Exception as e:
                     logger.warning(f"Could not delete empty queue: {e}")
             return None
@@ -208,24 +221,36 @@ class TrafficController:
                 or (matched_queue.comment or "") != comment_tag
             )
             if needs_update:
-                await self.router_client.update_simple_queue(
-                    queue_id=matched_queue.id,
-                    name=queue_name,
-                    max_limit=max_limit,
-                    target=target_str,
-                    disabled=False,
-                    comment=comment_tag
-                )
+                try:
+                    await self.router_client.update_simple_queue(
+                        queue_id=matched_queue.id,
+                        name=queue_name,
+                        max_limit=max_limit,
+                        target=target_str,
+                        disabled=False,
+                        comment=comment_tag
+                    )
+                except WriteGuardViolation:
+                    raise
+                except Exception as e:
+                    logger.warning(f"Could not update queue for user {user_id}: {e}")
             return matched_queue.id
         else:
-            # Create new queue
-            queue_id = await self.router_client.create_simple_queue(
-                name=queue_name,
-                target=target_str,
-                max_limit=max_limit,
-                comment=comment_tag
-            )
-            return queue_id
+            # Create new queue. A failure here (router unreachable) must not
+            # abort the DB-level operation that called us - the background
+            # reconcile recreates the queue once the router is back.
+            try:
+                return await self.router_client.create_simple_queue(
+                    name=queue_name,
+                    target=target_str,
+                    max_limit=max_limit,
+                    comment=comment_tag
+                )
+            except WriteGuardViolation:
+                raise
+            except Exception as e:
+                logger.warning(f"Could not create queue for user {user_id}: {e}")
+                return None
 
     async def set_user_speed_limit(self, user_id: int, speed_limit: str, session: AsyncSession) -> bool:
         """Update speed limit for user in database and RouterOS."""
@@ -233,12 +258,18 @@ class TrafficController:
         if not user:
             return False
 
+        old_limit = user.speed_limit
         user.speed_limit = speed_limit
-        await session.commit()
-        await session.refresh(user)
 
         active_ips = [d.ip_address for d in user.devices if d.is_active and d.ip_address]
-        await self.sync_user_queue(user.id, user.name, active_ips, speed_limit)
+        try:
+            await self.sync_user_queue(user.id, user.name, active_ips, speed_limit)
+        except WriteGuardViolation:
+            user.speed_limit = old_limit
+            raise
+
+        await session.commit()
+        await session.refresh(user)
         return True
 
     async def ensure_pause_firewall_rules(self, session: AsyncSession) -> bool:
@@ -265,12 +296,15 @@ class TrafficController:
 
             # Sync mikroman_allowed_lans in /ip/firewall/address-list
             existing_allowed = await self.router_client.get_address_list("mikroman_allowed_lans")
-            existing_ips = {item.get("address"): item.get(".id") for item in existing_allowed if item.get("address")}
+            existing_ips = {
+                item.get("address"): (item.get(".id"), item.get("comment"))
+                for item in existing_allowed if item.get("address")
+            }
 
-            for ip, item_id in existing_ips.items():
+            for ip, (item_id, item_comment) in existing_ips.items():
                 if ip not in allowed_nets and item_id:
                     try:
-                        await self.router_client.remove_from_address_list(item_id)
+                        await self.router_client.remove_from_address_list(item_id, comment=item_comment)
                     except Exception as e:
                         logger.debug(f"Failed to remove {ip} from mikroman_allowed_lans: {e}")
 
@@ -285,50 +319,89 @@ class TrafficController:
                     except Exception as e:
                         logger.debug(f"Failed to add {net} to mikroman_allowed_lans: {e}")
 
-            # Ensure firewall filter drop rule exists
-            # chain=forward action=drop src-address-list=mikroman_blocked dst-address-list=!mikroman_allowed_lans comment="mikroman:drop_blocked_internet"
-            filter_rules = await self.router_client.get_firewall_filter_rules()
-            target_rule = None
-            for r in filter_rules:
-                comment = r.get("comment", "")
-                if comment in ("mikroman:drop_blocked_internet", "mikroman:drop_blocked_users"):
-                    target_rule = r
-                    break
-
-            desired_payload = {
+            # Ensure the forward-chain drop rule exists AND sits at the top.
+            # Left at the bottom it lands after fasttrack-connection /
+            # accept established,related and never matches - which is why a
+            # paused device kept browsing.
+            drop_match = {
                 "chain": "forward",
                 "action": "drop",
                 "src-address-list": "mikroman_blocked",
                 "dst-address-list": "!mikroman_allowed_lans",
-                "comment": "mikroman:drop_blocked_internet"
+                "comment": "mikroman:drop_blocked_internet",
             }
-
-            if not target_rule:
+            filter_rules = await self.router_client.get_firewall_filter_rules()
+            target_idx = next(
+                (i for i, r in enumerate(filter_rules)
+                 if r.get("comment") in ("mikroman:drop_blocked_internet", "mikroman:drop_blocked_users")),
+                None,
+            )
+            if target_idx is None:
                 try:
-                    await self.router_client.create_firewall_filter_rule(desired_payload)
+                    await self.router_client.create_firewall_filter_rule(dict(drop_match))
+                    # Re-read to find and hoist it.
+                    filter_rules = await self.router_client.get_firewall_filter_rules()
+                    target_idx = next(
+                        (i for i, r in enumerate(filter_rules)
+                         if r.get("comment") == "mikroman:drop_blocked_internet"),
+                        None,
+                    )
                 except Exception as e:
                     logger.warning(f"Failed to create pause filter drop rule: {e}")
-            else:
-                rule_id = target_rule.get(".id")
-                needs_update = (
-                    target_rule.get("chain") != "forward" or
-                    target_rule.get("action") != "drop" or
-                    target_rule.get("src-address-list") != "mikroman_blocked" or
-                    target_rule.get("dst-address-list") != "!mikroman_allowed_lans" or
-                    target_rule.get("disabled") in (True, "true")
-                )
+
+            if target_idx is not None:
+                rule = filter_rules[target_idx]
+                rule_id = rule.get(".id")
+                needs_update = any(
+                    rule.get(k) != v for k, v in {
+                        "chain": "forward", "action": "drop",
+                        "src-address-list": "mikroman_blocked",
+                        "dst-address-list": "!mikroman_allowed_lans",
+                    }.items()
+                ) or rule.get("disabled") in (True, "true")
                 if needs_update and rule_id:
                     try:
-                        await self.router_client.update_firewall_filter_rule(rule_id, {
-                            "chain": "forward",
-                            "action": "drop",
-                            "src-address-list": "mikroman_blocked",
-                            "dst-address-list": "!mikroman_allowed_lans",
-                            "disabled": False,
-                            "comment": "mikroman:drop_blocked_internet"
-                        })
+                        await self.router_client.update_firewall_filter_rule(
+                            rule_id, {**drop_match, "disabled": False}
+                        )
                     except Exception as e:
                         logger.debug(f"Failed to update pause filter drop rule: {e}")
+                # Hoist it above the first rule that is not our own passthrough
+                # counter dummy, so it runs before fasttrack / accept.
+                if target_idx > 0 and rule_id:
+                    before = next(
+                        (r.get(".id") for i, r in enumerate(filter_rules)
+                         if i != target_idx and r.get(".id")
+                         and "mikroman" not in (r.get("comment") or "")
+                         and r.get("action") != "passthrough"),
+                        None,
+                    )
+                    if before:
+                        await self.router_client.move_firewall_filter_rule(rule_id, before)
+
+            # A raw/prerouting drop as well: raw runs before conntrack and
+            # FastTrack, so it cuts an already-open connection immediately
+            # rather than only blocking new ones.
+            raw_match = {
+                "chain": "prerouting",
+                "action": "drop",
+                "src-address-list": "mikroman_blocked",
+                "dst-address-list": "!mikroman_allowed_lans",
+                "comment": "mikroman:drop_blocked_raw",
+            }
+            try:
+                raw_rules = await self.router_client.get_firewall_raw_rules()
+                existing_raw = next(
+                    (r for r in raw_rules if r.get("comment") == "mikroman:drop_blocked_raw"), None
+                )
+                if existing_raw is None:
+                    await self.router_client.create_firewall_raw_rule(dict(raw_match))
+                elif existing_raw.get("disabled") in (True, "true"):
+                    await self.router_client.update_firewall_raw_rule(
+                        existing_raw.get(".id"), {"disabled": False}
+                    )
+            except Exception as e:
+                logger.debug(f"Could not ensure raw pause drop rule: {e}")
 
             return True
         except Exception as e:
@@ -355,6 +428,8 @@ class TrafficController:
                     list_name="mikroman_blocked",
                     comment=f"mikroman:paused:{user.name}"
                 )
+            except WriteGuardViolation as e:
+                logger.warning(f"Skipped queue/pause operation due to WriteGuard: {e}")
             except Exception as e:
                 logger.error(f"Failed to add {ip} to mikroman_blocked: {e}")
 
@@ -377,7 +452,7 @@ class TrafficController:
                 if f"user_{user.id}" in comment or f":paused:{user.name}" in comment or item.get("address") in [d.ip_address for d in user.devices]:
                     item_id = item.get(".id")
                     if item_id:
-                        await self.router_client.remove_from_address_list(item_id)
+                        await self.router_client.remove_from_address_list(item_id, comment=comment)
         except Exception as e:
             logger.error(f"Failed to clear blocked IPs for user {user.id}: {e}")
 
@@ -406,6 +481,25 @@ class TrafficController:
         queue_name = f"mikroman-{user_name}-{safe_dev_name}"
         comment_tag = DEVICE_QUEUE_COMMENT.format(device_id=device.id)
 
+        # For unassigned devices, resolve 'default' to the configured unassigned quarantine limit
+        effective_limit = device.speed_limit
+        if device.user_id is None and effective_limit in ("default", None):
+            effective_limit = await resolve_unassigned_limit(session)
+
+        # Determine limits: "default" for user device means "0/0" child limit (bounded by parent user queue)
+        if user is not None and effective_limit in ("default", None):
+            max_limit = "0/0"
+        else:
+            max_limit = parse_bandwidth_string(effective_limit)
+
+        target_str = f"{clean_ip}/32" if "/" not in clean_ip else clean_ip
+        if max_limit not in ("0/0", "0"):
+            immune = self.router_client.get_immune_ips() if hasattr(self.router_client, "get_immune_ips") else set()
+            from backend.app.services.guards import guard_immune_targets
+            guard_immune_targets(target_str, immune, action="queue")
+
+        parent_name = f"mikroman-{user_name}" if user else None
+
         try:
             existing_queues: List[SimpleQueueItem] = await self.router_client.get_simple_queues()
         except Exception as e:
@@ -423,23 +517,12 @@ class TrafficController:
         if not device.is_active:
             if matched_queue and matched_queue.id:
                 try:
-                    await self.router_client.delete_simple_queue(matched_queue.id)
+                    await self.router_client.delete_simple_queue(matched_queue.id, comment=matched_queue.comment)
+                except WriteGuardViolation as e:
+                    logger.warning(f"Skipped queue/pause operation due to WriteGuard: {e}")
                 except Exception as e:
                     logger.warning(f"Could not delete device child queue: {e}")
             return None
-
-        # For unassigned devices, resolve 'default' to the configured unassigned quarantine limit
-        effective_limit = device.speed_limit
-        if device.user_id is None and effective_limit in ("default", None):
-            effective_limit = await resolve_unassigned_limit(session)
-
-        # Determine limits: "default" for user device means "0/0" child limit (bounded by parent user queue)
-        if user is not None and effective_limit in ("default", None):
-            max_limit = "0/0"
-        else:
-            max_limit = parse_bandwidth_string(effective_limit)
-
-        parent_name = f"mikroman-{user_name}" if user else None
 
         # Add to mikroman_queued for FastTrack bypass
         try:
@@ -452,6 +535,8 @@ class TrafficController:
                     comment=f"mikroman:queued:dev_{device.id}"
                 )
             await self.ensure_fasttrack_exemption()
+        except WriteGuardViolation as e:
+            logger.warning(f"Skipped queue/pause operation due to WriteGuard: {e}")
         except Exception as e:
             logger.warning(f"Failed to add device IP to mikroman_queued: {e}")
 
@@ -493,11 +578,17 @@ class TrafficController:
         if not device:
             return False
 
+        old_limit = device.speed_limit
         device.speed_limit = speed_limit
+
+        try:
+            await self.sync_device_queue(device_id, session)
+        except WriteGuardViolation:
+            device.speed_limit = old_limit
+            raise
+
         await session.commit()
         await session.refresh(device)
-
-        await self.sync_device_queue(device_id, session)
         return True
 
     async def pause_device_internet(self, device_id: int, session: AsyncSession) -> bool:
@@ -505,10 +596,6 @@ class TrafficController:
         device = await session.get(Device, device_id)
         if not device or not device.ip_address:
             return False
-
-        device.is_paused = True
-        await session.commit()
-        await session.refresh(device)
 
         await self.ensure_pause_firewall_rules(session)
 
@@ -519,8 +606,14 @@ class TrafficController:
                 list_name="mikroman_blocked",
                 comment=f"mikroman:paused:dev_{device.id}"
             )
+        except WriteGuardViolation:
+            raise
         except Exception as e:
             logger.error(f"Failed to add device {device.id} to mikroman_blocked: {e}")
+
+        device.is_paused = True
+        await session.commit()
+        await session.refresh(device)
 
         return True
 
@@ -530,10 +623,6 @@ class TrafficController:
         if not device:
             return False
 
-        device.is_paused = False
-        await session.commit()
-        await session.refresh(device)
-
         try:
             blocked_items = await self.router_client.get_address_list("mikroman_blocked")
             for item in blocked_items:
@@ -541,9 +630,15 @@ class TrafficController:
                 if f"dev_{device.id}" in comment or (device.ip_address and item.get("address") == device.ip_address.strip()):
                     item_id = item.get(".id")
                     if item_id:
-                        await self.router_client.remove_from_address_list(item_id)
+                        await self.router_client.remove_from_address_list(item_id, comment=comment)
+        except WriteGuardViolation:
+            raise
         except Exception as e:
             logger.error(f"Failed to unblock device {device.id}: {e}")
+
+        device.is_paused = False
+        await session.commit()
+        await session.refresh(device)
 
         return True
 
@@ -638,13 +733,50 @@ class TrafficController:
 
             if not keep and queue.id:
                 try:
-                    await self.router_client.delete_simple_queue(queue.id)
+                    await self.router_client.delete_simple_queue(queue.id, comment=queue.comment)
                     removed += 1
                     logger.info(f"Removed stale managed queue '{queue.name}' ({comment})")
+                except WriteGuardViolation as e:
+                    logger.warning(f"Skipped queue/pause operation due to WriteGuard: {e}")
                 except Exception as e:
                     logger.warning(f"Could not remove stale queue {queue.id}: {e}")
 
         return removed
+
+    async def sync_all_queues(self, session: AsyncSession, router_id: Optional[int] = None) -> None:
+        """Synchronize all user and device queues, skipping WriteGuard violations."""
+        eff_router_id = router_id if router_id is not None else self.router_id
+        u_stmt = select(User)
+        if eff_router_id is not None:
+            u_stmt = u_stmt.where((User.router_id == eff_router_id) | (User.router_id.is_(None)))
+        users_res = await session.execute(u_stmt)
+        for u in users_res.scalars().all():
+            active_ips = [
+                d.ip_address for d in u.devices
+                if d.is_active and d.ip_address and (eff_router_id is None or d.router_id == eff_router_id or d.router_id is None)
+            ]
+            try:
+                await self.sync_user_queue(u.id, u.name, active_ips, u.speed_limit)
+            except WriteGuardViolation as e:
+                logger.warning(f"Skipped queue/pause operation due to WriteGuard: {e}")
+
+        d_stmt = select(Device).where(
+            Device.is_active,
+            Device.user_id.is_(None) | (Device.speed_limit != "default"),
+        )
+        if eff_router_id is not None:
+            d_stmt = d_stmt.where((Device.router_id == eff_router_id) | (Device.router_id.is_(None)))
+        devs_res = await session.execute(d_stmt)
+        for dev in devs_res.scalars().all():
+            try:
+                await self.sync_device_queue(dev.id, session)
+            except WriteGuardViolation as e:
+                logger.warning(f"Skipped queue/pause operation due to WriteGuard: {e}")
+
+        try:
+            await self.reconcile_managed_queues(session, router_id=eff_router_id)
+        except WriteGuardViolation as e:
+            logger.warning(f"Skipped queue/pause operation due to WriteGuard: {e}")
 
     async def reconcile_device_limits(self, session: AsyncSession, router_id: Optional[int] = None) -> List[int]:
         """Clear quarantine limits left on devices that now belong to a user.
@@ -695,7 +827,10 @@ class TrafficController:
         # Rebuild each affected queue so the router agrees with the database
         # immediately, rather than on whichever later tick happens to touch it.
         for device in stranded:
-            await self.sync_device_queue(device.id, session)
+            try:
+                await self.sync_device_queue(device.id, session)
+            except WriteGuardViolation as e:
+                logger.warning(f"Skipped queue/pause operation due to WriteGuard: {e}")
 
         return [d.id for d in stranded]
 
@@ -752,7 +887,6 @@ class TrafficController:
             rates = user_rates.get(user.id, {})
             rate_in = int(rates.get("rx_bps", 0))
             rate_out = int(rates.get("tx_bps", 0))
-            bytes_in, bytes_out = user_volume.get(user.id, (0, 0))
 
             # Per-device breakdown, so the dashboard can name the device that is
             # actually consuming the bandwidth rather than only its owner.
@@ -768,6 +902,15 @@ class TrafficController:
                     "bytes_today_in": d_in,
                     "bytes_today_out": d_out,
                 }
+
+            # Per-user today volume is derived from the devices a profile owns now,
+            # matching the analytics fold and billing-cycle totals. Fall back to
+            # historical user_volume only if the user owns no devices.
+            if owned:
+                bytes_in = sum(dm["bytes_today_in"] for dm in device_metrics.values())
+                bytes_out = sum(dm["bytes_today_out"] for dm in device_metrics.values())
+            else:
+                bytes_in, bytes_out = user_volume.get(user.id, (0, 0))
 
             user_metrics.append({
                 "user_id": user.id,

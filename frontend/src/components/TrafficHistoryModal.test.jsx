@@ -8,6 +8,7 @@ vi.mock('../api/client', () => ({
   api: {
     getUserTrafficHistory: vi.fn(),
     getDeviceTrafficHistory: vi.fn(),
+    getUserDestinations: vi.fn().mockResolvedValue({ data: [] }),
   },
 }));
 
@@ -124,7 +125,7 @@ describe('TrafficHistoryModal component', () => {
     expect(screen.getByText('Alice iPhone')).toBeInTheDocument();
 
     // Preset buttons exist
-    const dayBtn = screen.getByRole('button', { name: '1D' });
+    const dayBtn = screen.getByRole('button', { name: '24H' });
     const weekBtn = screen.getByRole('button', { name: '7D' });
     const monthBtn = screen.getByRole('button', { name: '30D' });
     const yearBtn = screen.getByRole('button', { name: '1Y' });
@@ -145,7 +146,7 @@ describe('TrafficHistoryModal component', () => {
     });
   });
 
-  it('renders the 1D view as a half-hour timeline with HH:MM labels', async () => {
+  it('renders the 24H view as a half-hour timeline with HH:MM labels', async () => {
     api.getUserTrafficHistory.mockResolvedValueOnce({ data: mockUserData });
     api.getUserTrafficHistory.mockResolvedValueOnce({
       data: {
@@ -168,15 +169,44 @@ describe('TrafficHistoryModal component', () => {
     );
 
     await waitFor(() => expect(api.getUserTrafficHistory).toHaveBeenCalledWith(1, { preset: '7d' }));
-    fireEvent.click(screen.getByRole('button', { name: '1D' }));
+    fireEvent.click(screen.getByRole('button', { name: '24H' }));
 
-    await waitFor(() => expect(api.getUserTrafficHistory).toHaveBeenCalledWith(1, { preset: '1d' }));
+    await waitFor(() => expect(api.getUserTrafficHistory).toHaveBeenCalledWith(1, { preset: '24h' }));
 
     // The breakdown table now has a Time column and HH:MM rows, not dates.
     await waitFor(() => expect(screen.getByText('Half-hour breakdown')).toBeInTheDocument());
     expect(screen.getByRole('columnheader', { name: 'Time' })).toBeInTheDocument();
     expect(screen.getByText('3 intervals')).toBeInTheDocument();
     expect(screen.getAllByText('09:00').length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('renders the 1Y view as a weekly breakdown', async () => {
+    api.getUserTrafficHistory.mockResolvedValueOnce({ data: mockUserData });
+    api.getUserTrafficHistory.mockResolvedValueOnce({
+      data: {
+        ...mockUserData,
+        range_preset: '1y',
+        resolution: 'week',
+        peak_label: 'Aug 31',
+        timeline: [
+          { record_date: '2026-08-24', label: 'Aug 24', bytes_in: 1_000_000, bytes_out: 200_000, total_bytes: 1_200_000 },
+          { record_date: '2026-08-31', label: 'Aug 31', bytes_in: 5_000_000, bytes_out: 900_000, total_bytes: 5_900_000 },
+        ],
+      },
+    });
+
+    renderWithProviders(
+      <TrafficHistoryModal isOpen={true} target={{ type: 'user', id: 1, name: 'Alice' }} onClose={vi.fn()} />
+    );
+
+    await waitFor(() => expect(api.getUserTrafficHistory).toHaveBeenCalledWith(1, { preset: '7d' }));
+    fireEvent.click(screen.getByRole('button', { name: '1Y' }));
+
+    await waitFor(() => expect(api.getUserTrafficHistory).toHaveBeenCalledWith(1, { preset: '1y' }));
+    await waitFor(() => expect(screen.getByText('Weekly breakdown')).toBeInTheDocument());
+    expect(screen.getByRole('columnheader', { name: 'Week' })).toBeInTheDocument();
+    expect(screen.getByText('2 weeks')).toBeInTheDocument();
+    expect(screen.getAllByText('Aug 31').length).toBeGreaterThanOrEqual(1);
   });
 
   it('fetches and renders device traffic history', async () => {
