@@ -1,4 +1,4 @@
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import List, Optional
 
 from sqlalchemy import (
@@ -12,6 +12,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    TypeDecorator,
     UniqueConstraint,
     func,
 )
@@ -20,6 +21,29 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 class Base(DeclarativeBase):
     pass
+
+
+class EncryptedString(TypeDecorator):
+    """A `String` that is encrypted at rest and transparent everywhere else.
+
+    Encryption happens in `process_bind_param` (write) and decryption in
+    `process_result_value` (read), so every INSERT/UPDATE and every ORM load
+    goes through it automatically - no call site can forget to encrypt a
+    credential before it reaches the database, and no call site needs to know
+    the value on disk isn't the plain one. See `backend.app.core.secrets` for
+    the actual cipher; this class only wires it into the column type.
+    """
+
+    impl = String
+    cache_ok = True
+
+    def process_bind_param(self, value, dialect):
+        from backend.app.core.secrets import encrypt_secret
+        return encrypt_secret(value)
+
+    def process_result_value(self, value, dialect):
+        from backend.app.core.secrets import decrypt_secret
+        return decrypt_secret(value)
 
 
 class Router(Base):
@@ -33,7 +57,10 @@ class Router(Base):
     ssl_verify: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     ca_cert: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     username: Mapped[str] = mapped_column(String(100), default="admin", nullable=False)
-    password: Mapped[str] = mapped_column(String(255), default="", nullable=False)
+    # Encrypted at rest (see `EncryptedString`) - the database file is what
+    # actually leaves the machine (backups, a copied `data/` volume), and a
+    # plain-text credential in it is a working key to the router it describes.
+    password: Mapped[str] = mapped_column(EncryptedString(500), default="", nullable=False)
     # Operator's free-text notes for this router - location, ISP account, config
     # quirks, maintenance windows. Surfaced in the header for the selected router.
     comment: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
@@ -54,7 +81,8 @@ class Router(Base):
 
     devices: Mapped[List["Device"]] = relationship("Device", back_populates="router")
     users: Mapped[List["User"]] = relationship("User", back_populates="router")
-
+    backups: Mapped[List["RouterBackup"]] = relationship("RouterBackup", back_populates="router", cascade="all, delete-orphan", order_by="desc(RouterBackup.created_at)")
+    logs: Mapped[List["RouterLog"]] = relationship("RouterLog", back_populates="router", cascade="all, delete-orphan", order_by="desc(RouterLog.timestamp)")
 
 class User(Base):
     __tablename__ = "users"
@@ -241,6 +269,54 @@ class UserTrafficBucket(Base):
     )
 
 
+class DeviceTrafficBucket(Base):
+    """Half-hour per-device volume - the device twin of :class:`UserTrafficBucket`.
+
+    The device history modal offers the same 24H view the user modal does, and
+    that view needs a shape, not a daily total. Without this table the 24H
+    preset on a device silently fell back to a single day-resolution bar.
+
+    Same contract as the user buckets: ``bucket_start`` is naive router-local
+    time, rows are written from the same accounted deltas, and they are pruned
+    after ``BUCKET_RETENTION_DAYS`` because the daily rollup remains the
+    permanent record.
+    """
+    __tablename__ = "device_traffic_buckets"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    device_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("devices.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    bucket_start: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    bytes_in: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)   # Download
+    bytes_out: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)  # Upload
+
+    __table_args__ = (
+        UniqueConstraint("device_id", "bucket_start", name="uq_device_traffic_bucket"),
+    )
+
+
+class UserDestinationStat(Base):
+    """Cumulative traffic volume and connection hits per destination IP/domain per user or device."""
+    __tablename__ = "user_destination_stats"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    device_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("devices.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    destination_ip: Mapped[str] = mapped_column(String(45), nullable=False, index=True)
+    domain: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, index=True)
+    country_code: Mapped[Optional[str]] = mapped_column(String(8), nullable=True)
+    bytes_in: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)   # Download
+    bytes_out: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)  # Upload
+    total_bytes: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False, index=True)
+    hit_count: Mapped[int] = mapped_column(Integer, default=1, nullable=False, index=True)
+    last_seen: Mapped[datetime] = mapped_column(DateTime, default=func.now(), nullable=False, index=True)
+
+
 class RouterTrafficRollup(Base):
     __tablename__ = "router_traffic_rollups"
 
@@ -385,3 +461,46 @@ class InterfaceMetric(Base):
     rx_bytes_total: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
     tx_bytes_total: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
     timestamp: Mapped[datetime] = mapped_column(DateTime, default=func.now(), nullable=False, index=True)
+
+
+class RouterBackup(Base):
+    __tablename__ = "router_backups"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True, index=True)
+    router_id: Mapped[int] = mapped_column(Integer, ForeignKey("routers.id", ondelete="CASCADE"), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False, index=True)
+    outcome: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    source: Mapped[str] = mapped_column(String(20), nullable=False, default="manual")
+    fingerprint: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
+    rsc_content: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    rsc_bytes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    backup_file_path: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    backup_bytes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    backup_password: Mapped[Optional[str]] = mapped_column(EncryptedString(400), nullable=True)
+    is_pinned: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    note: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    model: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    serial: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    os_version: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    duration_ms: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    router: Mapped["Router"] = relationship("Router", back_populates="backups")
+
+
+class RouterLog(Base):
+    __tablename__ = "router_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True, index=True)
+    router_id: Mapped[int] = mapped_column(Integer, ForeignKey("routers.id", ondelete="CASCADE"), nullable=False, index=True)
+    external_id: Mapped[Optional[str]] = mapped_column(String(32), nullable=True, index=True)
+    timestamp: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    topics: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    severity: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    category: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), nullable=False)
+
+    router: Mapped["Router"] = relationship("Router", back_populates="logs")
+
+
