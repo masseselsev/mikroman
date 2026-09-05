@@ -3,20 +3,20 @@ import { useTheme } from '../context/ThemeContext';
 import { useI18n } from '../context/I18nContext';
 import { RouterSelector } from './RouterSelector';
 import { RouterCommentBar } from './RouterCommentBar';
-import { Sun, Moon, Globe, Settings as SettingsIcon, Activity, Clock } from 'lucide-react';
+import { Sun, Moon, Settings as SettingsIcon, Activity, Clock, Terminal, Archive, Package } from 'lucide-react';
 
 /**
- * Trim a trailing zero patch from a semver string for display.
- *
- * "0.1.0" reads as "0.1" in the header; the full string stays in the tooltip,
- * so a bug report can still quote an exact build.
+ * "+5" / "-3:30" from a GMT offset in minutes. The city name that used to sit
+ * inline (`Tashkent`) doesn't say anything a reader can act on faster than the
+ * offset itself, and it was often wider than the clock next to it; the full
+ * zone name is one hover away in the tooltip instead.
  */
-function formatVersionTag(version) {
-  const parts = String(version).split('.');
-  if (parts.length === 3 && parts[2] === '0') {
-    return `v${parts[0]}.${parts[1]}`;
-  }
-  return `v${version}`;
+function formatUtcOffset(totalMinutes) {
+  const sign = totalMinutes < 0 ? '-' : '+';
+  const abs = Math.abs(totalMinutes);
+  const hours = Math.floor(abs / 60);
+  const mins = abs % 60;
+  return mins === 0 ? `${sign}${hours}` : `${sign}${hours}:${String(mins).padStart(2, '0')}`;
 }
 
 /**
@@ -33,7 +33,9 @@ function RouterClock({ clock }) {
   const [now, setNow] = React.useState(() => Date.now());
 
   React.useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), 1000);
+    // Only minutes are shown, so a tick anywhere within the minute is enough;
+    // no point re-rendering every second for a digit nobody sees.
+    const id = setInterval(() => setNow(Date.now()), 15000);
     return () => clearInterval(id);
   }, []);
 
@@ -43,7 +45,6 @@ function RouterClock({ clock }) {
   const shifted = new Date(now + clock.gmt_offset_minutes * 60000);
   const hh = String(shifted.getUTCHours()).padStart(2, '0');
   const mm = String(shifted.getUTCMinutes()).padStart(2, '0');
-  const ss = String(shifted.getUTCSeconds()).padStart(2, '0');
 
   return (
     <div
@@ -65,20 +66,72 @@ function RouterClock({ clock }) {
     >
       <Clock size={13} style={{ color: 'var(--color-primary)', flexShrink: 0 }} />
       <span className="font-mono" style={{ fontSize: 'var(--fs-sm)', fontWeight: 700, color: 'var(--text-primary)' }}>
-        {hh}:{mm}:{ss}
+        {hh}:{mm}
       </span>
-      {clock.timezone && (
-        <span style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)' }}>
-          {clock.timezone.split('/').pop().replace(/_/g, ' ')}
-        </span>
-      )}
+      <span className="font-mono" style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)' }}>
+        {formatUtcOffset(clock.gmt_offset_minutes)}
+      </span>
     </div>
   );
 }
 
-export function Navbar({ isConnected, routerInfo, routers = [], activeRouter, onSelectRouter, onOpenSettings, onAddRouter, onRouterCommentSaved }) {
+/**
+ * Flag icons for the language switcher, drawn as plain SVG shapes rather than
+ * the flag emoji (🇬🇧/🇷🇺) tried first. Regional-indicator emoji need a
+ * colour-emoji font with flag glyphs; several common Linux and Windows setups
+ * lack one and fall back to rendering the two bare letters ("GB", "RU")
+ * instead of a flag, which is what actually shipped. An inline SVG renders
+ * identically everywhere a browser can render SVG at all.
+ */
+function FlagGB({ size = 16 }) {
+  return (
+    <svg width={size} height={Math.round(size * (2 / 3))} viewBox="0 0 60 40" aria-hidden="true">
+      <clipPath id="mm-flag-gb-clip"><rect width="60" height="40" /></clipPath>
+      <g clipPath="url(#mm-flag-gb-clip)">
+        <rect width="60" height="40" fill="#00247d" />
+        <line x1="0" y1="0" x2="60" y2="40" stroke="#fff" strokeWidth="10" />
+        <line x1="60" y1="0" x2="0" y2="40" stroke="#fff" strokeWidth="10" />
+        <line x1="0" y1="0" x2="60" y2="40" stroke="#cf142b" strokeWidth="4" />
+        <line x1="60" y1="0" x2="0" y2="40" stroke="#cf142b" strokeWidth="4" />
+        <rect x="24" width="12" height="40" fill="#fff" />
+        <rect y="14" width="60" height="12" fill="#fff" />
+        <rect x="27" width="6" height="40" fill="#cf142b" />
+        <rect y="17" width="60" height="6" fill="#cf142b" />
+      </g>
+    </svg>
+  );
+}
+
+function FlagRU({ size = 16 }) {
+  return (
+    <svg width={size} height={Math.round(size * (2 / 3))} viewBox="0 0 60 40" aria-hidden="true">
+      <rect width="60" height="40" fill="#fff" />
+      <rect y="13" width="60" height="27" fill="#0039a6" />
+      <rect y="26" width="60" height="14" fill="#d52b1e" />
+    </svg>
+  );
+}
+
+export function Navbar({
+  isConnected,
+  routerInfo,
+  routers = [],
+  activeRouter,
+  onSelectRouter,
+  onOpenSettings,
+  onAddRouter,
+  onRouterCommentSaved,
+  onOpenLogs,
+  onOpenBackups,
+  onOpenFirmware,
+  hasFirmwareUpdate,
+  firmwareVersion,
+  logErrorCount = 0,
+  logWarningCount = 0,
+  logAuthFailCount = 0,
+}) {
   const { theme, toggleTheme } = useTheme();
-  const { lang, setLang, t } = useI18n();
+  const { t, lang, setLang } = useI18n();
 
   return (
     <header style={{
@@ -90,17 +143,9 @@ export function Navbar({ isConnected, routerInfo, routers = [], activeRouter, on
       zIndex: 100,
       boxShadow: 'var(--shadow-sm)'
     }}>
-      <div style={{
-        maxWidth: 1360,
-        margin: '0 auto',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        flexWrap: 'wrap',
-        gap: 12
-      }}>
-        {/* Brand & Connection Pill & Router Selector */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+      <div className="navbar-row">
+        {/* Brand, router selector and the tools that act on that router */}
+        <div className="navbar-left">
           <div style={{
             display: 'flex',
             alignItems: 'center',
@@ -118,18 +163,20 @@ export function Navbar({ isConnected, routerInfo, routers = [], activeRouter, on
             }}>
               <Activity size={20} />
             </div>
-            <div>
-              <div style={{ display: 'flex', alignItems: 'baseline', gap: 7 }}>
-                <span style={{ fontWeight: 800, fontSize: 'var(--fs-xl)', letterSpacing: '-0.02em', color: 'var(--text-primary)' }}>
-                  {t('app_title')}
-                </span>
-                {/* Injected from package.json at build time - see vite.config.js */}
-                <span className="version-tag" title={`MikroMan ${__APP_VERSION__}`}>
-                  {formatVersionTag(__APP_VERSION__)}
-                </span>
+            {/* `brand-title-block` reserves a line below the title and clips
+                the tagline to whatever width the title itself renders at -
+                see the CSS comment on `.brand-subtitle--clipped` for why a
+                fixed font-size alone was not enough in either language. */}
+            <div className="brand-title-block">
+              <div style={{ fontWeight: 800, fontSize: 'var(--fs-xl)', letterSpacing: '-0.02em', color: 'var(--text-primary)' }}>
+                {t('app_title')}
               </div>
-              <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginTop: -2 }}>
-                {routerInfo?.board_name ? `${routerInfo.board_name} (${routerInfo.version || 'ROS 7.x'})` : t('app_subtitle')}
+              {/* A fixed tagline, not the router's board and firmware: those
+                  belong to whichever router is selected, so they live in the
+                  selector's own list where switching context makes them
+                  meaningful. The app version moved to the footer. */}
+              <div className="brand-subtitle brand-subtitle--clipped">
+                {t('app_subtitle')}
               </div>
             </div>
           </div>
@@ -139,41 +186,101 @@ export function Navbar({ isConnected, routerInfo, routers = [], activeRouter, on
             routers={routers}
             activeRouter={activeRouter}
             telemetryLive={isConnected}
+            currentVersion={routerInfo?.version}
             onSelectRouter={onSelectRouter}
             onAddRouter={onAddRouter}
           />
+
+          {/* Router tools, grouped against the selector they act on: all three
+              are "this router's" data, unlike the app-wide controls on the far
+              right. One segmented pill rather than four loose buttons, which is
+              what the top bar had grown into. */}
+          <div className="navbar-tools">
+            {[
+              {
+                key: 'logs',
+                Icon: Terminal,
+                label: t('tab_logs'),
+                onClick: onOpenLogs,
+                title: t('router_logs_title'),
+                badge: logErrorCount > 0 ? (logErrorCount > 99 ? '99+' : String(logErrorCount)) : null,
+                badgeColor: 'var(--color-danger)',
+                badgeTitle: t('log_stats_summary', {
+                  errors: logErrorCount, warnings: logWarningCount, auth: logAuthFailCount,
+                }),
+              },
+              {
+                key: 'backups',
+                Icon: Archive,
+                label: t('tab_backups'),
+                onClick: onOpenBackups,
+                title: t('backups_modal_title'),
+              },
+              {
+                key: 'firmware',
+                Icon: Package,
+                label: t('tab_firmware'),
+                onClick: onOpenFirmware,
+                title: t('firmware_modal_title'),
+                badge: hasFirmwareUpdate ? (firmwareVersion ? `v${firmwareVersion}` : '!') : null,
+                badgeColor: 'var(--color-warning)',
+                badgeTitle: t('firmware_update_available'),
+              },
+            ].filter(item => item.onClick).map(({ key, Icon, label, onClick, title, badge, badgeColor, badgeTitle }) => (
+              <button
+                key={key}
+                type="button"
+                className="btn-icon navbar-tool"
+                onClick={onClick}
+                title={title}
+              >
+                <Icon size={14} />
+                <span className="navbar-tool-label">{label}</span>
+                {badge && (
+                  <span className="navbar-tool-badge" title={badgeTitle} style={{ background: badgeColor }}>
+                    {badge}
+                  </span>
+                )}
+              </button>
+            ))}
+          </div>
 
           {/* Only the bad news is worth a badge. A healthy stream is already
               signalled by the router selector's own green dot, so saying it
               twice spends space on the state nobody needs telling about. */}
           {!isConnected && (
-            <div className="badge badge-danger" style={{ marginLeft: 4 }}>
+            <div className="badge badge-danger">
               <span style={{ width: 6, height: 6, borderRadius: 'var(--radius-full)', background: 'var(--color-danger)' }} />
               {t('disconnected')}
             </div>
           )}
         </div>
 
-        {/* Selected router's note - between the selector and the clock, grows to
-            fill the middle of the bar and drops a full editor down on click. */}
+        {/* Selected router's note - between the tools and the app controls, it
+            takes whatever width is left over and drops a full editor down on
+            click. It is also the only element in the row that shrinks. */}
         {activeRouter && (
           <RouterCommentBar router={activeRouter} onSaved={onRouterCommentSaved} />
         )}
 
-        {/* Action Controls */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        {/* App-wide controls, pinned to the right of the note */}
+        <div className="navbar-actions">
           {/* Router's own local time, left of the language switcher */}
           <RouterClock clock={routerInfo?.clock} />
 
-          {/* Language Switcher */}
+          {/* Language Switcher: one button showing the *current* language's
+              flag; clicking it switches to the other one. Two flags side by
+              side were tried first, but with only two languages a toggle
+              needs half the width and the current language is still obvious
+              without hovering - it is the flag showing. */}
           <button
-            className="btn btn-secondary btn-sm"
+            type="button"
+            className="lang-switch-toggle"
             onClick={() => setLang(lang === 'en' ? 'ru' : 'en')}
-            title="Switch Language (EN / RU)"
-            style={{ fontWeight: 700 }}
+            title={lang === 'en' ? 'Переключить на русский' : 'Switch to English'}
+            aria-label={lang === 'en' ? 'Переключить на русский' : 'Switch to English'}
           >
-            <Globe size={15} />
-            {lang.toUpperCase()}
+            {lang === 'en' ? <FlagGB size={18} /> : <FlagRU size={18} />}
           </button>
 
           {/* Theme Toggle */}

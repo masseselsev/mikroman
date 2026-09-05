@@ -2,7 +2,26 @@ import React, { useState, useRef, useEffect } from 'react';
 import { useI18n } from '../context/I18nContext';
 import { Server, Check, ChevronDown, Plus } from 'lucide-react';
 
-export function RouterSelector({ routers = [], activeRouter, telemetryLive = false, onSelectRouter, onAddRouter }) {
+/**
+ * Router picker for the top bar.
+ *
+ * The collapsed button carries only what identifies the router - its name and
+ * whether it is up. Hardware model and firmware version are shown per entry
+ * once the list is expanded: they are the facts you compare routers by, and
+ * kept in the header they only crowded the brand.
+ *
+ * `currentVersion` is the live RouterOS version from telemetry. The stored
+ * `ros_version` is refreshed by the `/routers` probe, which can lag or fail;
+ * for the router being watched right now, telemetry is the fresher source.
+ */
+export function RouterSelector({
+  routers = [],
+  activeRouter,
+  telemetryLive = false,
+  currentVersion = null,
+  onSelectRouter,
+  onAddRouter,
+}) {
   const { t } = useI18n();
   const [isOpen, setIsOpen] = useState(false);
   const dropdownRef = useRef(null);
@@ -61,6 +80,9 @@ export function RouterSelector({ routers = [], activeRouter, telemetryLive = fal
           <div style={{ maxHeight: 240, overflowY: 'auto' }}>
             {routers.map(r => {
               const isSelected = r.id === current?.id;
+              // Telemetry wins for the selected router; everything else falls
+              // back to what the last `/routers` probe stored.
+              const version = (isSelected && currentVersion) || r.ros_version;
               return (
                 <button
                   key={r.id}
@@ -82,7 +104,7 @@ export function RouterSelector({ routers = [], activeRouter, telemetryLive = fal
                       {/* Drop only the redundant "ROS" prefix - the firmware
                           channel, e.g. "(stable)" / "(testing)", stays. */}
                       {r.board_name || r.model || 'MikroTik'}
-                      {r.ros_version ? ` · v${r.ros_version}` : ''}
+                      {version ? ` · v${version}` : ''}
                     </div>
                   </div>
                   {isSelected && <Check size={14} style={{ color: 'var(--color-primary)', flexShrink: 0 }} />}

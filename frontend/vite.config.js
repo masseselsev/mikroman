@@ -5,7 +5,7 @@ import pkg from './package.json' with { type: 'json' };
 
 export default defineConfig({
   plugins: [react()],
-  // The version badge in the header reads this, so package.json stays the one
+  // The version badge in the footer reads this, so package.json stays the one
   // place the frontend version is written down.
   define: {
     __APP_VERSION__: JSON.stringify(pkg.version),
