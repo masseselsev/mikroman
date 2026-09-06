@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useI18n } from '../context/I18nContext';
 import { SpeedTestBadge } from './SpeedTestBadge';
 import { api } from '../api/client';
-import { formatSpeed, formatUptime } from '../utils/formatters';
+import { formatFrequency, formatSpeed } from '../utils/formatters';
 import { buildLookupUrl } from '../utils/ipLookup';
 import { smoothAreaPath, smoothLinePath } from '../utils/sparkline';
 import {
@@ -11,7 +11,6 @@ import {
   Thermometer,
   ArrowDown,
   ArrowUp,
-  Clock,
   Sliders,
   X,
   Check,
@@ -27,6 +26,28 @@ function pushHistory(previous, value) {
   if (value == null || Number.isNaN(value)) return previous;
   const next = [...previous, value];
   return next.length > HISTORY_LENGTH ? next.slice(next.length - HISTORY_LENGTH) : next;
+}
+
+/** Longest sub-line that fits a tile before the grid's width floor clips it. */
+const SUB_LINE_FITS = 24;
+
+/**
+ * A tile sub-line that may not fit.
+ *
+ * Tiles clip their sub-lines, so a long processor name or a provider with a
+ * verbose legal name would simply vanish mid-word with nothing to say that
+ * anything had been cut. Past the width that fits, the text is marked with a
+ * dotted underline - the conventional "there is a footnote here" cue - and
+ * carries the full string as its tooltip. Short lines are left completely
+ * unmarked, so the underline always means something is hidden.
+ */
+function Footnote({ text, children }) {
+  const clipped = text.length > SUB_LINE_FITS;
+  return (
+    <span className={clipped ? 'footnote' : undefined} title={clipped ? text : undefined}>
+      {children ?? text}
+    </span>
+  );
 }
 
 /**
@@ -153,7 +174,7 @@ function Tile({ icon, tone, label, value, sub, history, historyMax, onClick, tit
 export function TelemetryBar({ router, activeRouter, interfaces = [], onNavigate }) {
   // The speed test acts on a specific router record, not on the telemetry frame.
   const activeRouterId = activeRouter?.id;
-  const { t, lang } = useI18n();
+  const { t } = useI18n();
   const [modalOpen, setModalOpen] = useState(false);
   const [availableIfaces, setAvailableIfaces] = useState([]);
   const [selectedIfaces, setSelectedIfaces] = useState([]);
@@ -167,6 +188,27 @@ export function TelemetryBar({ router, activeRouter, interfaces = [], onNavigate
   const [memHistory, setMemHistory] = useState([]);
   const [tempHistory, setTempHistory] = useState([]);
   const [tempThreshold, setTempThreshold] = useState(null);
+
+  // A sparkline history belongs to one router, so switching routers has to
+  // empty it. The buffer holds up to 60 samples and the traffic sparklines
+  // auto-scale to the largest value they contain, so carrying it across a
+  // switch does two visible kinds of damage: the previous router's curve stays
+  // on screen for a full minute, and its peak rescales the axis - a router
+  // idling at 60 Kbps next to one that peaked at 900 Mbps draws as a flat line
+  // at the bottom of the tile.
+  //
+  // The socket hook blanks the frame on the same change, but that cannot do
+  // the clearing on its own: the push effect below returns early on a null
+  // frame instead of resetting. Hence a separate effect keyed on the router
+  // id, declared first so a reset and the new router's first sample landing in
+  // the same commit happen in that order.
+  useEffect(() => {
+    setRxHistory([]);
+    setTxHistory([]);
+    setCpuHistory([]);
+    setMemHistory([]);
+    setTempHistory([]);
+  }, [activeRouterId]);
 
   useEffect(() => {
     if (!router) return;
@@ -289,6 +331,10 @@ export function TelemetryBar({ router, activeRouter, interfaces = [], onNavigate
   const cpuLoad = router.cpu_load || 0;
   const cpuColor = cpuLoad > 85 ? 'var(--color-danger)' : (cpuLoad > 60 ? 'var(--color-warning)' : 'var(--color-success)');
 
+  const usedMemMb = router.total_memory_mb
+    ? Math.round(router.total_memory_mb - (router.free_memory_mb || 0))
+    : null;
+  const totalMemMb = router.total_memory_mb ? Math.round(router.total_memory_mb) : null;
   const memPct = router.total_memory_mb
     ? Math.round(((router.total_memory_mb - router.free_memory_mb) / router.total_memory_mb) * 100)
     : null;
@@ -324,15 +370,21 @@ export function TelemetryBar({ router, activeRouter, interfaces = [], onNavigate
   const cpuExact = router.cpu_model_exact !== false;
   const cpuModel = router.cpu_model || '';
   const cpuArch = router.cpu_arch || '';
-  const cpuSpecBits = [
-    cpuArch && cpuArch.toLowerCase() !== cpuModel.toLowerCase() ? cpuArch : null,
-    router.cpu_count ? `${router.cpu_count} ${router.cpu_count === 1 ? 'core' : 'cores'}` : null,
-    router.cpu_frequency_mhz ? `${router.cpu_frequency_mhz} MHz` : null,
-  ].filter(Boolean);
-  const cpuLines = [
+  // The architecture moves into the tile's heading - "CPU (arm64)" - where it
+  // costs no vertical space at all. It is dropped when it only repeats the
+  // model, which is what a CHR or an x86 box reports.
+  const cpuArchLabel = cpuArch && cpuArch.toLowerCase() !== cpuModel.toLowerCase() ? cpuArch : null;
+  const cpuLabel = cpuArchLabel ? `${t('cpu')} (${cpuArchLabel})` : t('cpu');
+  // Model, core count and clock now share a single line - "IPQ-5322 · 4C ·
+  // 1.1 GHz". The abbreviations are what buy that: "4C" and gigahertz leave
+  // room for the model name, which is the one part of the line a reader cannot
+  // reconstruct from anything else on screen.
+  const cpuSpecLine = [
     cpuModel || null,
-    cpuSpecBits.length ? cpuSpecBits.join(' · ') : null,
-  ].filter(Boolean);
+    router.cpu_count ? `${router.cpu_count}C` : null,
+    formatFrequency(router.cpu_frequency_mhz, t('ghz')),
+  ].filter(Boolean).join(' · ');
+  const cpuLines = cpuSpecLine ? [<Footnote key="cpu-spec" text={cpuSpecLine} />] : [];
   // Say outright which of the two the model line is, so nobody has to guess
   // whether "ipq5300" is this board's part number (it is not - it is the family
   // its bootloader belongs to).
@@ -341,6 +393,25 @@ export function TelemetryBar({ router, activeRouter, interfaces = [], onNavigate
     !cpuExact && router.cpu_platform ? `${t('cpu_platform')}: ${router.cpu_platform}` : null,
     onNavigate ? t('open_health_hint') : null,
   ].filter(Boolean).join('\n') || undefined;
+
+  // Public address and operator, folded into one sub-line. The address keeps
+  // its link to the configured lookup service; the operator follows it after a
+  // separator. Together they routinely overrun the tile, so the pair is wrapped
+  // in a Footnote: clipped text gets the dotted underline and the full string
+  // on hover, exactly as the processor name does one tile over.
+  const showPublicIp = !!router.public_ip && router.public_ip !== router.wan_ip;
+  const publicNetText = [showPublicIp ? router.public_ip : null, router.isp || null]
+    .filter(Boolean)
+    .join(' · ');
+  const publicNetLine = publicNetText
+    ? (
+      <Footnote key="net" text={publicNetText}>
+        {showPublicIp ? <PublicIpLink ip={router.public_ip} service={lookupService} t={t} /> : null}
+        {showPublicIp && router.isp ? ' · ' : ''}
+        {router.isp || ''}
+      </Footnote>
+    )
+    : null;
 
   // The WAN set is exactly what the admin ticked in the selector - never
   // inferred from the routing table. `monitored_interfaces` on the telemetry
@@ -403,7 +474,7 @@ export function TelemetryBar({ router, activeRouter, interfaces = [], onNavigate
         <Tile
           icon={<Cpu size={15} />}
           tone={cpuColor}
-          label={t('cpu')}
+          label={cpuLabel}
           value={`${cpuLoad}%`}
           // The actual processor, not the board. On MikroTik hardware the SoC
           // name ("ipq5300") comes from /system/routerboard; the arch, core
@@ -424,7 +495,7 @@ export function TelemetryBar({ router, activeRouter, interfaces = [], onNavigate
           // frames the headline figure as the free side of that split.
           label={t('tile_ram_label')}
           value={`${Math.round(router.free_memory_mb || 0)} MB`}
-          sub={memPct !== null ? `${memPct}% ${t('used_label')}` : ''}
+          sub={memPct !== null ? `${memPct}% ${t('used_label')} · ${usedMemMb}/${totalMemMb} MB` : ''}
           history={memHistory}
           historyMax={100}
           onClick={goHealth}
@@ -464,32 +535,19 @@ export function TelemetryBar({ router, activeRouter, interfaces = [], onNavigate
           title={router.isp
             ? `${t('isp_label')}: ${router.isp}${router.asn ? ` (${router.asn})` : ''}`
             : undefined}
-          // Three facts about the same link, most specific first: the address on
-          // the interface, the address the internet actually sees (they differ
-          // under carrier-grade NAT), and who the link belongs to.
+          // The address the internet actually sees (it differs from the one on
+          // the interface under carrier-grade NAT) and the operator it belongs
+          // to are one fact about one link, so they share one line. They used to
+          // take a line each, which made this the tallest tile in the bar and
+          // therefore set the height of every other tile beside it.
           sub={[
-            router.public_ip && router.public_ip !== router.wan_ip
-              ? <PublicIpLink key="pub" ip={router.public_ip} service={lookupService} t={t} />
-              : null,
-            router.isp || null,
-            // The line's measured speed belongs with its address and its owner:
-            // three facts about the same link.
+            publicNetLine,
+            // The line's measured speed belongs with its address and its owner.
             activeRouterId
               ? <SpeedTestBadge key="speedtest" routerId={activeRouterId} />
               : null,
             !router.public_ip && !router.isp ? (router.version || '') : null
           ]}
-        />
-
-        {/* No label: a duration like "1d 18h" reads as uptime on its own,
-            and "Uptime" (longer still in Russian) was the fourth string that
-            no longer fit once the value shared its row with the label. */}
-        <Tile
-          icon={<Clock size={15} />}
-          tone="var(--text-secondary)"
-          value={formatUptime(router.uptime, lang)}
-          valueSize="var(--fs-md)"
-          sub={router.board_name || ''}
         />
       </div>
 
