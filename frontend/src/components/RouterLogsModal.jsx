@@ -396,15 +396,19 @@ export function RouterLogsModal({ isOpen, onClose, routerId = null, routerName =
               ))}
             </div>
 
-            {/* Hides only a login/logout line whose account AND source
-                address both match this router's own configured credential -
-                RouterOS re-logs the REST session every ~10 minutes even with
-                keep-alive working, and that recurring pair is most of the
-                noise in the Auth category. A login attempt from the same
-                account but a different address - the actual anomaly worth
-                seeing - is left alone. */}
+            {/* Hides every api/rest-api login line for this router's own
+                configured account - RouterOS re-logs the REST session every
+                ~10 minutes even with keep-alive working, and that recurring
+                pair is most of the noise in the Auth category.
+                The source address is deliberately not part of the match: in a
+                container the address MikroMan can learn for itself is the
+                container's, while the router records the host's from behind
+                NAT, so requiring both meant nothing was ever hidden. The cost
+                of dropping it - an api session opened by someone else holding
+                the same credential is hidden too - is spelled out in the
+                footnote on the label rather than left for a reader to
+                discover. */}
             <label
-              title={t('log_hide_self_api_hint')}
               style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', cursor: 'pointer' }}
             >
               <input
@@ -413,7 +417,9 @@ export function RouterLogsModal({ isOpen, onClose, routerId = null, routerName =
                 onChange={toggleHideSelfApi}
                 style={{ width: 13, height: 13, accentColor: 'var(--color-primary)', cursor: 'pointer' }}
               />
-              {t('log_hide_self_api')}
+              <span className="footnote" title={t('log_hide_self_api_hint')}>
+                {t('log_hide_self_api')}
+              </span>
             </label>
           </div>
 

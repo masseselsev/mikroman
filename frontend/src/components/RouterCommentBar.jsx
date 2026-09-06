@@ -1,13 +1,13 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useI18n } from '../context/I18nContext';
 import { api } from '../api/client';
-import { StickyNote, Check, X, Pencil } from 'lucide-react';
+import { StickyNote, Check, X, Pencil, ChevronsUpDown } from 'lucide-react';
 
 /**
  * The selected router's free-text note, sitting in the header between the router
  * selector and the clock.
  *
- * Collapsed it shows at most the first three lines; the rest is there but
+ * Collapsed it shows a single line; the rest is there but
  * clipped. Clicking it drops a panel down with the full text in a textarea and a
  * Save button, then it collapses again. The note is per-router and persisted via
  * PATCH-equivalent `PUT /routers/{id}` - only the `comment` field is sent, so it
@@ -90,6 +90,29 @@ export function RouterCommentBar({ router, onSaved }) {
 
   const hasNote = saved.trim().length > 0;
 
+  // Whether the collapsed preview is actually cutting the note off. Measured
+  // rather than guessed from a character count: the chip shares a header row
+  // whose width changes with the router name, the language and the window, so
+  // no fixed threshold is right for long. The indicator is what tells a reader
+  // there is more to see - without it a clipped note is indistinguishable from
+  // a short one, and the header must not grow to prove otherwise.
+  const previewRef = useRef(null);
+  const [clipped, setClipped] = useState(false);
+
+  useEffect(() => {
+    const el = previewRef.current;
+    if (!el) {
+      setClipped(false);
+      return undefined;
+    }
+    const measure = () => setClipped(el.scrollWidth > el.clientWidth + 1);
+    measure();
+    if (typeof ResizeObserver === 'undefined') return undefined;
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [saved, open]);
+
   return (
     <div className="router-comment" ref={rootRef}>
       <button
@@ -101,10 +124,17 @@ export function RouterCommentBar({ router, onSaved }) {
       >
         <StickyNote size={13} className="router-comment-icon" />
         {hasNote ? (
-          <span className="router-comment-preview">{saved}</span>
+          <span className="router-comment-preview" ref={previewRef}>{saved}</span>
         ) : (
           <span className="router-comment-placeholder">{t('router_comment_add')}</span>
         )}
+        {hasNote && clipped ? (
+          <ChevronsUpDown
+            size={11}
+            className="router-comment-more"
+            aria-label={t('router_comment_expand')}
+          />
+        ) : null}
         <Pencil size={11} className="router-comment-edit-hint" />
       </button>
 
