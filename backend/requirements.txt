@@ -18,7 +18,7 @@ frozenlist==1.8.0
 greenlet==3.5.5
 h11==0.16.0
 httpcore==1.0.9
-httptools==0.8.0
+httptools==0.8.0; sys_platform != "win32" and (platform_machine == "x86_64" or platform_machine == "aarch64")
 httpx==0.28.1
 idna==3.19
 magic-filter==1.0.12
