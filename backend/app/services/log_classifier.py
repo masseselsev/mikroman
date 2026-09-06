@@ -44,35 +44,45 @@ RE_WARNING = re.compile(
 )
 
 # RouterOS logs a REST session's login/logout as a pair of "account" lines a
-# few seconds apart, keyed by the same account name and source address every
-# time - MikroMan's own polling produces one such pair roughly every ten
-# minutes even with keep-alive working (RouterOS ages the REST session out on
-# its own timer, unrelated to client-side connection reuse). Only the variant
-# carrying a source address is matched: the sibling line without one
-# ("... via api", no "from <ip>") has nothing to compare an IP against, so it
-# is left alone rather than assumed to belong to the same event.
+# few seconds apart - MikroMan's own polling produces one such pair roughly
+# every ten minutes even with keep-alive working (RouterOS ages the REST
+# session out on its own timer, unrelated to client-side connection reuse).
+# Both shapes are matched: RouterOS writes one line with a source address and a
+# sibling without one for the same event, and hiding only half a pair leaves
+# the noise in place.
 RE_API_LOGIN = re.compile(
-    r"^user (\S+) logged (in|out) from (\S+) via (?:api|rest-api)$",
+    r"^user (\S+) logged (?:in|out)(?: from \S+)? via (?:api|rest-api)$",
     re.IGNORECASE,
 )
 
 
-def is_self_api_login(message: str, username: str, own_ip: str) -> bool:
-    """True when ``message`` is a login/logout line for exactly this account
-    from exactly this address.
+def is_self_api_login(message: str, username: str) -> bool:
+    """True when ``message`` is an api/rest-api login or logout for this account.
 
-    Deliberately narrow: both the account name *and* the source address must
-    match before a line is treated as MikroMan's own routine polling. Matching
-    on the account name alone would also hide a genuine anomaly - someone else
-    reaching the router with the same (shared) API credential from a different
-    machine - which is exactly the case an operator most wants to still see.
+    Matching is on the account name alone. It used to also require the source
+    address to equal the address MikroMan discovered for itself, so that the
+    same credential used from an unexpected machine stayed visible - a good
+    guarantee that could not be delivered: MikroMan normally runs in a
+    container, where the only address it can learn about itself is the
+    container's (172.17.x.x), while the router - on the far side of NAT -
+    records the host's. The two never matched and the filter never hid a single
+    line.
+
+    Dropping the address also lets the address-less sibling line RouterOS emits
+    for the same event ("... via api", no "from") be recognised, which the old
+    pattern could not match at all.
+
+    The cost is stated plainly in the setting's own footnote: every api session
+    for this account is hidden, including one opened by someone else holding the
+    same credential. Logins over any other transport - winbox, ssh, telnet,
+    webfig - are untouched, so a human using the account is still visible.
     """
-    if not username or not own_ip:
+    if not username:
         return False
     m = RE_API_LOGIN.match((message or "").strip())
     if not m:
         return False
-    return m.group(1) == username and m.group(3) == own_ip
+    return m.group(1) == username
 
 
 def classify_log_entry(topics: str, message: str) -> Tuple[str, str]:

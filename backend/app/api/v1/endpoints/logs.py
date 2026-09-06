@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 import logging
-import socket
-from datetime import datetime, timedelta
-from typing import List, Optional, Tuple
+from datetime import datetime, timedelta, timezone
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import delete, func, select
@@ -33,34 +32,22 @@ async def get_client_for_router(session: AsyncSession, router_id: Optional[int] 
     return await router_manager.require_client(session=session, router_id=router_id)
 
 
-def _local_ip_toward(host: str, port: int) -> Optional[str]:
-    """The address this container's traffic to ``host:port`` leaves from.
-
-    A UDP "connect" only asks the kernel to pick a route - it sends nothing on
-    the wire - so this is a synchronous, effectively instant way to answer
-    "what IP does the router see me as" without depending on anything RouterOS
-    itself reports back.
-    """
-    try:
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-            s.connect((host, port))
-            return s.getsockname()[0]
-    except OSError as e:
-        logger.debug(f"Could not determine the local IP toward {host}:{port}: {e}")
-        return None
-
-
-async def _own_login_signature(session: AsyncSession, router_id: int) -> Tuple[Optional[str], Optional[str]]:
-    """(username, own_ip) MikroMan's own REST logins to this router carry.
+async def _own_login_account(session: AsyncSession, router_id: int) -> Optional[str]:
+    """The account name MikroMan's own REST logins to this router carry.
 
     Used only to *hide* clutter from the log viewer, never to decide anything
     that touches the router - the write guards remain the actual authority on
     what is safe to change.
+
+    The source address used to be part of this signature. It cannot be: running
+    in a container, the address MikroMan can discover for itself is the
+    container's, while the router records the host's from the far side of NAT,
+    so the comparison never once succeeded. See ``is_self_api_login``.
     """
     r = await session.get(Router, router_id)
     if not r or not r.username:
-        return None, None
-    return r.username, _local_ip_toward(r.host, r.port)
+        return None
+    return r.username
 
 
 async def _resolve_router_id(session: AsyncSession, router_id: Optional[int]) -> Optional[int]:
@@ -88,8 +75,8 @@ async def get_logs(
     if not target_router_id:
         return APIResponse(data=[], message="No active router found")
 
-    own_username, own_ip = (
-        await _own_login_signature(db, target_router_id) if hide_self_api else (None, None)
+    own_username = (
+        await _own_login_account(db, target_router_id) if hide_self_api else None
     )
 
     if source == "live":
@@ -117,7 +104,7 @@ async def get_logs(
                 continue
             if search_lower and search_lower not in topics.lower() and search_lower not in message.lower():
                 continue
-            if hide_self_api and is_self_api_login(message, own_username, own_ip):
+            if hide_self_api and is_self_api_login(message, own_username):
                 continue
 
             parsed_time = parse_routeros_log_time(time_str, now=now)
@@ -155,7 +142,7 @@ async def get_logs(
     rows = (await db.execute(stmt)).scalars().all()
 
     if hide_self_api:
-        rows = [r for r in rows if not is_self_api_login(r.message, own_username, own_ip)][:limit]
+        rows = [r for r in rows if not is_self_api_login(r.message, own_username)][:limit]
 
     # Return newest at bottom (chronological order) for terminal display
     return APIResponse(data=[RouterLogItem.model_validate(r) for r in reversed(rows)])
@@ -164,9 +151,24 @@ async def get_logs(
 @router.get("/stats", response_model=APIResponse[RouterLogStats])
 async def get_log_stats(
     router_id: Optional[int] = Query(None, description="Target router ID"),
+    since: Optional[datetime] = Query(
+        None,
+        description=(
+            "Count only entries at or after this instant. Omitted, the window "
+            "is the trailing 24 hours."
+        ),
+    ),
     db: AsyncSession = Depends(get_db),
 ):
-    """Retrieve 24h summary statistics for router logs."""
+    """Summary counts for router logs, over a window the caller chooses.
+
+    The window used to be a fixed trailing 24 hours, which made the navbar
+    badge a daily error total rather than anything a reader could act on: a
+    router that logs a few hundred routine errors a day sat on "99+" forever,
+    and opening the log viewer could not change it. With ``since``, the caller
+    passes the moment it last showed the log to the reader and gets back only
+    what has arrived since.
+    """
     target_router_id = await _resolve_router_id(db, router_id)
     if not target_router_id:
         return APIResponse(
@@ -175,10 +177,14 @@ async def get_log_stats(
             )
         )
 
-    since = datetime.now() - timedelta(days=1)
+    # A naive cutoff: RouterLog.timestamp is stored naive, so an aware value
+    # from the query string is converted rather than compared across kinds.
+    cutoff = since or (datetime.now() - timedelta(days=1))
+    if cutoff.tzinfo is not None:
+        cutoff = cutoff.astimezone(timezone.utc).replace(tzinfo=None)
     base_q = select(RouterLog).where(
         RouterLog.router_id == target_router_id,
-        RouterLog.timestamp >= since,
+        RouterLog.timestamp >= cutoff,
     )
 
     total = (await db.execute(select(func.count()).select_from(base_q.subquery()))).scalar_one() or 0
