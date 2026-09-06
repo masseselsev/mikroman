@@ -144,3 +144,40 @@ describe('RouterFirmwareModal', () => {
   });
 });
 
+
+/**
+ * A failed changelog fetch used to be indistinguishable from a filter that
+ * matched nothing: the catch set the notes to null, and an empty list always
+ * rendered "No lines match the filter" - blaming a filter the reader had not
+ * typed into, and hiding the actual reason.
+ */
+describe('RouterFirmwareModal release notes', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    api.getFirmwareStatus.mockResolvedValue(mockStatus);
+  });
+
+  it('reports why the notes could not be loaded instead of blaming the filter', async () => {
+    api.getChangelog.mockRejectedValue(new Error('HTTP 404 from upgrade server'));
+
+    render(<RouterFirmwareModal isOpen={true} onClose={vi.fn()} routerId={1} routerName="Core-Gateway" />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/HTTP 404 from upgrade server/)).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/No lines match the filter/i)).toBeNull();
+  });
+
+  it('still blames the filter when notes did load but nothing matched', async () => {
+    api.getChangelog.mockResolvedValue({ version: '7.16.1', notes: '*) bridge - fixed vlan filtering;' });
+
+    render(<RouterFirmwareModal isOpen={true} onClose={vi.fn()} routerId={1} routerName="Core-Gateway" />);
+
+    await waitFor(() => expect(screen.getByText(/bridge - fixed vlan filtering/)).toBeInTheDocument());
+
+    fireEvent.change(screen.getByPlaceholderText(/Filter release notes/i), {
+      target: { value: 'zzzznomatch' },
+    });
+    expect(screen.getByText(/No lines match the filter/i)).toBeInTheDocument();
+  });
+});
