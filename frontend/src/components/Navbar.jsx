@@ -187,6 +187,7 @@ export function Navbar({
             activeRouter={activeRouter}
             telemetryLive={isConnected}
             currentVersion={routerInfo?.version}
+            currentUptime={routerInfo?.uptime}
             onSelectRouter={onSelectRouter}
             onAddRouter={onAddRouter}
           />

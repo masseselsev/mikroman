@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { formatBytes, formatBytesCompact, formatDateTime, formatGbWhole, formatLastActive, formatRelativeTime, formatRouterDateTime, formatSpeed, formatSpeedShort, formatUptime, parseUtcDate } from './formatters';
+import { formatBytes, formatBytesCompact, formatDateTime, formatGbWhole, formatLastActive, formatRelativeTime, formatRouterDateTime, formatSpeed, formatFrequency, formatSpeedShort, formatUptime, parseUtcDate } from './formatters';
 
 /**
  * These decide what every figure on the dashboard actually reads as, so their
@@ -258,5 +258,27 @@ describe('formatRouterDateTime', () => {
   it('returns empty for an unparseable timestamp', () => {
     expect(formatRouterDateTime('not a date', 300)).toBe('');
     expect(formatRouterDateTime(null, 300)).toBe('');
+  });
+});
+
+describe('formatFrequency', () => {
+  it('renders megahertz as gigahertz with a single decimal', () => {
+    expect(formatFrequency(1100, 'GHz')).toBe('1.1 GHz');
+    expect(formatFrequency(800, 'GHz')).toBe('0.8 GHz');
+    expect(formatFrequency(1200, 'GHz')).toBe('1.2 GHz');
+  });
+
+  it('drops a trailing zero decimal so a round clock reads as a whole number', () => {
+    expect(formatFrequency(2000, 'GHz')).toBe('2 GHz');
+  });
+
+  it('takes the unit from the caller so it can be localised', () => {
+    expect(formatFrequency(1100, 'ГГц')).toBe('1.1 ГГц');
+  });
+
+  it('returns null for a missing or nonsensical clock rather than "0 GHz"', () => {
+    expect(formatFrequency(null, 'GHz')).toBeNull();
+    expect(formatFrequency(0, 'GHz')).toBeNull();
+    expect(formatFrequency(undefined, 'GHz')).toBeNull();
   });
 });

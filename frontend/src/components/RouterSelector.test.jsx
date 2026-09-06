@@ -128,3 +128,40 @@ describe('RouterSelector firmware version', () => {
     expect(screen.getByText(/hEX · v7\.19\.4/)).toBeInTheDocument();
   });
 });
+
+/**
+ * Uptime used to have a telemetry tile of its own. It is one short duration
+ * about one router, which is exactly what the expanded selector row is for -
+ * and reclaiming the tile let every remaining tile lose a line of height.
+ */
+describe('RouterSelector uptime', () => {
+  const base = { onSelectRouter: vi.fn(), onAddRouter: vi.fn() };
+  const routers = [
+    { id: 1, name: 'Main', is_default: true, is_online: true, board_name: 'hAP be3 Media', ros_version: '7.24.2 (stable)' },
+    { id: 2, name: 'Edge', is_online: true, board_name: 'hEX', ros_version: '7.19.4' },
+  ];
+
+  it('shows the live uptime beside the board and version of the selected router', () => {
+    const { container } = renderWithProviders(
+      <RouterSelector {...base} routers={routers} activeRouter={routers[0]} currentUptime="1d18h20m" />
+    );
+    fireEvent.click(container.querySelector('.router-selector > button'));
+    expect(screen.getByText(/hAP be3 Media · v7\.24\.2 \(stable\) · 1d 18h 20m/)).toBeInTheDocument();
+  });
+
+  it('leaves other routers without an uptime, since telemetry only covers the active one', () => {
+    const { container } = renderWithProviders(
+      <RouterSelector {...base} routers={routers} activeRouter={routers[0]} currentUptime="1d18h20m" />
+    );
+    fireEvent.click(container.querySelector('.router-selector > button'));
+    expect(screen.getByText(/hEX · v7\.19\.4$/)).toBeInTheDocument();
+  });
+
+  it('omits the uptime segment entirely when telemetry has not delivered one', () => {
+    const { container } = renderWithProviders(
+      <RouterSelector {...base} routers={routers} activeRouter={routers[0]} />
+    );
+    fireEvent.click(container.querySelector('.router-selector > button'));
+    expect(screen.getByText(/hAP be3 Media · v7\.24\.2 \(stable\)$/)).toBeInTheDocument();
+  });
+});

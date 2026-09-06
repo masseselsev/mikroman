@@ -62,3 +62,16 @@ describe('translation source hygiene', () => {
     });
   }
 });
+
+/**
+ * The tagline is the product's own name, not a sentence about it. Translating
+ * it produced a longer string ("Компаньон RouterOS") that clipped in the header
+ * for no gain: a reader in any language is looking for the same words here.
+ */
+describe('brand tagline', () => {
+  it('stays in English in every language', () => {
+    for (const [lang, dict] of Object.entries(translations)) {
+      expect(dict.app_subtitle, `${lang}.app_subtitle`).toBe('RouterOS Companion');
+    }
+  });
+});

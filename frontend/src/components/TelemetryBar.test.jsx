@@ -119,3 +119,83 @@ describe('TelemetryBar redesigned tile labels', () => {
     expect(screen.getByText('Users')).toBeInTheDocument();
   });
 });
+
+describe('TelemetryBar sparklines across a router switch', () => {
+  // The sparkline SVG is identifiable by its own viewBox; lucide icons in the
+  // same tiles are also SVGs, so anything looser would count those too.
+  const sparklines = (container) => container.querySelectorAll('svg[viewBox="0 0 100 18"]');
+
+  it('drops the previous router history so the new router draws only its own samples', () => {
+    // A fast router: a 900 Mbps peak, which auto-scales every rx/tx sparkline
+    // it is part of and would flatten a slower router's curve into a straight
+    // line if the two ever shared a buffer.
+    const fastFrame = { ...router, wan_rx_bps: 900_000_000, wan_tx_bps: 700_000_000, cpu_load: 90 };
+    const { container, rerender } = renderWithProviders(
+      <TelemetryBar router={fastFrame} activeRouter={{ id: 1 }} />
+    );
+    rerender(<TelemetryBar router={{ ...fastFrame, cpu_load: 88 }} activeRouter={{ id: 1 }} />);
+
+    // Two samples on one router is enough to draw a curve.
+    expect(sparklines(container).length).toBeGreaterThan(0);
+
+    // Switching routers: the socket hook blanks the frame, then the new
+    // router's first tick arrives.
+    rerender(<TelemetryBar router={null} activeRouter={{ id: 2 }} />);
+    rerender(
+      <TelemetryBar
+        router={{ ...router, wan_rx_bps: 60_000, wan_tx_bps: 37_000, cpu_load: 2 }}
+        activeRouter={{ id: 2 }}
+      />
+    );
+
+    // A single sample is not a curve. Any sparkline still on screen is drawn
+    // from the previous router's history.
+    expect(sparklines(container).length).toBe(0);
+  });
+});
+
+describe('TelemetryBar tile density', () => {
+  const hardware = {
+    ...router,
+    cpu_model: 'IPQ-5322',
+    cpu_arch: 'arm64',
+    cpu_count: 4,
+    cpu_frequency_mhz: 1100,
+    free_memory_mb: 1417,
+    total_memory_mb: 2063,
+    uptime: '1d18h20m',
+    wan_ip: '192.168.88.1',
+    public_ip: '203.0.113.9',
+    isp: 'Acme Telecom',
+  };
+
+  it('names the architecture in the CPU heading instead of spending a sub-line on it', () => {
+    renderWithProviders(<TelemetryBar router={hardware} activeRouter={{ id: 1 }} />);
+    expect(screen.getByText('CPU (arm64)')).toBeInTheDocument();
+  });
+
+  it('folds model, core count and clock onto one line in compact units', () => {
+    renderWithProviders(<TelemetryBar router={hardware} activeRouter={{ id: 1 }} />);
+    expect(screen.getByText('IPQ-5322 · 4C · 1.1 GHz')).toBeInTheDocument();
+  });
+
+  it('spells out used against total memory beside the percentage', () => {
+    renderWithProviders(<TelemetryBar router={hardware} activeRouter={{ id: 1 }} />);
+    expect(screen.getByText('31% used · 646/2063 MB')).toBeInTheDocument();
+  });
+
+  it('no longer carries an uptime tile - the router selector shows it now', () => {
+    renderWithProviders(<TelemetryBar router={hardware} activeRouter={{ id: 1 }} />);
+    expect(screen.queryByText(/1d 18h/)).not.toBeInTheDocument();
+  });
+
+  it('puts the public address and its operator on a single sub-line', () => {
+    const { container } = renderWithProviders(
+      <TelemetryBar router={hardware} activeRouter={{ id: 1 }} />
+    );
+    const folded = Array.from(container.querySelectorAll('.tile-sub')).find(
+      (el) => el.textContent.includes('203.0.113.9') && el.textContent.includes('Acme Telecom')
+    );
+    expect(folded, 'public IP and provider should share one sub-line').toBeTruthy();
+  });
+});

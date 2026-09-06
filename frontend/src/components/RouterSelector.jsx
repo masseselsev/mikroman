@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useI18n } from '../context/I18nContext';
+import { formatUptime } from '../utils/formatters';
 import { Server, Check, ChevronDown, Plus } from 'lucide-react';
 
 /**
@@ -13,16 +14,23 @@ import { Server, Check, ChevronDown, Plus } from 'lucide-react';
  * `currentVersion` is the live RouterOS version from telemetry. The stored
  * `ros_version` is refreshed by the `/routers` probe, which can lag or fail;
  * for the router being watched right now, telemetry is the fresher source.
+ *
+ * `currentUptime` arrives the same way and applies to the selected router
+ * only: `/routers` carries no uptime field, so there is nothing to show for the
+ * other entries and a blank there would read as "just rebooted". Uptime lives
+ * here rather than in a telemetry tile of its own - it is one short duration
+ * about one router, which is what this row already is.
  */
 export function RouterSelector({
   routers = [],
   activeRouter,
   telemetryLive = false,
   currentVersion = null,
+  currentUptime = null,
   onSelectRouter,
   onAddRouter,
 }) {
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   const [isOpen, setIsOpen] = useState(false);
   const dropdownRef = useRef(null);
 
@@ -83,6 +91,8 @@ export function RouterSelector({
               // Telemetry wins for the selected router; everything else falls
               // back to what the last `/routers` probe stored.
               const version = (isSelected && currentVersion) || r.ros_version;
+              // Telemetry only ever describes the selected router.
+              const uptime = isSelected && currentUptime ? formatUptime(currentUptime, lang) : null;
               return (
                 <button
                   key={r.id}
@@ -105,6 +115,7 @@ export function RouterSelector({
                           channel, e.g. "(stable)" / "(testing)", stays. */}
                       {r.board_name || r.model || 'MikroTik'}
                       {version ? ` · v${version}` : ''}
+                      {uptime ? ` · ${uptime}` : ''}
                     </div>
                   </div>
                   {isSelected && <Check size={14} style={{ color: 'var(--color-primary)', flexShrink: 0 }} />}

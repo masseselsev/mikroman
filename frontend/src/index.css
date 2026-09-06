@@ -909,6 +909,18 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
   min-width: 0;
 }
 
+/* Marks a tile sub-line whose text is wider than the tile and has therefore
+   been clipped: a dotted underline is the conventional "there is more here"
+   cue, and the full string is on the element's title. Applied only when the
+   text really does overrun, so the underline never promises a tooltip that
+   says nothing new. */
+.footnote {
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+  text-decoration-color: var(--text-muted);
+  cursor: help;
+}
+
 .tile-sub {
   font-size: var(--fs-3xs);
   color: var(--text-muted);
@@ -1341,15 +1353,18 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
   white-space: nowrap;
 }
 
-/* Header-only: clips the tagline to the app name's own rendered width
-   instead of guessing a font-size small enough to never overhang it - which
-   still overhung ("RouterOS Companion" is a longer string than "MikroMan" at
-   any shared font). The wrapping title block gets `position: relative` and
-   reserves a line of height below the title; the tagline is taken out of
-   flow with `position: absolute; inset: 100% 0 auto 0`, so it can no longer
-   grow that block's width - only the title can - and is hard-clipped with
-   `text-overflow: ellipsis` to whatever width the title actually rendered
-   at, in either language. */
+/* Header-only tagline placement.
+   The wrapping title block gets `position: relative` and reserves a line of
+   height below the title; the tagline is then taken out of flow entirely with
+   `position: absolute`. Being out of flow is what guarantees the header can
+   never grow to accommodate it - only the app name contributes width, in any
+   language.
+   It is sized `max-content` rather than pinned to the title's right edge.
+   Pinning clipped it: "MikroMan" at 20px bold measures about 90px and
+   "RouterOS Companion" at 10px about 94px, so the tagline lost its last word
+   to an ellipsis over a four-pixel shortfall. Allowed its natural width it
+   overhangs the app name by those few pixels and reads in full, while still
+   costing the layout nothing. */
 .brand-title-block {
   position: relative;
   padding-bottom: 13px;
@@ -1357,9 +1372,17 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
 
 .brand-subtitle--clipped {
   position: absolute;
-  inset: 100% 0 auto 0;
+  inset: 100% auto auto 0;
+  width: max-content;
+  /* A guard, not a layout rule: should the tagline ever be replaced with
+     something genuinely long, it clips here instead of running underneath the
+     router selector. */
+  max-width: 190px;
   overflow: hidden;
   text-overflow: ellipsis;
+  /* Decorative text sitting over neighbouring controls must not swallow their
+     clicks. */
+  pointer-events: none;
 }
 
 /* Round presence indicator. Written inline as a 7px or 8px circle in a dozen

@@ -211,3 +211,29 @@ export function formatUptime(uptime, lang = 'en') {
   // Fallback: insert spaces before units
   return str.replace(/([0-9]+[wdhms])/gi, '$1 ').trim();
 }
+
+/**
+ * A CPU clock, in gigahertz.
+ *
+ * RouterOS reports `/system/resource` clock rates in megahertz, which spends
+ * four digits plus a unit on a figure that only ever needs two significant
+ * ones. The telemetry tile shares a single line between the processor model,
+ * its core count and this, so "1.1 GHz" fits where "1100 MHz" did not.
+ *
+ * The decimal is dropped when it is zero: a round 2 GHz part should not read
+ * as "2.0 GHz" while a 1.1 GHz one reads as "1.1 GHz".
+ *
+ * @param mhz   Clock rate in megahertz, as reported by RouterOS.
+ * @param unit  Localised unit string; the caller passes t('ghz').
+ * @returns     Formatted string, or null when there is no clock to show - a
+ *              caller filtering falsy entries then drops the segment entirely
+ *              rather than printing "0 GHz".
+ */
+export function formatFrequency(mhz, unit = 'GHz') {
+  const value = Number(mhz);
+  if (!value || Number.isNaN(value) || value <= 0) return null;
+  const ghz = value / 1000;
+  // toFixed(1) then strip a ".0" tail, so 2000 -> "2" but 1100 -> "1.1".
+  const text = ghz.toFixed(1).replace(/\.0$/, '');
+  return `${text} ${unit}`;
+}
