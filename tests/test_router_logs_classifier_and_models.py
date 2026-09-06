@@ -72,40 +72,39 @@ async def test_router_log_model_crud():
         assert loaded.severity == "critical"
 
 
-def test_is_self_api_login_matches_the_same_account_and_address():
-    assert is_self_api_login(
-        "user rest logged in from 192.168.123.250 via rest-api", "rest", "192.168.123.250"
-    )
-    assert is_self_api_login(
-        "user rest logged out from 192.168.123.250 via api", "rest", "192.168.123.250"
-    )
+def test_is_self_api_login_matches_every_api_login_for_the_account():
+    """Both shapes RouterOS logs, with and without a source address.
+
+    The address was dropped from the comparison deliberately. MikroMan runs in
+    a container, so the local address it can discover for itself is the
+    container's (172.17.x.x) while the router, past NAT, records the host's -
+    they never matched, and the filter therefore never hid anything.
+    """
+    assert is_self_api_login("user rest logged in from 192.168.123.250 via rest-api", "rest")
+    assert is_self_api_login("user rest logged out from 192.168.123.250 via api", "rest")
+    # The sibling line for the same event carries no address at all.
+    assert is_self_api_login("user rest logged in via api", "rest")
+    assert is_self_api_login("user rest logged out via api", "rest")
 
 
-def test_is_self_api_login_requires_both_the_account_and_the_address():
-    # Same account, different source - a human or another script reusing the
-    # credential from somewhere unexpected. Must stay visible.
-    assert not is_self_api_login(
-        "user rest logged in from 203.0.113.9 via rest-api", "rest", "192.168.123.250"
-    )
-    # Same address, different account.
-    assert not is_self_api_login(
-        "user admin logged in from 192.168.123.250 via rest-api", "rest", "192.168.123.250"
-    )
+def test_is_self_api_login_still_requires_the_account_to_match():
+    assert not is_self_api_login("user admin logged in from 192.168.123.250 via rest-api", "rest")
+    assert not is_self_api_login("user admin logged in via api", "rest")
 
 
-def test_is_self_api_login_leaves_the_no_address_sibling_line_alone():
-    # RouterOS logs "... via api" (no address) alongside "... via rest-api
-    # from <ip>" for the same event. There is nothing to compare an IP
-    # against on the first one, so it is never hidden.
-    assert not is_self_api_login("user rest logged in via api", "rest", "192.168.123.250")
+def test_is_self_api_login_ignores_logins_over_other_transports():
+    """Only api/rest-api sessions are MikroMan's. A winbox or ssh login using
+    the same account is a person, and stays visible."""
+    assert not is_self_api_login("user rest logged in from 192.168.123.250 via winbox", "rest")
+    assert not is_self_api_login("user rest logged in from 192.168.123.250 via ssh", "rest")
+
+
+def test_is_self_api_login_needs_a_username():
+    assert not is_self_api_login("user rest logged in via api", "")
+    assert not is_self_api_login("user rest logged in via api", None)
 
 
 def test_is_self_api_login_ignores_unrelated_auth_lines():
     assert not is_self_api_login(
-        "login failure for user admin from 198.51.100.22 via ssh", "rest", "192.168.123.250"
+        "login failure for user admin from 198.51.100.22 via ssh", "rest"
     )
-
-
-def test_is_self_api_login_is_inert_with_nothing_to_compare():
-    assert not is_self_api_login("user rest logged in from 192.168.123.250 via rest-api", None, "192.168.123.250")
-    assert not is_self_api_login("user rest logged in from 192.168.123.250 via rest-api", "rest", None)

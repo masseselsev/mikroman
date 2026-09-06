@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -136,16 +136,17 @@ async def test_logs_api_endpoints(async_client):
 
 @pytest.mark.asyncio
 async def test_hide_self_api_filters_only_the_matching_login_pair(async_client, monkeypatch):
-    """Regression / new feature: `hide_self_api=true` should drop MikroMan's
-    own routine REST login/logout lines (same router account, same source
-    address as this container) while leaving everything else - including a
-    login from the same account but a different address, which is the
-    anomaly an operator most wants to still see - untouched.
-    """
-    import backend.app.api.v1.endpoints.logs as logs_endpoint
+    """`hide_self_api=true` drops every api/rest-api login line for the router
+    account MikroMan connects with - both the shape carrying a source address
+    and the sibling without one - while leaving logins over other transports,
+    and everything that is not a login, untouched.
 
+    The source address is deliberately not part of the match: in a container
+    the address MikroMan can learn for itself is the container's, while the
+    router records the host's from behind NAT, so requiring them to be equal
+    meant the filter never hid anything at all.
+    """
     api_client, session_factory = async_client
-    monkeypatch.setattr(logs_endpoint, "_local_ip_toward", lambda host, port: "192.168.123.250")
 
     async with session_factory() as db_session:
         r = Router(name="SelfApiRouter", host="192.168.123.1", username="rest", is_active=True)
@@ -166,11 +167,18 @@ async def test_hide_self_api_filters_only_the_matching_login_pair(async_client, 
                 message="user rest logged out from 192.168.123.250 via rest-api",
                 severity="info", category="auth",
             ),
-            # Same account, a different address - not our own polling.
+            # The address-less sibling RouterOS writes for the same event.
             RouterLog(
                 router_id=r.id, external_id="*S3", timestamp=datetime.now(),
                 topics="system,info,account",
-                message="user rest logged in from 203.0.113.9 via rest-api",
+                message="user rest logged in via api",
+                severity="info", category="auth",
+            ),
+            # Same account over an interactive transport - a person, not us.
+            RouterLog(
+                router_id=r.id, external_id="*S5", timestamp=datetime.now(),
+                topics="system,info,account",
+                message="user rest logged in from 203.0.113.9 via winbox",
                 severity="info", category="auth",
             ),
             RouterLog(
@@ -183,10 +191,57 @@ async def test_hide_self_api_filters_only_the_matching_login_pair(async_client, 
         router_id = r.id
 
     resp_all = await api_client.get(f"/api/v1/logs?router_id={router_id}&source=db")
-    assert len(resp_all.json()["data"]) == 4
+    assert len(resp_all.json()["data"]) == 5
 
     resp_hidden = await api_client.get(f"/api/v1/logs?router_id={router_id}&source=db&hide_self_api=true")
     messages = [item["message"] for item in resp_hidden.json()["data"]]
     assert len(messages) == 2
-    assert "user rest logged in from 203.0.113.9 via rest-api" in messages
+    assert "user rest logged in from 203.0.113.9 via winbox" in messages
     assert "client connected to wifi" in messages
+
+
+@pytest.mark.asyncio
+async def test_log_stats_counts_only_entries_after_since(async_client):
+    """`/logs/stats` must be able to answer "what is new since I last looked".
+
+    It counted a fixed trailing 24 hours, so the navbar badge showed the day's
+    error total and could never be cleared by reading the log - a router with a
+    few hundred routine errors a day sat on "99+" permanently, which says
+    nothing and trains the reader to ignore it.
+    """
+    api_client, session_factory = async_client
+
+    async with session_factory() as db_session:
+        r = Router(name="StatsRouter", host="192.168.90.1", username="admin", is_active=True)
+        db_session.add(r)
+        await db_session.commit()
+        await db_session.refresh(r)
+
+        now = datetime.now()
+        db_session.add_all([
+            RouterLog(
+                router_id=r.id, external_id="*O1", timestamp=now - timedelta(hours=6),
+                topics="system,error", message="old failure",
+                severity="error", category="system",
+            ),
+            RouterLog(
+                router_id=r.id, external_id="*N1", timestamp=now - timedelta(minutes=5),
+                topics="system,error", message="fresh failure",
+                severity="error", category="system",
+            ),
+        ])
+        await db_session.commit()
+        router_id = r.id
+
+    # No `since`: the historical 24-hour window, both entries.
+    resp_day = await api_client.get(f"/api/v1/logs/stats?router_id={router_id}")
+    assert resp_day.json()["data"]["error_count"] == 2
+
+    # Since an hour ago: only what arrived after the reader last looked.
+    cutoff = (datetime.now() - timedelta(hours=1)).isoformat()
+    resp_since = await api_client.get(
+        f"/api/v1/logs/stats?router_id={router_id}&since={cutoff}"
+    )
+    data = resp_since.json()["data"]
+    assert data["error_count"] == 1
+    assert data["total_logs"] == 1
