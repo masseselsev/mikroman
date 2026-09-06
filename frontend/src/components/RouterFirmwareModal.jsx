@@ -33,6 +33,9 @@ export default function RouterFirmwareModal({
   const [changelog, setChangelog] = useState(null);
   const [changelogLoading, setChangelogLoading] = useState(false);
   const [changelogSearch, setChangelogSearch] = useState('');
+  // Why the notes are missing, when they are. Without this the failure was
+  // indistinguishable from an empty result and got reported as a filter miss.
+  const [changelogError, setChangelogError] = useState(null);
 
   // Confirmation & Staging
   const [confirmName, setConfirmName] = useState('');
@@ -94,10 +97,17 @@ export default function RouterFirmwareModal({
       api
         .getChangelog(routerId, latest)
         .then((res) => {
-          if (active) setChangelog(res.notes);
+          if (!active) return;
+          setChangelog(res.notes);
+          setChangelogError(null);
         })
-        .catch(() => {
-          if (active) setChangelog(null);
+        .catch((err) => {
+          if (!active) return;
+          setChangelog(null);
+          // The server's own message is the useful part - "HTTP 404 from
+          // upgrade server" tells the reader this build has no published notes,
+          // which a generic string would hide.
+          setChangelogError(err?.message || t('firmware_changelog_unavailable'));
         })
         .finally(() => {
           if (active) setChangelogLoading(false);
@@ -464,9 +474,16 @@ export default function RouterFirmwareModal({
                   }}>
                     {changelogLoading
                       ? `${t('loading_history')}…`
-                      : filteredChangelogLines.length === 0
-                        ? t('firmware_changelog_none')
-                        : filteredChangelogLines.join('\n')}
+                      /* Three distinct states, deliberately not collapsed: the
+                         notes failed to load (say why), they loaded but the
+                         filter excluded everything (say that), or they are
+                         here. Merging the first two is what produced "No lines
+                         match the filter" over an empty filter box. */
+                      : !changelog
+                        ? (changelogError || t('firmware_changelog_unavailable'))
+                        : filteredChangelogLines.length === 0
+                          ? t('firmware_changelog_none')
+                          : filteredChangelogLines.join('\n')}
                   </div>
                 </div>
               )}

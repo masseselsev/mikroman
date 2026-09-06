@@ -7,7 +7,18 @@ import httpx
 
 logger = logging.getLogger("mikroman.changelog")
 
-VERSION_REGEX = re.compile(r"^\d+\.\d+(\.\d+)?$")
+# A RouterOS version, optionally carrying a pre-release suffix.
+#
+# The two non-stable channels report versions like "7.25beta3" and "7.24rc2",
+# and MikroTik publishes their changelogs at the same URL shape as a stable
+# release. Restricting this to digits and dots meant every release note on the
+# testing and development channels was rejected here, before any request was
+# made - the UI then showed an empty changelog with no reason given.
+#
+# It stays deliberately strict: the value is interpolated into an upstream URL,
+# so the pattern remains fully anchored and admits only digits, dots and one of
+# three known suffix words followed by its number.
+VERSION_REGEX = re.compile(r"^\d+\.\d+(\.\d+)?((alpha|beta|rc)\d+)?$")
 MAX_BODY_BYTES = 256 * 1024  # 256 KB
 CACHE_MAX = 32
 NEG_TTL_SECONDS = 60.0
