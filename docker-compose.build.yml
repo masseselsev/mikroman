@@ -1,0 +1,21 @@
+# Build overlay: run the stack from local sources instead of a published release.
+#
+# The base docker-compose.yml deliberately pulls the released image, because the
+# routers this deploys to cannot compile it. This overlay is the other half of
+# that decision - contributors, and anyone running a change that has not been
+# released yet, still need to bring the stack up from the working copy.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+#
+# The image is tagged `mikroman:local` rather than inheriting the ghcr tag, so a
+# locally built image can never be mistaken for - or silently shadow - a real
+# published release sitting in the same Docker image store.
+services:
+  mikroman:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: mikroman:local
+    # Build it; never reach for the registry. Without this, a missing local
+    # image would send Compose to ghcr.io for a tag that only exists here.
+    pull_policy: build

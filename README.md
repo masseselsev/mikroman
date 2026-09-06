@@ -76,7 +76,56 @@ For detailed architectural specifications, algorithms, and configuration guides,
 
 Pre-built multi-architecture container images (`linux/amd64`, `linux/arm64`, `linux/arm/v7`) are automatically built and published to GitHub Container Registry upon every release.
 
-### Option A: Run Pre-built Image (Recommended)
+<details>
+<summary><b>How the multi-architecture image is built</b></summary>
+
+The `Dockerfile` uses three stages so that a single build serves 64-bit servers
+and 32-bit ARM routers (RB4011, RB3011, hAP ac²) alike:
+
+| Stage | Runs on | Purpose |
+|---|---|---|
+| `frontend` | Build host (`$BUILDPLATFORM`) | Compiles the static JS/CSS bundle natively at full speed, never under emulation. |
+| `wheelbuilder` | Target architecture | Carries `build-essential` + `libffi-dev` and resolves every dependency into a local wheelhouse. |
+| `runtime` | Target architecture | Installs from that wheelhouse with `--no-index`; ships without a compiler. |
+
+The `wheelbuilder` stage exists because four hard dependencies publish **no
+`linux/arm/v7` wheels** on PyPI and ship source distributions only: `cffi` (via
+`cryptography`), `greenlet` (via SQLAlchemy's asyncio support), `MarkupSafe`
+(via Mako/alembic) and `PyYAML`. Since `python:3.12-slim` contains no compiler,
+they are compiled once in the throwaway builder stage and the finished wheels
+are bind-mounted into the runtime stage, which keeps the shipped image slim.
+
+Two optional C accelerators - `uvloop` and `httptools` - are excluded on ARMv7
+by environment marker instead. Neither is required for correctness: uvicorn
+falls back to the standard asyncio event loop and the `h11` parser.
+
+</details>
+
+### Option A: Docker Compose (Recommended)
+```bash
+git clone https://github.com/masseselsev/mikroman.git
+cd mikroman
+docker compose up -d
+```
+
+Compose pulls the published multi-architecture image and brings up the named
+data volume with it — nothing is compiled on the device, which matters on the
+32-bit ARM boards this runs on. Upgrading is `docker compose pull && docker
+compose up -d`.
+
+**Building from source instead.** Contributors, and anyone running a change that
+has not been released yet, add the build overlay:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+```
+
+The overlay tags the result `mikroman:local`, so a local build can never be
+mistaken for — or silently shadow — a published release in the same image store.
+Note that building on the target device is only realistic on amd64/arm64; an
+armv7 board does not have the memory to compile the frontend bundle.
+
+### Option B: Plain `docker run`
 ```bash
 docker run -d \
   --name mikroman \
@@ -84,13 +133,6 @@ docker run -d \
   -p 1928:1928 \
   -v mikroman_data:/data \
   ghcr.io/masseselsev/mikroman:latest
-```
-
-### Option B: Build & Run via Docker Compose
-```bash
-git clone https://github.com/masseselsev/mikroman.git
-cd mikroman
-docker compose up -d
 ```
 
 ### 2. Access Web Interface
