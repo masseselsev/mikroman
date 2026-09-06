@@ -1,9 +1,15 @@
 services:
   mikroman:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: mikroman:latest
+    # The published multi-architecture image, not a local build. Compose is the
+    # recommended way to run MikroMan, and the boards it targets are the weak
+    # half of the MikroTik range - an RB4011 has 1 GB of RAM and a 32-bit ARM
+    # core. Building here would mean `npm ci`, a Vite production build and four
+    # C extension compilations on the router itself; publishing amd64/arm64/
+    # armv7 images from CI exists precisely so that never happens.
+    #
+    # To build from source instead (contributors, or an unreleased change), run
+    # `docker build -t mikroman:dev .` and point this at `mikroman:dev`.
+    image: ghcr.io/masseselsev/mikroman:latest
     container_name: mikroman
     restart: unless-stopped
     ports:
