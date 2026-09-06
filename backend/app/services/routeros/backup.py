@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import secrets
 import string
@@ -9,6 +10,30 @@ logger = logging.getLogger("mikroman.routeros.backup")
 FILE_PREFIX = "mikroman-backup-"
 SETTLE_INTERVAL = 0.3
 DEFAULT_TIMEOUT = 30.0
+# Properties the settle poll needs. Load-bearing for the same reason the sweep's
+# proplist is: an unqualified GET /file includes every file's `contents`, so the
+# listing carries the raw bytes of each binary on flash - including the .backup
+# this poll is waiting on - and the body then fails to decode as UTF-8.
+SETTLE_PROPLIST = ".id,name,size"
+
+
+def read_chunk_body(resp):
+    """Parse a ``/file/read`` response body, binary payloads included.
+
+    RouterOS returns the file's bytes inside the JSON envelope. ``resp.json()``
+    hands the raw body to ``json.loads``, which insists on UTF-8, so reading a
+    binary backup died on its first non-ASCII byte with "'utf-8' codec can't
+    decode byte 0x80". Latin-1 maps bytes one-to-one and is already the encoding
+    the chunk is re-encoded with afterwards, so decoding the body with it lets
+    the same parser read a binary payload through unchanged.
+
+    Tried as a fallback rather than unconditionally, so a normal text response
+    keeps taking the client's own fast path.
+    """
+    try:
+        return resp.json()
+    except UnicodeDecodeError:
+        return json.loads(resp.content.decode("latin-1"))
 
 
 def generate_backup_password(length: int = 24) -> str:
@@ -70,7 +95,9 @@ class BackupMixin:
         while asyncio.get_event_loop().time() < deadline:
             try:
                 async with self._get_client() as client:
-                    resp = await client.get("/file")
+                    resp = await client.get(
+                        "/file", params={".proplist": SETTLE_PROPLIST}
+                    )
                     if resp.status_code == 200:
                         files = resp.json()
                         size = -1
@@ -119,7 +146,7 @@ class BackupMixin:
                 )
                 if read_resp.status_code != 200:
                     break
-                body = read_resp.json()
+                body = read_chunk_body(read_resp)
                 if not body:
                     break
                 data = (
@@ -165,7 +192,7 @@ class BackupMixin:
                 )
                 if read_resp.status_code != 200:
                     break
-                body = read_resp.json()
+                body = read_chunk_body(read_resp)
                 if not body:
                     break
                 data = (
