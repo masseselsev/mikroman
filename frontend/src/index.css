@@ -1380,8 +1380,9 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
   max-width: 190px;
   overflow: hidden;
   text-overflow: ellipsis;
-  /* Decorative text sitting over neighbouring controls must not swallow their
-     clicks. */
+  /* Decorative text overhanging neighbouring controls must not swallow their
+     clicks. Scoped to the tagline: on an interactive control a footnote has to
+     stay hoverable. */
   pointer-events: none;
 }
 
@@ -1679,7 +1680,9 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
 .router-comment-collapsed {
   width: 100%;
   display: flex;
-  align-items: flex-start;
+  /* Centred, not top-aligned: with a single-line preview there is no second
+     line for the icons to hang beside. */
+  align-items: center;
   gap: 7px;
   text-align: left;
   padding: 6px 10px;
@@ -1704,16 +1707,25 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
   color: var(--color-primary);
 }
 
+/* One line, always. Three lines of clamp let a long note push the whole header
+   row taller, which moved every control beside it; the note is secondary
+   information and must not resize the primary chrome. `router-comment-more`
+   appears when the text really is being cut, so a clipped note is still
+   distinguishable from a short one. */
 .router-comment-preview {
   flex: 1;
   min-width: 0;
-  white-space: pre-wrap;
+  white-space: nowrap;
   overflow: hidden;
-  display: -webkit-box;
-  -webkit-line-clamp: 3;
-  -webkit-box-orient: vertical;
+  text-overflow: ellipsis;
   font-size: var(--fs-2xs);
   color: var(--text-secondary);
+}
+
+.router-comment-more {
+  flex-shrink: 0;
+  color: var(--color-primary);
+  opacity: 0.75;
 }
 
 .router-comment-placeholder {
@@ -1896,6 +1908,23 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
 .quota-strip-notch.is-reached {
   background: rgba(255, 255, 255, 0.85);
   box-shadow: 0 0 3px rgba(255, 255, 255, 0.8);
+}
+
+/* Projected end-of-cycle position. Drawn above the fill and the threshold
+   notches so it stays readable wherever it lands, and extended a pixel past the
+   bar top and bottom so it is legible even when it coincides with a notch. A
+   projection past 100% is pinned to the end of the bar - the bar cannot show
+   271%, and the exact figure is on the title and in the strip's own text. */
+.quota-strip-projection {
+  position: absolute;
+  top: -1px;
+  bottom: -1px;
+  width: 0;
+  border-left: 1px dashed var(--text-primary);
+  opacity: 0.55;
+  transform: translateX(-0.5px);
+  z-index: 3;
+  pointer-events: none;
 }
 
 .quota-strip-notches-labels {

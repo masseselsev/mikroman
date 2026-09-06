@@ -181,3 +181,53 @@ describe('RouterFirmwareModal release notes', () => {
     expect(screen.getByText(/No lines match the filter/i)).toBeInTheDocument();
   });
 });
+
+/**
+ * The navbar badge is fed by App's own firmware status, which is refreshed on a
+ * five-minute slow poll. Switching the update channel inside this modal changes
+ * the answer immediately - so until the modal hands the fresh status back, the
+ * badge keeps advertising a version from a channel the router is no longer on.
+ */
+describe('RouterFirmwareModal status propagation', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    api.getFirmwareStatus.mockResolvedValue(mockStatus);
+    api.getChangelog.mockResolvedValue({ version: '7.16.1', notes: 'note' });
+  });
+
+  it('hands the fresh status up when the update channel changes', async () => {
+    const onStatusChange = vi.fn();
+    const backToStable = {
+      ...mockStatus,
+      packages: {
+        ...mockStatus.packages,
+        channel: 'stable',
+        latest_version: '7.15.2',
+        update_available: false,
+      },
+    };
+    api.setFirmwareChannel.mockResolvedValue(backToStable);
+
+    render(
+      <RouterFirmwareModal
+        isOpen={true}
+        onClose={vi.fn()}
+        routerId={1}
+        routerName="Core-Gateway"
+        onStatusChange={onStatusChange}
+      />
+    );
+
+    await waitFor(() => expect(screen.getAllByText('7.16.1').length).toBeGreaterThanOrEqual(1));
+
+    fireEvent.change(await screen.findByDisplayValue('stable'), { target: { value: 'development' } });
+
+    await waitFor(() => {
+      expect(onStatusChange).toHaveBeenCalledWith(
+        expect.objectContaining({
+          packages: expect.objectContaining({ update_available: false, latest_version: '7.15.2' }),
+        })
+      );
+    });
+  });
+});

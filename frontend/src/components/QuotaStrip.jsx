@@ -123,6 +123,20 @@ export function QuotaStrip({ activeRouterId, onOpenSettings, refreshKey }) {
                 />
               );
             })}
+          {/* Where this cycle is heading, on the same axis as where it already
+              is. The figure was printed off to the right of the strip, which
+              asked the reader to hold two numbers in their head and compare
+              them; a marker on the bar makes the gap between "used" and
+              "projected" something you see rather than calculate.
+              Dashed and thin on purpose: it is a forecast sitting on a bar that
+              otherwise shows only measured bytes, and must not read as one. */}
+          {projPct > 0 ? (
+            <div
+              className="quota-strip-projection"
+              style={{ left: `${Math.min(100, Math.max(0, projPct))}%` }}
+              title={`${t('quota_projected')} ${projPct}%`}
+            />
+          ) : null}
         </div>
         <div className="quota-strip-notches-labels" aria-hidden="true">
           {((q.thresholds && q.thresholds.length > 0) ? q.thresholds : [50, 80, 100])

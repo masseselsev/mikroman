@@ -27,6 +27,39 @@ import { Users, Laptop, Activity, BarChart2, Plus, AlertCircle, EyeOff, ChevronD
 // poll at its own rate would be pure noise on the box.
 const SLOW_POLL_MS = 5 * 60 * 1000;
 
+// When this viewer last read each router's log, as an ISO instant keyed by
+// router id. The navbar badge counts what has arrived since; without a marker
+// it counted a fixed trailing 24 hours, so a router logging a few hundred
+// routine errors a day showed "99+" permanently and reading the log could not
+// change it.
+//
+// localStorage rather than the server: it is a per-viewer convenience, like the
+// log viewer's own filter preferences, and two people watching the same router
+// should not clear each other's badge. Every access is guarded - a private
+// window or a browser blocking site data throws on the accessor itself.
+const LOGS_READ_AT_KEY = 'mikroman.logsReadAt';
+
+function readLogsSeenAt(routerId) {
+  if (!routerId) return null;
+  try {
+    const all = JSON.parse(window.localStorage.getItem(LOGS_READ_AT_KEY) || '{}');
+    return all[String(routerId)] || null;
+  } catch {
+    return null;
+  }
+}
+
+function markLogsSeen(routerId) {
+  if (!routerId) return;
+  try {
+    const all = JSON.parse(window.localStorage.getItem(LOGS_READ_AT_KEY) || '{}');
+    all[String(routerId)] = new Date().toISOString();
+    window.localStorage.setItem(LOGS_READ_AT_KEY, JSON.stringify(all));
+  } catch {
+    /* Reading the log still worked; only the badge will not clear. */
+  }
+}
+
 export function App() {
   const { t, lang } = useI18n();
 
@@ -161,7 +194,8 @@ export function App() {
             }
           });
 
-        api.getLogStats({ router_id: effectiveId })
+        const seenAt = readLogsSeenAt(effectiveId);
+        api.getLogStats({ router_id: effectiveId, ...(seenAt ? { since: seenAt } : {}) })
           .then(res => {
             if (effectiveId === activeRouterIdRef.current) {
               setLogStats(res?.data || null);
@@ -806,7 +840,14 @@ export function App() {
       {/* Router Log Stream & Logging Topics */}
       <RouterLogsModal
         isOpen={logsModalOpen}
-        onClose={() => setLogsModalOpen(false)}
+        // Closing the viewer is the moment the reader has seen the log. Stamp
+        // it and drop the badge immediately rather than waiting up to five
+        // minutes for the next slow poll to agree.
+        onClose={() => {
+          markLogsSeen(activeRouter?.id);
+          setLogStats(null);
+          setLogsModalOpen(false);
+        }}
         routerId={activeRouter?.id}
         routerName={activeRouter?.name}
       />
@@ -826,6 +867,11 @@ export function App() {
         routerId={activeRouter?.id}
         routerName={activeRouter?.name}
         onUpgradeSuccess={reloadAll}
+        // The navbar badge reads this state, which is otherwise only refreshed
+        // on the five-minute slow poll. A channel switch changes the answer at
+        // once, so take the modal's fresh status straight away rather than
+        // advertising a version from a channel the router has left.
+        onStatusChange={setFirmwareStatus}
       />
 
       <AppFooter />

@@ -19,7 +19,7 @@ export default function RouterFirmwareModal({
   onClose,
   routerId,
   routerName,
-  onUpgradeSuccess,
+  onUpgradeSuccess, onStatusChange,
 }) {
   const { t } = useI18n ? useI18n() : { t: (k) => k };
 
@@ -60,19 +60,28 @@ export default function RouterFirmwareModal({
     }
   }, []);
 
+  // Every fresh status from the server goes through here. The navbar badge
+  // upstream is refreshed on a five-minute slow poll, so without this a channel
+  // switch left it advertising a version from a channel the router had already
+  // left - the modal knew the correct answer and kept it to itself.
+  const applyStatus = useCallback((data) => {
+    setStatus(data);
+    if (onStatusChange) onStatusChange(data);
+  }, [onStatusChange]);
+
   const fetchStatus = useCallback(async () => {
     if (!routerId) return;
     setLoading(true);
     setError(null);
     try {
       const data = await api.getFirmwareStatus(routerId);
-      setStatus(data);
+      applyStatus(data);
     } catch (err) {
       setError(err.message || 'Failed to load firmware status');
     } finally {
       setLoading(false);
     }
-  }, [routerId]);
+  }, [routerId, applyStatus]);
 
   useEffect(() => {
     if (isOpen && routerId) {
@@ -124,7 +133,7 @@ export default function RouterFirmwareModal({
     setError(null);
     try {
       const data = await api.checkFirmwareUpdates(routerId);
-      setStatus(data);
+      applyStatus(data);
     } catch (err) {
       setError(err.message || 'Check for updates failed');
     } finally {
@@ -138,7 +147,7 @@ export default function RouterFirmwareModal({
     setError(null);
     try {
       const data = await api.setFirmwareChannel(routerId, newChannel);
-      setStatus(data);
+      applyStatus(data);
     } catch (err) {
       setError(err.message || 'Failed to switch update channel');
     } finally {
@@ -155,7 +164,7 @@ export default function RouterFirmwareModal({
         const fresh = await api.getFirmwareStatus(routerId);
         if (fresh && fresh.packages) {
           clearRebootPolling();
-          setStatus(fresh);
+          applyStatus(fresh);
           setRebootStage('online');
           if (onUpgradeSuccess) onUpgradeSuccess();
         }

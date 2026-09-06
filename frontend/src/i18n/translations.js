@@ -348,6 +348,7 @@ export const translations = {
     signal: "Signal",
 
     // Router comment (header)
+    router_comment_expand: "Click to read the full note",
     router_comment_add: "Add a note…",
     router_comment_title: "Note — {name}",
     router_comment_placeholder: "Location, ISP account, config quirks, maintenance windows…",
@@ -685,7 +686,7 @@ export const translations = {
     log_stats_summary: "24h: {errors} err, {warnings} warn, {auth} auth fails",
     log_search_ph: "Search message or topic...",
     log_hide_self_api: "Hide own logins",
-    log_hide_self_api_hint: "Hide MikroMan's own REST login/logout lines - same account, same source address as this box. A login from the same account but a different address stays visible.",
+    log_hide_self_api_hint: "Hides every api/rest-api login and logout for the router account MikroMan connects with. Matched on the account name only: behind NAT the address the router records is not one MikroMan can know. An api session opened by anyone else holding the same credential is therefore hidden too — logins over winbox, ssh or webfig always stay visible.",
     log_count: "{count} entries",
     log_rule_builtin: "built-in",
     log_copy_failed: "Could not copy to clipboard",
@@ -1043,6 +1044,7 @@ export const translations = {
     signal: "Сигнал",
 
     // Router comment (header)
+    router_comment_expand: "Нажмите, чтобы прочитать заметку целиком",
     router_comment_add: "Добавить заметку…",
     router_comment_title: "Заметка — {name}",
     router_comment_placeholder: "Расположение, аккаунт провайдера, особенности настройки, окна обслуживания…",
@@ -1381,7 +1383,7 @@ export const translations = {
     log_stats_summary: "24ч: ошиб. {errors}, предупр. {warnings}, отказов входа {auth}",
     log_search_ph: "Поиск по тексту или топику...",
     log_hide_self_api: "Скрыть свои входы",
-    log_hide_self_api_hint: "Скрывает входы/выходы самого MikroMan по REST - тот же логин и тот же IP, что и у этого контейнера. Вход с того же логина, но с другого IP, останется виден.",
+    log_hide_self_api_hint: "Скрывает все входы и выходы по api/rest-api под учётной записью, которой подключается MikroMan. Сверяется только имя пользователя: из-за NAT адрес, который видит роутер, MikroMan знать не может. Поэтому скрывается и сессия того, кто использует те же учётные данные — входы через winbox, ssh и webfig видны всегда.",
     log_count: "записей: {count}",
     log_rule_builtin: "системное",
     log_copy_failed: "Не удалось скопировать в буфер",
