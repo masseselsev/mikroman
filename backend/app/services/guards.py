@@ -3,6 +3,7 @@
 Prevents self-lockout, accidental throttling of management endpoints,
 pruning of foreign WinBox queues/rules, and invalid rate configurations.
 """
+import ipaddress
 import re
 from typing import Optional, Set
 
@@ -85,6 +86,42 @@ def guard_immune_targets(target: str, immune_ips: Set[str], action: str = "block
             f"Target {clean_target} is a protected management/host IP",
             clean_target,
         )
+
+    # A prefix is refused when it *swallows* a protected address, not only when
+    # it names one. Comparing strings was enough while MikroMan sat on a separate
+    # box, because the only thing it could ever address there was a host IP. Once
+    # it runs as a RouterOS container, the road between it and the API it writes
+    # over is a subnet - 172.17.0.0/24 in the default setup - and a rule aimed at
+    # that prefix passes an equality test while still cutting the throat out of
+    # 172.17.0.1 and the container's own address. Same class of self-lockout the
+    # exact match was written for; just one level of indirection up.
+    if "/" in clean_target:
+        swallowed = _first_immune_inside(clean_target, immune_ips)
+        if swallowed is not None:
+            raise WriteGuardViolation(
+                "ImmuneTargetGuard",
+                f"Target {clean_target} is a supernet of the protected address {swallowed}",
+                clean_target,
+            )
+
+
+def _first_immune_inside(target: str, immune_ips: Set[str]) -> Optional[str]:
+    """Return the first immune address contained in `target`, if any.
+
+    `target` is a CIDR prefix; immune entries that are not parseable addresses
+    (operator-written host names) are skipped rather than treated as matches.
+    """
+    try:
+        network = ipaddress.ip_network(target, strict=False)
+    except ValueError:
+        return None
+    for candidate in immune_ips:
+        try:
+            if ipaddress.ip_address(candidate.split("/")[0]) in network:
+                return str(candidate)
+        except ValueError:
+            continue
+    return None
 
 
 def guard_foreign_resources(comment: Optional[str], action: str, resource_type: str) -> None:

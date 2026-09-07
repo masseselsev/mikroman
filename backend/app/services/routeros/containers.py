@@ -1,12 +1,21 @@
 """RouterOS container management.
 
 Container support ships as a separate, opt-in package that is absent from a
-default install and cannot be enabled without a reboot. Every method here
-tolerates that: the REST endpoints simply 404 or error, and the caller decides
+default install and cannot be enabled without a reboot. The *read* methods here
+tolerate that: the REST endpoints simply 404 or error, and the caller decides
 how to present it rather than being handed an exception.
+
+The *write* methods at the bottom deliberately do not. Provisioning a router to
+host a container is a sequence in which a silently refused step is worse than an
+error - a container whose ``layer-dir`` never moved off internal flash starts up
+fine and then fails when it runs out of room - so each one raises
+:class:`~backend.app.services.routeros.provisioning.RouterOSCommandError` with
+the router's own message.
 """
 import logging
 from typing import Any, Dict, List
+
+from backend.app.services.routeros.provisioning import RouterOSCommandError, _detail
 
 logger = logging.getLogger("mikroman.routeros")
 
@@ -86,3 +95,50 @@ class ContainersMixin:
             resp.raise_for_status()
             body = resp.json() if resp.content else {}
             return body if isinstance(body, dict) else {"result": body}
+
+    # --- Writes the setup needs -----------------------------------------------
+    # The reads above answer [] when the package is absent, because that is a
+    # state worth rendering. These must not be tolerant: a setup that half
+    # applied (a mount that was refused, a tmpdir still on internal flash) leaves
+    # a container that starts and then fails somewhere much worse - so every one
+    # of them raises RouterOSCommandError with the router's own message.
+
+    async def set_container_config(self, fields: Dict[str, str]) -> bool:
+        """Set global container settings (``layer-dir``, ``tmpdir``, ``dns-servers``).
+
+        ``/container/config`` is a single-row menu, so this is a set, not an add.
+        """
+        if not fields:
+            return True
+        async with self._get_client() as client:
+            resp = await client.post("/container/config/set", json=fields)
+            if resp.status_code not in (200, 201, 204):
+                raise RouterOSCommandError("/container/config/set", resp.status_code, _detail(resp))
+            return True
+
+    async def add_container_mount(self, list_name: str, src: str, dst: str) -> Dict[str, Any]:
+        """Bind a path on the router to a path inside the container.
+
+        The grouping field is ``list``, not ``name`` - RouterOS answers
+        ``unknown parameter name`` and then ``missing =list=`` on the way to
+        proving it, which is why this takes an explicit argument name.
+        """
+        return await self._run(
+            "/container/mounts/add", {"list": list_name, "src": src, "dst": dst}
+        )
+
+    async def remove_container_mount(self, mount_id: str) -> bool:
+        return await self.remove_by_id("/container/mounts", mount_id)
+
+    async def add_container_env(self, list_name: str, key: str, value: str) -> Dict[str, Any]:
+        """Add one variable to a named env list (``/container/envs``).
+
+        Several rows share one ``list``; the container references that list by
+        name via ``envlist``.
+        """
+        return await self._run(
+            "/container/envs/add", {"list": list_name, "key": key, "value": value}
+        )
+
+    async def remove_container_env(self, env_id: str) -> bool:
+        return await self.remove_by_id("/container/envs", env_id)
