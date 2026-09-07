@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { smoothAreaPath, smoothLinePath } from './sparkline';
+import { smoothAreaPath, smoothBandPath, smoothLinePath } from './sparkline';
 
 /**
  * The property that matters here is non-overshoot.
@@ -129,6 +129,44 @@ describe('smoothAreaPath', () => {
   it('returns null when there is no curve', () => {
     expect(smoothAreaPath([], 18)).toBeNull();
     expect(smoothAreaPath([{ x: 0, y: 1 }], 18)).toBeNull();
+  });
+});
+
+describe('smoothBandPath', () => {
+  // Screen coordinates, so a smaller y is the higher reading.
+  const upper = toPoints([4, 2, 9, 1]);
+  const lower = toPoints([14, 13, 16, 12]);
+
+  it('encloses the region between the two curves', () => {
+    const d = smoothBandPath(upper, lower);
+    expect(d.startsWith('M ')).toBe(true);
+    expect(d.endsWith('Z')).toBe(true);
+    // Both edges get walked: the first upper sample opens the shape, the last
+    // lower sample closes it. A band that only drew one edge would not fill.
+    expect(d).toContain('0,4');
+    expect(d).toContain('30,12');
+  });
+
+  it('stays inside the combined range of both edges', () => {
+    // The same non-overshoot rule the lines follow, applied to the fill: a band
+    // that bulged past its own data would report a peak that never happened.
+    const ys = [...upper.map(p => p.y), ...lower.map(p => p.y)];
+    const { min, max } = pathExtremes(smoothBandPath(upper, lower));
+    expect(min).toBeGreaterThanOrEqual(Math.min(...ys) - 1e-6);
+    expect(max).toBeLessThanOrEqual(Math.max(...ys) + 1e-6);
+  });
+
+  it('holds a constant spread flat instead of pinching it shut', () => {
+    const d = smoothBandPath(toPoints([5, 5, 5]), toPoints([10, 10, 10]));
+    const { min, max } = pathExtremes(d);
+    expect(min).toBeCloseTo(5, 6);
+    expect(max).toBeCloseTo(10, 6);
+  });
+
+  it('returns null when either edge cannot form a curve', () => {
+    expect(smoothBandPath([], [])).toBeNull();
+    expect(smoothBandPath(upper, [{ x: 0, y: 1 }])).toBeNull();
+    expect(smoothBandPath(null, lower)).toBeNull();
   });
 });
 

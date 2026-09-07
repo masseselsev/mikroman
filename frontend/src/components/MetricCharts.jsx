@@ -2,9 +2,11 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useI18n } from '../context/I18nContext';
 import { api } from '../api/client';
 import { formatBytes, formatSpeed } from '../utils/formatters';
-import { 
-  Activity, Cpu, HardDrive, Thermometer, Zap, Network, 
-  ArrowDown, ArrowUp, RefreshCw, Check, Clock, Layers, Sparkles, Sliders, X 
+import { smoothAreaPath, smoothBandPath, smoothLinePath } from '../utils/sparkline';
+import { chartMax, chartMin, nearestIndex, timeSegments, xPositions } from '../utils/chartScales';
+import {
+  Activity, Cpu, HardDrive, Thermometer, Zap, Network,
+  ArrowDown, ArrowUp, RefreshCw, Check, Clock, Layers, Sparkles, Sliders, X
 } from 'lucide-react';
 
 const RANGES = ['1h', '6h', '24h', '7d', '30d'];
@@ -30,40 +32,12 @@ function formatTimeTooltip(dateStr) {
   return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }
 
-// Helper to generate smooth SVG path from data points
-function generateSvgPath(points, valueKey, width, height, minVal = 0, maxVal = 100, padX = 66, padY = 16, padBottom = 26) {
-  if (!points || points.length < 2) return '';
-  const innerWidth = width - padX - 16;
-  const innerHeight = height - padY - padBottom;
-  const effectiveMax = maxVal > minVal ? maxVal : minVal + 1;
-
-  const coords = points.map((p, i) => {
-    const x = padX + (i / (points.length - 1)) * innerWidth;
-    const rawVal = p[valueKey] !== null && p[valueKey] !== undefined ? p[valueKey] : minVal;
-    const clamped = Math.max(minVal, Math.min(effectiveMax, rawVal));
-    const y = height - padBottom - ((clamped - minVal) / (effectiveMax - minVal)) * innerHeight;
-    return { x, y };
-  });
-
-  let d = `M ${coords[0].x},${coords[0].y}`;
-  for (let i = 0; i < coords.length - 1; i++) {
-    const curr = coords[i];
-    const next = coords[i + 1];
-    const mx = (curr.x + next.x) / 2;
-    d += ` C ${mx},${curr.y} ${mx},${next.y} ${next.x},${next.y}`;
-  }
-  return d;
-}
-
-// Generate closed area path for gradient fills
-function generateSvgArea(points, valueKey, width, height, minVal = 0, maxVal = 100, padX = 66, padY = 16, padBottom = 26) {
-  const linePath = generateSvgPath(points, valueKey, width, height, minVal, maxVal, padX, padY, padBottom);
-  if (!linePath) return '';
-  const lastX = width - 16;
-  const firstX = padX;
-  const bottomY = height - padBottom;
-  return `${linePath} L ${lastX},${bottomY} L ${firstX},${bottomY} Z`;
-}
+// Every curve on these charts is drawn through utils/sparkline's monotone
+// interpolation. The midpoint cubic that used to live here is the Catmull-Rom
+// shape, which overshoots: a bucket that jumped from idle to a burst and straight
+// back down was drawn dipping under zero on the way in and cresting above the
+// burst on the way out - invented traffic in both directions, on a chart whose
+// whole job is to be trusted about traffic.
 
 function ChartCard({
   title,
@@ -73,7 +47,8 @@ function ChartCard({
   headerRight,
   points,
   range,
-  series, // Array of { key, color, label, formatVal, gradientId, strokeWidth }
+  bucketSeconds = 0, // Nominal bucket width from the API; drives gap detection
+  series, // Array of { key, color, label, formatVal, gradientId, strokeWidth, peakKey?, peakLowKey? }
   yMin = 0,
   yMax = 100,
   yTicks = [], // Array of { val, label }
@@ -91,47 +66,67 @@ function ChartCard({
   const padBottom = 28;
   const innerWidth = svgWidth - padX - 16;
   const innerHeight = svgHeight - padY - padBottom;
+  const baselineY = svgHeight - padBottom;
+
+  // One ruler for the whole card. The mean line, its peak band and the grid have
+  // to agree on where a value sits, or the band looks like it is exaggerating.
+  const yFor = (value) => {
+    const numeric = Number(value);
+    const raw = value === null || value === undefined || !Number.isFinite(numeric) ? yMin : numeric;
+    const clamped = Math.max(yMin, Math.min(yMax, raw));
+    const span = yMax > yMin ? yMax - yMin : 1;
+    return baselineY - ((clamped - yMin) / span) * innerHeight;
+  };
+
+  // Placed by timestamp, so an outage stays a visible hole on the axis instead of
+  // squeezing every later spike to the left of when it actually happened.
+  const xs = xPositions(points, padX, innerWidth);
+  const coordsFor = (key) => (points || []).map((p, i) => ({ x: xs[i], y: yFor(p[key]) }));
+  // Runs of neighbouring buckets. Nothing is drawn across a hole, so the gap
+  // reads as missing data instead of as a ramp the router never drove.
+  const segments = timeSegments(points, bucketSeconds);
+
+  // A series carries a peak band only when the backend actually sent peaks.
+  const bandSeries = (series || []).filter(s =>
+    s.peakKey && (points || []).some(p => p[s.peakKey] !== null && p[s.peakKey] !== undefined)
+  );
 
   const handlePointerMove = (e) => {
     if (!points || points.length < 2 || !containerRef.current) return;
     const rect = containerRef.current.getBoundingClientRect();
     const clientX = e.clientX ?? (e.touches && e.touches[0]?.clientX);
     if (clientX === undefined) return;
-    const relativeX = (clientX - rect.left) / rect.width; // 0 to 1
-    const svgRelX = relativeX * svgWidth;
-    const clampedSvgX = Math.max(padX, Math.min(svgWidth - 16, svgRelX));
-    const ratio = (clampedSvgX - padX) / innerWidth;
-    const idx = Math.round(ratio * (points.length - 1));
-    setHoverIndex(Math.max(0, Math.min(points.length - 1, idx)));
+    const svgRelX = ((clientX - rect.left) / rect.width) * svgWidth;
+    setHoverIndex(nearestIndex(xs, svgRelX));
   };
 
   const handlePointerLeave = () => {
     setHoverIndex(null);
   };
 
-  // Generate 4-5 X-axis time ticks
+  // Four time labels, as evenly spaced along the axis as the buckets allow.
+  // Selected by position rather than by index now that the mapping between them
+  // is no longer linear.
   const xTicks = [];
   if (points && points.length >= 2) {
-    const tickCount = 4;
-    for (let i = 0; i < tickCount; i++) {
-      const idx = Math.round((i / (tickCount - 1)) * (points.length - 1));
-      const pt = points[idx];
-      if (pt) {
-        const x = padX + (idx / (points.length - 1)) * innerWidth;
-        xTicks.push({
-          x,
-          label: formatTimeTick(pt.timestamp, range),
-          anchor: i === 0 ? 'start' : i === tickCount - 1 ? 'end' : 'middle'
-        });
-      }
+    const targets = [padX, padX + innerWidth / 3, padX + (2 * innerWidth) / 3, padX + innerWidth];
+    const used = new Set();
+    for (const target of targets) {
+      const idx = nearestIndex(xs, target);
+      if (used.has(idx)) continue;
+      used.add(idx);
+      xTicks.push({ x: xs[idx], label: formatTimeTick(points[idx].timestamp, range) });
     }
+    // The label at each end is anchored away from that end so the card edge
+    // cannot clip it.
+    xTicks.forEach((tick, i) => {
+      tick.anchor = i === 0 ? 'start' : i === xTicks.length - 1 ? 'end' : 'middle';
+    });
   }
 
   // Active hover point coordinates
   const activePoint = hoverIndex !== null && points ? points[hoverIndex] : null;
-  const hoverX = activePoint && points.length > 1
-    ? padX + (hoverIndex / (points.length - 1)) * innerWidth
-    : null;
+  const hoverX = activePoint && points.length > 1 ? xs[hoverIndex] : null;
 
   return (
     <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -273,22 +268,63 @@ function ChartCard({
               </g>
             ))}
 
-            {/* Data Series (Areas and Lines) */}
-            {series.map(s => (
-              <g key={s.key}>
-                <path 
-                  d={generateSvgArea(points, s.key, svgWidth, svgHeight, yMin, yMax, padX, padY, padBottom)} 
-                  fill={`url(#${s.gradientId})`} 
-                />
-                <path 
-                  d={generateSvgPath(points, s.key, svgWidth, svgHeight, yMin, yMax, padX, padY, padBottom)} 
-                  fill="none" 
-                  stroke={s.color} 
-                  strokeWidth={s.strokeWidth || 2.5} 
-                  strokeLinecap="round" 
-                />
-              </g>
-            ))}
+            {/* Data Series: peak band underneath, mean line on top.
+
+                The band is the part the average hides. A bucket that held a
+                340 Mbps minute and four idle hours draws its mean at the bottom
+                of the card and its band all the way to the burst, so the reader
+                sees both what the link settled at and what it actually carried. */}
+            {series.map(s => {
+              const meanCoords = coordsFor(s.key);
+              const hasPeak = bandSeries.some(b => b.key === s.key);
+              const highCoords = hasPeak ? coordsFor(s.peakKey) : null;
+              const lowCoords = hasPeak && s.peakLowKey ? coordsFor(s.peakLowKey) : null;
+              return (
+                <g key={s.key}>
+                  {segments.map((seg, si) => {
+                    const mean = seg.map(i => meanCoords[i]);
+                    // A lone bucket has no curve to fit. A dot keeps it on the
+                    // chart instead of letting it disappear into the holes either
+                    // side of it.
+                    if (seg.length === 1) {
+                      return (
+                        <circle
+                          key={si}
+                          cx={mean[0].x}
+                          cy={mean[0].y}
+                          r="2.4"
+                          fill={s.color}
+                          opacity="0.95"
+                        />
+                      );
+                    }
+                    const high = highCoords ? seg.map(i => highCoords[i]) : null;
+                    const low = lowCoords ? seg.map(i => lowCoords[i]) : null;
+                    const band = high
+                      ? (low ? smoothBandPath(high, low) : smoothAreaPath(high, baselineY))
+                      : null;
+                    return (
+                      <g key={si}>
+                        {band && (
+                          <path d={band} fill={s.color} opacity="0.17" stroke="none" />
+                        )}
+                        <path
+                          d={smoothAreaPath(mean, baselineY)}
+                          fill={`url(#${s.gradientId})`}
+                        />
+                        <path
+                          d={smoothLinePath(mean)}
+                          fill="none"
+                          stroke={s.color}
+                          strokeWidth={s.strokeWidth || 2.5}
+                          strokeLinecap="round"
+                        />
+                      </g>
+                    );
+                  })}
+                </g>
+              );
+            })}
 
             {/* Active Hover Crosshair Line & Dots */}
             {activePoint && hoverX !== null && (
@@ -305,19 +341,34 @@ function ChartCard({
                 />
 
                 {series.map(s => {
-                  const val = activePoint[s.key] ?? yMin;
-                  const clamped = Math.max(yMin, Math.min(yMax, val));
-                  const y = svgHeight - padBottom - ((clamped - yMin) / (yMax - yMin || 1)) * innerHeight;
+                  const hasPeak = bandSeries.some(b => b.key === s.key);
+                  const peakVal = hasPeak ? activePoint[s.peakKey] : null;
+                  const y = yFor(activePoint[s.key]);
+                  // The peak marker only earns its pixels when it sits somewhere
+                  // other than the mean - a bucket that never varied is one dot.
+                  const showPeak = peakVal !== null && peakVal !== undefined && yFor(peakVal) !== y;
                   return (
-                    <circle 
-                      key={s.key} 
-                      cx={hoverX} 
-                      cy={y} 
-                      r="4.5" 
-                      fill={s.color} 
-                      stroke="var(--bg-primary)" 
-                      strokeWidth="2" 
-                    />
+                    <g key={s.key}>
+                      {showPeak && (
+                        <circle
+                          cx={hoverX}
+                          cy={yFor(peakVal)}
+                          r="3.2"
+                          fill="none"
+                          stroke={s.color}
+                          strokeWidth="1.6"
+                          opacity="0.9"
+                        />
+                      )}
+                      <circle
+                        cx={hoverX}
+                        cy={y}
+                        r="4.5"
+                        fill={s.color}
+                        stroke="var(--bg-primary)"
+                        strokeWidth="2"
+                      />
+                    </g>
                   );
                 })}
               </g>
@@ -351,17 +402,61 @@ function ChartCard({
             <div style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-2xs)', borderBottom: '1px solid rgba(255,255,255,0.1)', paddingBottom: 2 }}>
               🕒 {formatTimeTooltip(activePoint.timestamp)}
             </div>
-            {series.map(s => (
-              <div key={s.key} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center' }}>
-                <span style={{ color: s.color, fontWeight: 600 }}>{s.label}:</span>
-                <span className="font-mono" style={{ fontWeight: 700, color: 'var(--text-primary)' }}>
-                  {s.formatVal ? s.formatVal(activePoint[s.key], activePoint) : activePoint[s.key]}
-                </span>
-              </div>
-            ))}
+            {series.map(s => {
+              const hasPeak = bandSeries.some(b => b.key === s.key);
+              const highVal = hasPeak ? activePoint[s.peakKey] : null;
+              const lowVal = hasPeak && s.peakLowKey ? activePoint[s.peakLowKey] : null;
+              const showSpread = highVal !== null && highVal !== undefined
+                && (lowVal !== null && lowVal !== undefined ? lowVal !== highVal : highVal !== activePoint[s.key]);
+              const read = (val) => (s.formatVal ? s.formatVal(val, activePoint) : val);
+              return (
+                <div key={s.key} style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center' }}>
+                    <span style={{ color: s.color, fontWeight: 600 }}>{s.label}:</span>
+                    <span className="font-mono" style={{ fontWeight: 700, color: 'var(--text-primary)' }}>
+                      {read(activePoint[s.key])}
+                    </span>
+                  </div>
+                  {/* The spread inside the bucket, which is the figure the single
+                      averaged line cannot tell you. */}
+                  {showSpread && (
+                    <div style={{
+                      display: 'flex', justifyContent: 'space-between', gap: 10,
+                      fontSize: 'var(--fs-2xs)', opacity: 0.72
+                    }}>
+                      <span>{lowVal !== null && lowVal !== undefined ? 'min – max' : 'peak'}</span>
+                      <span className="font-mono" style={{ fontWeight: 600, color: s.color }}>
+                        {lowVal !== null && lowVal !== undefined
+                          ? `${read(lowVal)} – ${read(highVal)}`
+                          : read(highVal)}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
         )}
       </div>
+
+      {/* What the two shapes mean. Without this the band reads as a second
+          series rather than as the part of the bucket the average left out. */}
+      {bandSeries.length > 0 && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 14, fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)' }}>
+          <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+            <svg width="16" height="6" aria-hidden="true">
+              <line x1="0" y1="3" x2="16" y2="3" stroke="currentColor" strokeWidth="2" />
+            </svg>
+            average
+          </span>
+          <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+            <svg width="16" height="9" aria-hidden="true">
+              <rect x="0" y="0" width="16" height="9" fill="currentColor" opacity="0.25" />
+            </svg>
+            {bandSeries.some(s => s.peakLowKey) ? 'min – max' : 'peak'}
+          </span>
+        </div>
+      )}
     </div>
   );
 }
@@ -478,21 +573,40 @@ export function MetricCharts({ activeRouterId }) {
   const sysPoints = systemMetrics?.points || [];
   const ifacePoints = ifaceMetrics?.points || [];
 
-  // Dynamic calculations for Y scales
-  const maxRx = Math.max(...ifacePoints.map(p => p.rx_rate_bps || 0), 100000); // at least 100 Kbps
-  const maxTx = Math.max(...ifacePoints.map(p => p.tx_rate_bps || 0), 100000);
+  // Newest bucket across both feeds. The stamps are router-local wall-clock
+  // strings of the same shape, so the lexicographic max is the chronological one.
+  const lastSample = [sysPoints[sysPoints.length - 1]?.timestamp, ifacePoints[ifacePoints.length - 1]?.timestamp]
+    .filter(Boolean)
+    .sort()
+    .pop() || null;
+
+  // Dynamic calculations for Y scales.
+  //
+  // Scaled to the peak, never to the mean. The axis is the reader's ruler: derive
+  // it from bucket averages and the tallest thing the link ever carried is being
+  // measured against a scale that could not have shown it, which also squeezes
+  // every spike that did survive into the bottom few pixels. The mean line keeps
+  // its own meaning either way.
+  const maxRx = chartMax(ifacePoints, ['rx_peak_bps', 'rx_rate_bps'], 100000); // at least 100 Kbps
+  const maxTx = chartMax(ifacePoints, ['tx_peak_bps', 'tx_rate_bps'], 100000);
   const maxBps = Math.max(maxRx, maxTx) * 1.15;
 
   const hasTemp = sysPoints.some(p => p.temperature !== null && p.temperature !== undefined) || (systemMetrics?.current_temp !== null && systemMetrics?.current_temp !== undefined);
   const hasVolt = sysPoints.some(p => p.voltage !== null && p.voltage !== undefined) || (systemMetrics?.current_voltage !== null && systemMetrics?.current_voltage !== undefined);
 
-  // Dynamic temperature scaling based on active readings
+  // Dynamic temperature scaling based on active readings. The floor follows the
+  // means, i.e. how cool the board idles; the ceiling has to reach the hottest
+  // reading in the range or a heat spike sits off the top of its own chart.
   const validTemps = sysPoints.map(p => p.temperature).filter(t => t !== null && t !== undefined && t > 0);
+  const hotTemps = sysPoints
+    .map(p => (p.temperature_peak !== null && p.temperature_peak !== undefined ? p.temperature_peak : p.temperature))
+    .filter(t => t !== null && t !== undefined && t > 0);
   if (systemMetrics?.current_temp !== null && systemMetrics?.current_temp !== undefined) {
     validTemps.push(systemMetrics.current_temp);
+    hotTemps.push(systemMetrics.current_temp);
   }
   const rawMinTemp = validTemps.length > 0 ? Math.min(...validTemps) : 65;
-  const rawMaxTemp = validTemps.length > 0 ? Math.max(...validTemps) : 75;
+  const rawMaxTemp = hotTemps.length > 0 ? Math.max(...hotTemps) : 75;
 
   // Zoomed-in dynamic scale with at least 8°C spread
   const tempSpread = Math.max(8, (rawMaxTemp - rawMinTemp) + 4);
@@ -502,8 +616,8 @@ export function MetricCharts({ activeRouterId }) {
   const dynMidTemp = Math.round((dynMinTemp + dynMaxTemp) / 2);
 
   const voltValues = sysPoints.map(p => p.voltage).filter(v => v !== null && v !== undefined);
-  const maxVolt = voltValues.length > 0 ? Math.max(Math.max(...voltValues) * 1.15, 15) : 28;
-  const minVolt = voltValues.length > 0 ? Math.max(0, Math.min(...voltValues) * 0.85) : 0;
+  const maxVolt = voltValues.length > 0 ? Math.max(chartMax(sysPoints, ['voltage_max', 'voltage'], 0) * 1.15, 15) : 28;
+  const minVolt = voltValues.length > 0 ? Math.max(0, chartMin(sysPoints, ['voltage_min', 'voltage']) * 0.85) : 0;
 
   const isTempAlert = (systemMetrics?.current_temp || 0) >= tempThreshold;
 
@@ -522,18 +636,30 @@ export function MetricCharts({ activeRouterId }) {
             </div>
           </div>
 
-          {/* Time Range Selector */}
-          <div className="range-group">
-            <Clock size={13} />
-            {RANGES.map(r => (
-              <button
-                key={r}
-                className={`range-btn ${range === r ? 'active' : ''}`}
-                onClick={() => setRange(r)}
-              >
-                {t(`range_${r}`)}
-              </button>
-            ))}
+          {/* Time Range Selector, plus the moment the newest reading is from.
+              The collector stops whenever the host running it stops, and a header
+              figure with no timestamp reads as live even when the data ended
+              hours ago - which is exactly how a freeze got mistaken for a router
+              problem. Printed in the same router-local clock the axis uses, so no
+              viewer-timezone maths is involved. */}
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4 }}>
+            <div className="range-group">
+              <Clock size={13} />
+              {RANGES.map(r => (
+                <button
+                  key={r}
+                  className={`range-btn ${range === r ? 'active' : ''}`}
+                  onClick={() => setRange(r)}
+                >
+                  {t(`range_${r}`)}
+                </button>
+              ))}
+            </div>
+            {lastSample && (
+              <div className="font-mono" style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)' }}>
+                last sample {formatTimeTick(lastSample, range)}
+              </div>
+            )}
           </div>
         </div>
 
@@ -609,6 +735,7 @@ export function MetricCharts({ activeRouterId }) {
           iconColor="var(--color-primary)"
           points={ifacePoints}
           range={range}
+          bucketSeconds={ifaceMetrics?.bucket_seconds}
           emptyMessage={selectedIfaces.length === 0 ? "No interfaces selected. Click interface buttons above to monitor traffic." : null}
           headerRight={
             selectedIfaces.length > 0 ? (
@@ -634,6 +761,7 @@ export function MetricCharts({ activeRouterId }) {
           series={[
             {
               key: 'rx_rate_bps',
+              peakKey: 'rx_peak_bps',
               color: '#10b981',
               label: 'RX (Down)',
               gradientId: 'rxGrad',
@@ -641,6 +769,7 @@ export function MetricCharts({ activeRouterId }) {
             },
             {
               key: 'tx_rate_bps',
+              peakKey: 'tx_peak_bps',
               color: '#ec4899',
               label: 'TX (Up)',
               gradientId: 'txGrad',
@@ -657,6 +786,7 @@ export function MetricCharts({ activeRouterId }) {
           iconColor="var(--color-primary)"
           points={sysPoints}
           range={range}
+          bucketSeconds={systemMetrics?.bucket_seconds}
           headerRight={
             <div style={{ fontSize: 'var(--fs-lg)', fontWeight: 800, color: 'var(--color-primary)' }} className="font-mono">
               {systemMetrics?.current_cpu ?? 0}%
@@ -673,6 +803,7 @@ export function MetricCharts({ activeRouterId }) {
           series={[
             {
               key: 'cpu_load',
+              peakKey: 'cpu_peak',
               color: '#0b72c9',
               label: 'CPU Load',
               gradientId: 'cpuGrad',
@@ -689,6 +820,7 @@ export function MetricCharts({ activeRouterId }) {
           iconColor="#8b5cf6"
           points={sysPoints}
           range={range}
+          bucketSeconds={systemMetrics?.bucket_seconds}
           headerRight={
             <div style={{ fontSize: 'var(--fs-lg)', fontWeight: 800, color: '#8b5cf6' }} className="font-mono">
               {systemMetrics?.current_ram_pct ?? 0}%
@@ -724,6 +856,7 @@ export function MetricCharts({ activeRouterId }) {
           iconColor={healthMetric === 'voltage' ? '#06b6d4' : (isTempAlert ? '#ef4444' : '#f59e0b')}
           points={sysPoints}
           range={range}
+          bucketSeconds={systemMetrics?.bucket_seconds}
           emptyMessage={
             healthMetric === 'voltage' && !hasVolt
               ? "Voltage sensor is not physically present on this router model."
@@ -866,6 +999,8 @@ export function MetricCharts({ activeRouterId }) {
             healthMetric === 'voltage' ? [
               {
                 key: 'voltage',
+                peakKey: 'voltage_max',
+                peakLowKey: 'voltage_min',
                 color: '#06b6d4',
                 label: 'Voltage',
                 gradientId: 'voltGrad',
@@ -874,6 +1009,7 @@ export function MetricCharts({ activeRouterId }) {
             ] : [
               {
                 key: 'temperature',
+                peakKey: 'temperature_peak',
                 color: isTempAlert ? '#ef4444' : '#f59e0b',
                 label: 'Temperature',
                 gradientId: 'tempGrad',
