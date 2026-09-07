@@ -50,6 +50,24 @@
   * Centralized terminal log viewer with regex event classification (auth, interface, DHCP, wireless, firewall, system).
   * 1-click RouterOS `/system/logging` topic management.
 
+* **📈 Peak-Preserving Hardware & Bandwidth Graphs**:
+  * Router Health tab charts interface RX/TX, CPU load, RAM and board temperature/voltage over 1 h / 6 h / 24 h / 7 d / 30 d ranges.
+  * Every display bucket carries its mean *and* its worst case, so a burst shorter than the bucket is still on the chart: solid line = average, shaded band = peak (min–max on the voltage view).
+  * Downsampling runs inside SQLite (`strftime` bucket grid, two-level grouping), so a 30-day window returns ~180 rows instead of pulling a million raw samples through the ORM.
+  * Rates are summed per sample before the peak is taken, so a multi-interface selection cannot invent a combined spike out of two unrelated moments.
+  * Outages are drawn as blanks, not ramps: `/api/v1/metrics/{system,interfaces}` report `bucket_seconds`, and any gap wider than 2.5 buckets ends the line's current run, so hours nobody sampled stay visibly empty.
+  * The range selector shows the timestamp of the newest reading, because a collector that stopped with its host still prints a plausible "current" rate.
+  * Axes scale to the peak rather than to the tallest average, and points are placed by timestamp rather than by array index.
+  * A stalled router leaves one WARNING on state change and one INFO on recovery, instead of a debug line nobody reads or a warning every 25 seconds.
+
+* **📦 Self-Hosting on the Router (RouterOS Containers)**:
+  * MikroMan can run as a container on the RouterOS device it manages: `POST /api/v1/routers/{id}/containers/setup/plan` shows every change it would make (container `layer-dir`/`tmpdir` on external storage, bridge, veth, gateway address, masquerade, mount, the container itself) and writes nothing; `.../setup/apply` executes that same plan.
+  * Idempotent and defensive: each step checks what the router already has, refuses to modify objects it did not create (`mikroman:` comments), blocks before creating anything when the storage is missing or the chosen subnet is already in use, and stops at the first refused command while reporting which steps landed.
+  * The web port forward is only ever created bound to one interface; an unbounded `dstnat` would expose the administrative UI on WAN.
+  * `POST .../containers/migrate-data` carries the existing installation over: a consistent snapshot of the live database via SQLite's backup API plus the `.secret_key` that decrypts it. It refuses to run while the target container is up, so a live database is never replaced underneath its application.
+  * No credentials are written into `/container/envs`: router logins and the bot token already travel inside the encrypted database, and copying them to env would put them in plaintext in the running config and every exported `.rsc`.
+  * Manual path for a bare router: `scripts/setup_ros_container.rsc`.
+
 * **🤖 Dual-Mode Telegram Bot**:
   * Operates in both Long Polling (zero-config NAT) and Authenticated Webhook modes.
   * Proactive alerts for new device arrivals, CPU spikes, thermal thresholds, and WAN IP changes.
