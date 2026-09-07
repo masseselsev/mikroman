@@ -61,6 +61,28 @@ export function smoothAreaPath(points, baselineY) {
 }
 
 /**
+ * A filled region between two curves - the band between a bucket's worst case
+ * and its average, or between a sensor's low and high.
+ *
+ * Both edges are interpolated monotone, so the band cannot swell past the values
+ * it was handed. The lower edge is walked backwards, which is what lets the two
+ * curves meet at the ends and close without crossing over each other mid-chart.
+ * Returns null when there is nothing to enclose.
+ */
+export function smoothBandPath(upperPoints, lowerPoints) {
+  if (!Array.isArray(upperPoints) || !Array.isArray(lowerPoints)) return null;
+  if (upperPoints.length < 2 || lowerPoints.length < 2) return null;
+
+  const upper = smoothLinePath(upperPoints);
+  const lower = smoothLinePath([...lowerPoints].reverse());
+  if (!upper || !lower) return null;
+
+  // The lower curve comes back with its own move command; a line has to join the
+  // two edges first, otherwise the shape has a floating subpath in it.
+  return `${upper} L ${fmt(lowerPoints[lowerPoints.length - 1].x)},${fmt(lowerPoints[lowerPoints.length - 1].y)} ${`L${lower.slice(1)}`} Z`;
+}
+
+/**
  * Fritsch–Carlson tangents: the step that makes the curve non-overshooting.
  */
 function monotoneTangents(points) {

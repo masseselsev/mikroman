@@ -104,6 +104,9 @@ async def _backfill_interface_rollups_once():
 
 async def background_sync_worker():
     """Periodic background discovery and health monitor for all configured active routers."""
+    # Last sync fault per router, kept so a failure that repeats every tick is
+    # logged once. Lives for the whole run of the worker, not a single tick.
+    sync_failures = {}
     await _backfill_interface_rollups_once()
     while True:
         try:
@@ -114,6 +117,7 @@ async def background_sync_worker():
 
                 active_routers = await router_manager.get_all_active_routers(session)
                 for r in active_routers:
+                    failed = False
                     try:
                         client = await router_manager.get_client(r.id, session=session)
                         if client:
@@ -262,7 +266,17 @@ async def background_sync_worker():
                                         )
                                         await telegram_service.send_alert_to_admins(msg, parse_mode="HTML")
                     except Exception as e:
-                        logger.debug(f"Sync error for router {r.name} ({r.id}): {e}")
+                        failed = True
+                        text = f"{type(e).__name__}: {e}"
+                        # One warning per distinct fault rather than one per tick:
+                        # at debug level (what this was) a router that stopped
+                        # answering for hours left no trace at all, and the outage
+                        # only ever surfaced as a strange gap in the graphs.
+                        if sync_failures.get(r.id) != text:
+                            sync_failures[r.id] = text
+                            logger.warning(f"Sync tick failing for router {r.name} ({r.id}): {text}")
+                    if not failed and sync_failures.pop(r.id, None) is not None:
+                        logger.info(f"Router {r.name} ({r.id}) is syncing again")
         except Exception as e:
             logger.debug(f"Background sync tick error: {e}")
 
