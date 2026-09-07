@@ -114,8 +114,11 @@ class ContainerManager:
             logger.warning(f"Could not list containers: {e}")
 
         try:
+            # RouterOS groups both mounts and env rows by `list`, not `name`;
+            # reading the wrong attribute left the UI showing empty names for
+            # rows that exist and work.
             mounts = [
-                ContainerMountDTO(id=m.get(".id", ""), name=m.get("name"),
+                ContainerMountDTO(id=m.get(".id", ""), name=m.get("list") or m.get("name"),
                                   src=m.get("src"), dst=m.get("dst"))
                 for m in await self.client.get_container_mounts()
             ]
@@ -124,7 +127,7 @@ class ContainerManager:
 
         try:
             envs = [
-                ContainerEnvDTO(id=v.get(".id", ""), name=v.get("name"),
+                ContainerEnvDTO(id=v.get(".id", ""), name=v.get("list") or v.get("name"),
                                 key=v.get("key"), value=v.get("value"))
                 for v in await self.client.get_container_envs()
             ]

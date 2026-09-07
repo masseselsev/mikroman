@@ -89,3 +89,98 @@ class ContainerCreateRequest(BaseModel):
     start_on_boot: bool = False
     logging: bool = True
     comment: Optional[str] = None
+
+
+# --- One-click preparation of a router to host a container ---------------------
+
+
+class ContainerSetupRequest(BaseModel):
+    """What :class:`ContainerSetupService` will create on the router.
+
+    Only ``storage_dir`` has no default. Everything else has a value that is
+    correct for MikroMan on a typical board, because the dangerous failure here
+    is a silently defaulted one: image layers are ~340 MB unpacked, and several
+    RouterOS boards have under 512 MB of internal flash, so a setup that guessed
+    the storage path would either fail mid-pull or eat the flash the router
+    restores its own configuration from.
+    """
+
+    storage_dir: str = Field(
+        ..., min_length=2,
+        description="Router path with room for image layers and the database, e.g. 'usb1-part1'",
+    )
+    image: str = "ghcr.io/masseselsev/mikroman:latest"
+    container_name: str = "mikroman"
+    bridge_name: str = "bridge-containers"
+    veth_name: str = "veth-mikroman"
+    mount_name: str = "mikroman_data"
+    data_dir_name: str = "mikroman_data"
+    subnet: str = Field("172.17.0.0/24", description="Container network; the router takes .1, the container .2")
+    web_port: int = Field(1928, ge=1, le=65535)
+    expose_on_interface: Optional[str] = Field(
+        None,
+        description="LAN interface allowed to reach the web UI (e.g. 'br.lan'). "
+                    "None keeps the port forward off, and the UI stays reachable only from the router.",
+    )
+    dns_servers: Optional[str] = Field(
+        None,
+        description="Only sent if /container/config actually has the attribute on this RouterOS release; "
+                    "v7.24.2 does not, and containers resolve through the router's own resolver anyway.",
+    )
+    create_container: bool = Field(True, description="Also create (not start) the container at the end")
+    extra_env: dict = Field(
+        default_factory=dict,
+        description="Non-secret environment overrides. Router credentials and the Telegram token are NOT "
+                    "needed here - they live in the database the migration carries, and writing them as env "
+                    "would put them in plaintext in the router config and in every exported .rsc.",
+    )
+
+
+class ContainerSetupStepDTO(BaseModel):
+    """One line of the plan: what was found, and what will be done about it.
+
+    ``dry_run`` and ``apply`` build the same list, so what the user was shown is
+    literally what was executed rather than a description written afterwards.
+    """
+
+    key: str
+    action: str = Field(..., description="create | set | exists | skip | conflict | blocked | done | failed")
+    detail: str = ""
+    # Set only when apply() actually ran the command.
+    applied: bool = False
+
+
+class ContainerSetupPlanDTO(BaseModel):
+    """The whole plan, with blockers listed separately so the UI cannot miss them."""
+
+    ok: bool = True
+    storage_dir: str = ""
+    gateway_ip: str = ""
+    container_ip: str = ""
+    steps: List[ContainerSetupStepDTO] = Field(default_factory=list)
+    blockers: List[str] = Field(default_factory=list)
+
+
+class ContainerMigrateRequest(BaseModel):
+    """Carry this installation's data into the container's mount."""
+
+    storage_dir: str = Field(..., min_length=2)
+    data_dir_name: str = "mikroman_data"
+    container_name: str = "mikroman"
+
+
+class ContainerMigrateResultDTO(BaseModel):
+    """A staged snapshot and the hand-off that is still the operator's to make.
+
+    RouterOS exposes no upload endpoint for binaries on this release, so the API
+    says plainly what has been prepared and what has to be copied - a migration
+    that silently did half the job would be worse than one that stops and tells.
+    """
+
+    database_bytes: int = 0
+    staged_path: str = ""
+    secret_key_path: str = ""
+    destination: str = ""
+    # 'included' or 'absent' - the key's value is never returned.
+    secret_key: str = "absent"
+    next_steps: List[str] = Field(default_factory=list)

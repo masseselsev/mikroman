@@ -38,6 +38,64 @@ def test_guard_immune_targets():
         guard_immune_targets("192.168.88.1", immune, action="block")
     assert "protected" in str(exc.value).lower()
 
+
+def test_guard_refuses_a_prefix_that_swallows_an_immune_address():
+    """A supernet of a protected address is the same self-lockout, one level up.
+
+    Matters now that MikroMan can run as a RouterOS container: the only route
+    between it and the API it writes over is a subnet (172.17.0.0/24 by default),
+    so a rule aimed at that prefix cuts off both the router-side gateway and the
+    container's own address, while an equality test lets it through untouched.
+    """
+    immune = {"172.17.0.1", "172.17.0.2", "192.168.88.1"}
+
+    for broad in ("172.17.0.0/24", "172.17.0.0/25", "172.16.0.0/12"):
+        with pytest.raises(WriteGuardViolation) as exc:
+            guard_immune_targets(broad, immune, action="queue")
+        assert "supernet" in str(exc.value).lower()
+
+    # A broad prefix that does not cover the path stays writable - the guard is
+    # about containment, not about size.
+    guard_immune_targets("10.0.0.0/8", immune, action="block")
+
+    # A narrower target in the same neighbourhood stays writable: throttling one
+    # container must not become impossible because a different one is the
+    # management path.
+    guard_immune_targets("172.17.0.5", immune, action="queue")
+    guard_immune_targets("172.17.0.5/32", immune, action="block")
+    guard_immune_targets("172.17.1.0/24", immune, action="block")
+
+    # Host names in the operator's exemption list are skipped rather than matched,
+    # and an unparsable target keeps behaving as it did before this check existed.
+    guard_immune_targets("10.0.0.0/8", {"printer-lan", "192.168.88.1"}, action="block")
+    guard_immune_targets("not-an-address/24", immune, action="block")
+
+
+@pytest.mark.asyncio
+async def test_a_container_cannot_be_locked_out_of_its_own_router():
+    """The write site, not just the helper: blocking the container subnet fails.
+
+    Simulates MikroMan running inside RouterOS - it reaches the API over
+    172.17.0.1 from 172.17.0.2 - and asks it to block the /24 that carries both.
+    """
+    from backend.app.schemas.router import RouterConfig
+    from backend.app.services.routeros.client import RouterOSClient
+
+    client = RouterOSClient(RouterConfig(host="172.17.0.1", username="admin", password="x"))
+    # The container's own address is normally derived by the kernel (the local end
+    # of the route to the router); pin it so the assertion does not depend on
+    # which interface the test host happens to route 172.17/16 through.
+    client._immune_ips = {"172.17.0.2"}
+
+    with pytest.raises(WriteGuardViolation) as exc:
+        await client.add_to_address_list(address="172.17.0.0/24", list_name="mikroman_blocked")
+    assert "supernet" in str(exc.value).lower()
+
+    # The addresses that make up the path are individually immune as before.
+    for address in ("172.17.0.1", "172.17.0.2"):
+        with pytest.raises(WriteGuardViolation):
+            await client.add_to_address_list(address=address, list_name="mikroman_blocked")
+
 def test_guard_foreign_resources():
     # Managed resource passes
     guard_foreign_resources("mikroman:managed:user_1", action="delete", resource_type="queue")

@@ -10,7 +10,7 @@ MikroMan can be deployed as a standard Docker container or hosted directly insid
 ```yaml
 services:
   mikroman:
-    image: ghcr.io/mikroman/mikroman:latest
+    image: ghcr.io/masseselsev/mikroman:latest
     container_name: mikroman
     restart: unless-stopped
     ports:
@@ -56,15 +56,33 @@ Safely stops the container, saves a pre-restore backup, cleans `-wal` and `-shm`
 
 ---
 
-## 📦 Running in MikroTik RouterOS 7.4+ Container
+## 📦 Running in a MikroTik RouterOS Container (v7.13+)
 
-RouterOS 7.4+ supports running Docker containers directly on the router hardware.
+RouterOS has supported Docker-style containers since v7.13, as an optional
+package (`/system/package print where name=container`); enabling it needs a cold
+reboot. Check the package on the board rather than assuming a version.
 
 > ### ⚠️ Critical: Storage Recommendation
 > **Always run containers and store databases on external storage (USB SSD or high-endurance USB flash)**, never on internal NAND storage.
 > RouterOS internal flash has limited write endurance. Continuous database logging, metrics sampling, and rollups will cause premature wear on internal NAND flash.
+>
+> This is not hypothetical for MikroMan: the image unpacks to roughly 340 MB and
+> a hAP be³ Media reports ~470 MB of internal flash free, so the default
+> `layer-dir`/`tmpdir` can fail the pull mid-transfer even before wear enters it.
 
 ### Setup Instructions:
+
+**Preferred - from the running app.** Containers page → *Prepare this router for
+a container*. It shows a plan first (`POST /api/v1/routers/{id}/containers/setup/plan`,
+which writes nothing), then applies exactly that plan (`/setup/apply`), creating
+the storage settings, bridge, veth, gateway address, masquerade, LAN-bound web
+forward, mount and the container itself. It is idempotent, refuses to modify
+objects it did not create, refuses a subnet that overlaps an existing address, and
+`/migrate-data` carries the existing database and its `.secret_key` across (it
+refuses while the target container is running, so a live database is never
+replaced underneath its application).
+
+**Fallback - on a bare router**, where there is no working MikroMan to ask:
 1. **Enable Container Mode on RouterOS**:
    ```routeros
    /system/device-mode/update container=yes
@@ -75,5 +93,7 @@ RouterOS 7.4+ supports running Docker containers directly on the router hardware
    ```routeros
    /container/config/set registry-url=https://registry-1.docker.io tmpdir=usb1/pull ram-high=256M
    ```
+   MikroMan's own plan also sets `layer-dir`, which is the value that keeps the
+   image off internal flash, and `dns-servers` for the container's resolver.
 4. **Deploy Container**:
    Import and run [`scripts/setup_ros_container.rsc`](../scripts/setup_ros_container.rsc) pointing mounts and root directories to `usb1/`.

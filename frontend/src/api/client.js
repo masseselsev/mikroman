@@ -65,6 +65,17 @@ export const api = {
     request(`/routers/${routerId}/containers/${encodeURIComponent(containerId)}/${action}`, { method: 'POST' }),
   createContainer: (routerId, payload) =>
     request(`/routers/${routerId}/containers`, { method: 'POST', body: JSON.stringify(payload) }),
+  // Prepare the router to host a container: storage, network, mount, container.
+  // `plan` is a dry run and writes nothing, so the UI can show it first.
+  containerSetupPlan: (routerId, payload) =>
+    request(`/routers/${routerId}/containers/setup/plan`, { method: 'POST', body: JSON.stringify(payload) }),
+  containerSetupApply: (routerId, payload) =>
+    request(`/routers/${routerId}/containers/setup/apply`, { method: 'POST', body: JSON.stringify(payload) }),
+  // Snapshots the live database and uploads it with the key that decrypts it.
+  // A ~100 MB copy over the LAN takes longer than any other call here; the
+  // backend streams it and raises its own timeout, so nothing on this side does.
+  containerMigrateData: (routerId, payload) =>
+    request(`/routers/${routerId}/containers/migrate-data`, { method: 'POST', body: JSON.stringify(payload) }),
 
   // Speed test (runs in a container on the router, so it measures the ISP link
   // rather than the path from the router to this browser).

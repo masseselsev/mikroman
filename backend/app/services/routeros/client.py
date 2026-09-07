@@ -24,6 +24,7 @@ from backend.app.services.routeros.connections import ConnectionsMixin
 from backend.app.services.routeros.containers import ContainersMixin
 from backend.app.services.routeros.firewall import FirewallMixin
 from backend.app.services.routeros.firmware import FirmwareMixin
+from backend.app.services.routeros.provisioning import ProvisioningMixin
 from backend.app.services.routeros.queues import QueuesMixin
 from backend.app.services.routeros.system import SystemMixin
 from backend.app.services.routeros.transport import RouterOSTransport
@@ -41,6 +42,7 @@ class RouterOSClient(
     ConnectionsMixin,
     BackupMixin,
     FirmwareMixin,
+    ProvisioningMixin,
     RouterOSTransport,
 ):
     """Async HTTP client for the MikroTik RouterOS REST API (7.1+).
