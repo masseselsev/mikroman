@@ -227,6 +227,24 @@ def _heavy_deadline(started: float, interval: float, index: int, count: int) -> 
     return started + interval * index / count
 
 
+def _tick_due(tick: int, every: int) -> bool:
+    """Whether a job allowed to run once every ``every`` ticks runs on ``tick``.
+
+    0-based on purpose: the first pass after start-up does everything, so the
+    destinations tab and the security panel are not blank for the first minutes
+    of a device that is sitting right there reachable. ``every <= 1`` means
+    unthrottled, so a caller that wants a job back on every tick changes one
+    constant rather than removing a gate.
+
+    Counting ticks rather than watching the clock is a deliberate trade: the
+    scrape tick carries its own work (measured 17 s of 60 s), so a gated job's
+    real period drifts with how loaded the loop is. That is the behaviour wanted
+    here - the point of gating is to spend less work per unit time, and drifting
+    longer under load does that instead of fighting the machine for it.
+    """
+    return every <= 1 or tick % every == 0
+
+
 async def _sync_one_router(r, *, auto_scan_enabled: bool, heavy_due: bool, sync_failures: dict) -> None:
     """One router's slice of a background tick, in its own database session.
 
@@ -418,6 +436,17 @@ async def background_sync_worker():
 LOG_SCRAPE_INTERVAL_SECONDS = 60.0
 # ~6 hours at the interval above.
 DESTINATION_PRUNE_EVERY_TICKS = 360
+# The tick does three unrelated jobs at once, and 60 s is the right interval for
+# exactly one of them. RouterOS' log ring on a busy box turns over in minutes, so
+# copying the log out must stay per-minute. The destination history is a tab
+# built from `/ip/firewall/connection` and the DNS cache - two large reads per
+# router, the expensive half of the tick - and a per-destination view does not
+# need a minute-resolution update: every third tick keeps it current. The
+# security audit is one small request and re-alerts at most daily, so it runs
+# every fifth. Costs are recorded per sub-pass because "the tick takes 17 s" is
+# not actionable, while "14 s of that is destination sampling" is.
+DESTINATION_SAMPLE_EVERY_TICKS = 3
+SECURITY_AUDIT_EVERY_TICKS = 5
 # How long per-device event rows are kept. They used to be kept forever, and
 # this is the one table that can grow with nobody touching it: two hosts sharing
 # one MAC made discovery "change" the IP and hostname on every sweep, 35 123
@@ -484,30 +513,51 @@ async def log_scrape_worker():
                     retention_days = 14
                 retention_days = max(1, min(retention_days, 365))
 
+                # Decided once per tick, before the router loop, and on the
+                # 0-based count so the first tick after start-up populates both:
+                # the destinations tab and the security panel would otherwise
+                # read empty for up to five minutes over a device that is right
+                # there.
+                sample_destinations = _tick_due(ticks, DESTINATION_SAMPLE_EVERY_TICKS)
+                run_audit = _tick_due(ticks, SECURITY_AUDIT_EVERY_TICKS)
+
                 for r in await router_manager.get_all_active_routers(session):
+                    client = None
                     try:
                         client = await router_manager.get_client(r.id, session=session)
                         if not client:
                             continue
+                        collect_started = time.monotonic()
                         await collector.collect_logs_for_router(session, r.id, client)
                         await collector.prune_old_logs(session, r.id, retention_days=retention_days)
+                        record("log_scrape.collect", time.monotonic() - collect_started)
                     except Exception as e:
                         logger.debug(f"Log scrape failed for router {r.id}: {e}")
 
-                    # Same tick, same conntrack read cadence: fold the live
-                    # connections into the persistent per-destination history
-                    # that the "Destinations & Domains" tab reads.
-                    try:
-                        await destination_collector.sample_router(session, r.id, client)
-                    except Exception as e:
-                        logger.debug(f"Destination sample failed for router {r.id}: {e}")
+                    # Fold the live connections into the persistent
+                    # per-destination history that the "Destinations & Domains"
+                    # tab reads. Every third tick, not every one: this is the
+                    # expensive half of the pass (a conntrack read and a DNS
+                    # cache read per router), and a per-destination history does
+                    # not lose anything usable at three-minute resolution.
+                    if sample_destinations and client:
+                        try:
+                            sample_started = time.monotonic()
+                            await destination_collector.sample_router(session, r.id, client)
+                            record("log_scrape.destinations", time.monotonic() - sample_started)
+                        except Exception as e:
+                            logger.debug(f"Destination sample failed for router {r.id}: {e}")
 
                     # Raise one alert a day while any management service still
-                    # accepts connections from any source address.
-                    try:
-                        await check_and_alert(session, r.id, client)
-                    except Exception as e:
-                        logger.debug(f"Security audit failed for router {r.id}: {e}")
+                    # accepts connections from any source address. Cheap, but
+                    # pointless a minute apart when its own cooldown is a day.
+                    if run_audit and client:
+                        try:
+                            audit_started = time.monotonic()
+                            await check_and_alert(session, r.id, client)
+                            record("log_scrape.audit", time.monotonic() - audit_started)
+                        except Exception as e:
+                            logger.debug(f"Security audit failed for router {r.id}: {e}")
 
                 ticks += 1
                 if ticks % DESTINATION_PRUNE_EVERY_TICKS == 0:
