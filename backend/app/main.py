@@ -495,15 +495,24 @@ async def log_scrape_worker():
                     # recorded on installed systems stay, and they are the rows
                     # every device page and analytics read pays for.
                     try:
-                        from backend.app.services.device_manager import prune_device_history
+                        from backend.app.services.device_manager import (
+                            cap_device_history,
+                            prune_device_history,
+                        )
 
                         removed = await prune_device_history(
                             session, retention_days=DEVICE_HISTORY_RETENTION_DAYS
                         )
+                        # Age alone would not shrink an installed database: the
+                        # churn rows are days old, so a 90-day rule leaves them
+                        # until spring. This is the pass that actually reclaims
+                        # them, and the guard against a future writer bug.
+                        removed += await cap_device_history(session)
                         if removed:
                             logger.info(
-                                f"Pruned {removed} device history row(s) older than "
-                                f"{DEVICE_HISTORY_RETENTION_DAYS} days"
+                                f"Trimmed {removed} device history row(s) "
+                                f"(older than {DEVICE_HISTORY_RETENTION_DAYS} days, or beyond the "
+                                f"newest per-device window)"
                             )
                     except Exception as e:
                         logger.debug(f"Device history prune failed: {e}")

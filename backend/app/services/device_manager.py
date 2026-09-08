@@ -5,7 +5,7 @@ from typing import Dict, List, Optional, Tuple
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import noload
 
 from backend.app.core.tunables import alert_new_device_enabled
 from backend.app.db.models import (
@@ -73,6 +73,64 @@ async def prune_device_history(session: AsyncSession, retention_days: int = 90) 
     return await delete_older_than(
         session, DeviceHistory.__table__, cutoff, column="created_at"
     )
+
+
+#: Events kept per device when trimming by count. The device history is shown as
+#: a timeline of what happened to *this* machine, and 35 123 rows of one host
+#: alternating its IP is not a timeline — it is one event recorded 17 561 times.
+#: 200 is enough to hold every real change of a decade-old entry.
+HISTORY_KEEP_PER_DEVICE = 200
+
+
+async def cap_device_history(session: AsyncSession, keep: int = HISTORY_KEEP_PER_DEVICE) -> int:
+    """Trim each device's event log to its newest `keep` rows.
+
+    Age retention alone was not enough: the duplicated-MAC rows were six days
+    old, so a 90-day rule leaves every one of them sitting there until spring,
+    still loaded by any path that does consult history. This is the pass that
+    actually shrinks the table on an installed system, and it is what stops a
+    future writer bug from growing it without bound again.
+
+    Batches per device rather than one global delete: the boundary is a
+    per-device offset, and deleting "everything except the newest N of each" as
+    one statement would mean a subquery SQLite runs for every row.
+    """
+    from sqlalchemy import func as sa_func
+
+    from backend.app.db.prune import delete_matching_batches
+
+    over = (
+        await session.execute(
+            select(DeviceHistory.device_id, sa_func.count(DeviceHistory.id).label("n"))
+            .group_by(DeviceHistory.device_id)
+            .having(sa_func.count(DeviceHistory.id) > keep)
+        )
+    ).all()
+
+    deleted = 0
+    for device_id, _count in over:
+        # The id of the newest row that is still *outside* the kept window: the
+        # `keep`-th newest (offset is 0-based, so keep - 1), and everything below
+        # it goes. Ids ascend with time and `id` is the primary key, so the
+        # delete is a keyed range scan rather than a sort.
+        boundary = (
+            await session.execute(
+                select(DeviceHistory.id)
+                .where(DeviceHistory.device_id == device_id)
+                .order_by(DeviceHistory.id.desc())
+                .offset(max(keep - 1, 0))
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if boundary is None:
+            continue
+        deleted += await delete_matching_batches(
+            session,
+            DeviceHistory.__table__,
+            (DeviceHistory.device_id == device_id) & (DeviceHistory.id < boundary),
+            DeviceHistory.id.asc(),
+        )
+    return deleted
 
 
 def lookup_vendor(mac: str) -> str:
@@ -386,8 +444,14 @@ class DeviceManager(DeviceConsolidationMixin):
         # question cannot be answered from a set being filled in as we go.
         present_macs = collect_present_macs(leases, arps, wifis)
 
-        # Query existing devices in DB for this router (or unassigned router_id) with history preloaded
-        query = select(Device).options(selectinload(Device.history))
+        # Existing devices for this router (or unassigned), WITHOUT their event
+        # log. `Device.history` is eager by relationship, so this query used to
+        # materialise every event of every device once per sweep - on the live
+        # database 35 123 rows for one device, ~50 MB of ORM objects churned and
+        # dropped every minute, which is where the container's resident set came
+        # from. Nothing below reads `.history`; the paths that do
+        # (`_adopt_rotation`, consolidation) selectinload it themselves.
+        query = select(Device).options(noload(Device.history))
         if self.router_id is not None:
             query = query.where((Device.router_id == self.router_id) | (Device.router_id.is_(None)))
         existing_devices = (await session.execute(query)).scalars().all()

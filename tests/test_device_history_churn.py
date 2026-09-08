@@ -169,3 +169,56 @@ async def test_the_prune_is_bounded_per_transaction():
     )
     assert all(" IN " in s for s in statements), "each delete must bound its own batch"
     await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_the_per_device_cap_reclaims_rows_a_get_only_would_miss():
+    """Age retention cannot fix this table: the churn rows are six days old.
+
+    A 90-day rule leaves 35 123 rows in place until March, still loaded by every
+    path that consults history. The cap is the pass that actually shrinks an
+    installed database, so it keeps the newest events per device and drops the
+    rest — without touching a second device's timeline.
+    """
+    from backend.app.services.device_manager import cap_device_history
+
+    engine, factory = await _db()
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    async with factory() as session:
+        router = Router(name="R", host="127.0.0.1", is_active=True, is_default=True)
+        session.add(router)
+        await session.flush()
+        noisy = Device(mac_address=TWO_HOSTS_ONE_MAC, router_id=router.id, is_active=True)
+        quiet = Device(mac_address=OTHER, router_id=router.id, is_active=True)
+        session.add_all([noisy, quiet])
+        await session.flush()
+        # 900 rows on one device (the churn), 3 on the other (a real timeline).
+        session.add_all([
+            DeviceHistory(device_id=noisy.id, mac_address=TWO_HOSTS_ONE_MAC,
+                          event_type="ip_changed", details=f"c{i}", created_at=now)
+            for i in range(900)
+        ])
+        session.add_all([
+            DeviceHistory(device_id=quiet.id, mac_address=OTHER,
+                          event_type="discovered", details=f"d{i}", created_at=now)
+            for i in range(3)
+        ])
+        await session.commit()
+
+        removed = await cap_device_history(session, keep=200)
+        kept_noisy = (await session.execute(
+            select(func.count(DeviceHistory.id)).where(DeviceHistory.device_id == noisy.id)
+        )).scalar()
+        kept_quiet = (await session.execute(
+            select(func.count(DeviceHistory.id)).where(DeviceHistory.device_id == quiet.id)
+        )).scalar()
+        newest = (await session.execute(
+            select(DeviceHistory.details).where(DeviceHistory.device_id == noisy.id)
+            .order_by(DeviceHistory.id.desc()).limit(1)
+        )).scalar_one()
+
+    assert removed == 700
+    assert kept_noisy == 200, "the newest window is kept"
+    assert kept_quiet == 3, "a device under the cap is not trimmed"
+    assert newest == "c899", "what is kept must be the newest rows, not any 200"
+    await engine.dispose()
