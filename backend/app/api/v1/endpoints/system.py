@@ -172,6 +172,19 @@ async def get_alerts(limit: int = 50, db: AsyncSession = Depends(get_db)):
     return APIResponse(data=[AlertLogDTO.model_validate(a) for a in alerts])
 
 
+#: Placeholder standing in for a stored secret in `GET /settings`.
+#:
+#: The API carries no session identity, so anything readable here is readable by
+#: whoever can reach the port - which on a router container means anything on the
+#: LAN. A Telegram bot token is a full credential: possession is authorization to
+#: act as the bot. The settings form only ever needs to know *that* a token is
+#: set, and `POST /settings` treats this exact string as "leave the stored value
+#: alone", so the form round-trips without destroying the real token.
+SECRET_PLACEHOLDER = "********"
+#: Setting keys whose value is a credential rather than configuration.
+SECRET_SETTING_KEYS = ("telegram_bot_token",)
+
+
 @router.get("/settings", response_model=APIResponse[Dict[str, str]])
 async def get_settings(
     router_id: Optional[int] = Query(None),
@@ -248,6 +261,10 @@ async def get_settings(
     if "monitored_wan_interfaces" not in data:
         data["monitored_wan_interfaces"] = ""
 
+    for key in SECRET_SETTING_KEYS:
+        if data.get(key):
+            data[key] = SECRET_PLACEHOLDER
+
     return APIResponse(data=data)
 
 
@@ -258,6 +275,16 @@ async def save_settings(
     db: AsyncSession = Depends(get_db)
 ):
     """Save application settings."""
+    # A masked value arriving back is the form round-tripping what GET handed it,
+    # not an operator typing a new credential. Storing it would replace a working
+    # bot token with asterisks, and handing it to the reconfigure call below would
+    # stop the bot. Dropped here rather than at each use, so no consumer has to
+    # remember the rule.
+    payload = {
+        k: v for k, v in payload.items()
+        if not (k in SECRET_SETTING_KEYS and v == SECRET_PLACEHOLDER)
+    }
+
     eff_router_id = router_id
     if eff_router_id is None:
         active_r = await router_manager.get_active_router(db)

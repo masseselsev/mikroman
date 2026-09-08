@@ -29,6 +29,7 @@
   * Instant context switching in UI and WebSocket telemetry.
   * Seamless hardware swap workflow (`Change Router`) with data retention choices (`keep` vs `reset_hardware`).
   * Soft archive vs permanent purge router lifecycles.
+  * Stored credentials never cross the API read path: `GET /api/v1/system/settings` answers `********` for the Telegram bot token, and a settings form that posts that value straight back is understood to mean "unchanged" rather than overwriting the token. The settings form labels the field as hidden so eight bullets in a password box cannot be mistaken for a real credential.
   * Automated TLS/SSL certificate generation directly on RouterOS without modifying custom service ports.
 
 * **🗂️ Config-Drift Backups & Visual Diff Viewer**:
@@ -49,6 +50,7 @@
   * In-memory offline GeoIP engine resolving destination countries without external API dependencies.
   * Centralized terminal log viewer with regex event classification (auth, interface, DHCP, wireless, firewall, system).
   * 1-click RouterOS `/system/logging` topic management.
+  * The log scraper copies the ring every minute — nothing older survives that long on a busy box — while the work it used to share the tick with runs on its own schedule: destination history every three minutes, management-port audit every five. Each sub-pass is timed separately and shows up in `/api/v1/system/diagnostics`, so the cost of a 17-second tick is attributable instead of guessed.
 
 * **📈 Peak-Preserving Hardware & Bandwidth Graphs**:
   * Router Health tab charts interface RX/TX, CPU load, RAM and board temperature/voltage over 1 h / 6 h / 24 h / 7 d / 30 d ranges.
