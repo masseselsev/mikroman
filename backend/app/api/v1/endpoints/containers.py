@@ -6,27 +6,32 @@ the state, and the frontend renders a banner. The action endpoints do return a
 clear error when the feature is unavailable, since there is nothing to act on.
 """
 import logging
+from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.db.session import get_db
 from backend.app.schemas.common import APIResponse
 from backend.app.schemas.container import (
     ContainerCreateRequest,
-    ContainerMigrateRequest,
-    ContainerMigrateResultDTO,
+    ContainerFormatRequest,
+    ContainerFormatResultDTO,
     ContainerOverviewDTO,
     ContainerSetupPlanDTO,
     ContainerSetupRequest,
+    ContainerStorageDTO,
 )
 from backend.app.services.container_manager import ContainerManager
 from backend.app.services.container_setup import (
     ContainerSetupService,
-    DataMigrationError,
-    migrate_data,
+    StorageFormatError,
+    format_storage,
+    read_storage,
 )
 from backend.app.services.router_manager import router_manager
+from backend.app.services.routeros.provisioning import RouterOSCommandError
+from backend.app.utils_format import format_bytes_human
 
 logger = logging.getLogger("mikroman.containers")
 
@@ -92,35 +97,57 @@ async def setup_apply(
     return APIResponse(data=plan, message=f"Setup applied ({sum(1 for s in plan.steps if s.applied)} changes written)")
 
 
-@router.post("/migrate-data", response_model=APIResponse[ContainerMigrateResultDTO])
-async def migrate_data_here(
-    router_id: int, payload: ContainerMigrateRequest, db: AsyncSession = Depends(get_db)
+@router.get("/storage", response_model=APIResponse[ContainerStorageDTO])
+async def storage_inventory(
+    router_id: int,
+    storage_dir: Optional[str] = Query(
+        None, description="Also judge this slot; omit to get only what the router has"
+    ),
+    db: AsyncSession = Depends(get_db),
 ):
-    """Stage this installation's database and secret key for the container's mount.
+    """The router's disks and partitions, and whether a chosen one can host containers.
 
-    Run this while the container is created but not started. The snapshot comes
-    from the live database through SQLite's backup API, so polling keeps working
-    during the copy. RouterOS has no upload endpoint for a binary this size, so
-    the response lists the two files to copy and where they go; afterwards start
-    the container and stop this instance.
+    The page reads this before the operator types anything: a picker built from
+    ``/disk`` cannot offer a device that is unmounted, read-only or too small,
+    whereas a free-text path can - and the pull fails minutes later with a
+    message from the registry.
     """
     mgr = await _manager(router_id, db)
+    data = await read_storage(mgr.client, storage_dir)
+    if data.ready:
+        message = f"{data.matched_slot}: {data.fs}, {format_bytes_human(data.free_bytes or 0)} free"
+    elif data.problems:
+        message = data.problems[0]
+    else:
+        message = "no storage chosen yet"
+    return APIResponse(data=data, message=message)
+
+
+@router.post("/storage/format", response_model=APIResponse[ContainerFormatResultDTO])
+async def storage_format(
+    router_id: int, payload: ContainerFormatRequest, db: AsyncSession = Depends(get_db)
+):
+    """Format a disk or partition for container use. **Destroys everything on it.**
+
+    Guarded in the service, not here: the slot name has to be repeated in
+    ``confirm``, the device has to exist in ``/disk``, the filesystem has to be
+    one RouterOS formats, and the target must hold no container state - which
+    includes the storage this very instance is running from.
+    """
+    mgr = await _manager(router_id, db)
+    support = await mgr._probe_support()
+    if support.status != "ready":
+        raise HTTPException(status_code=409, detail=support.message or "Containers are not available on this router")
     try:
-        result = await migrate_data(
-            mgr.client,
-            storage_dir=payload.storage_dir,
-            data_dir_name=payload.data_dir_name,
-            container_name=payload.container_name,
-        )
-    except DataMigrationError as e:
+        result = await format_storage(mgr.client, payload)
+    except StorageFormatError as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
+    except RouterOSCommandError as e:
+        raise HTTPException(status_code=502, detail=f"The router refused the format: {e.detail}") from e
     except Exception as e:
-        logger.warning(f"Data migration to router {router_id} failed: {e}")
-        raise HTTPException(status_code=502, detail=f"Migration failed: {e}") from e
-    return APIResponse(
-        data=result,
-        message=f"{result['database_bytes']} bytes staged; {len(result['next_steps'])} steps left",
-    )
+        logger.warning(f"Storage format failed for router {router_id}: {e}")
+        raise HTTPException(status_code=502, detail=f"Format failed: {e}") from e
+    return APIResponse(data=result, message=result["detail"])
 
 
 @router.post("/{container_id}/{action}", response_model=APIResponse[bool])

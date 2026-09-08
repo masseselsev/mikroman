@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from datetime import datetime, timezone
 
@@ -21,6 +22,23 @@ from backend.app.services.changelog import changelog_service
 from backend.app.services.router_manager import router_manager
 
 logger = logging.getLogger("mikroman.api.firmware")
+
+
+async def _wait_for_router_online(router_id: int, timeout_seconds: int = 300, poll_interval: float = 5.0) -> bool:
+    """Wait for router to come back online after reboot.
+
+    Polls /system/resource until successful or timeout. Returns True if router
+    responded, False if timeout exceeded.
+    """
+    deadline = asyncio.get_event_loop().time() + timeout_seconds
+    while asyncio.get_event_loop().time() < deadline:
+        try:
+            client = await router_manager.get_client(router_id)
+            await client.get_system_resource()
+            return True
+        except Exception:
+            await asyncio.sleep(poll_interval)
+    return False
 router = APIRouter()
 
 
@@ -131,19 +149,43 @@ async def execute_router_upgrade(
             detail=f"Pre-upgrade disaster recovery backup failed ({e}). Upgrade aborted for safety.",
         )
 
-    # Gate 4: RouterBOOT staging
-    if payload.stage_bootloader:
-        rb = await client.get_routerboard_status()
-        if rb.get("firmware_available"):
-            await client.upgrade_routerboard_firmware()
-
-    # Gate 5: Dispatch package install
+    # Gate 4: Dispatch package install (triggers reboot)
+    # Package update must come first - bootloader firmware is bundled with it
     await client.install_package_update()
+
+    # Gate 5: Wait for router to come back online after package update reboot
+    bootloader_upgraded = False
+    if payload.stage_bootloader:
+        logger.info(f"Waiting for router {router_id} to come back online after package update...")
+        online = await _wait_for_router_online(router_id, timeout_seconds=300, poll_interval=5.0)
+
+        if online:
+            # Refresh client after reboot
+            client = await router_manager.get_client(router_id)
+
+            # Check if bootloader firmware is now available
+            rb = await client.get_routerboard_status()
+            if rb.get("firmware_available"):
+                logger.info(f"Upgrading RouterBOOT firmware on router {router_id}")
+                await client.upgrade_routerboard_firmware()
+                bootloader_upgraded = True
+            else:
+                logger.info(f"No bootloader firmware available on router {router_id}")
+        else:
+            logger.error(f"Router {router_id} did not come back online within timeout after package update")
+
+    status_msg = "Upgrade initiated. Router is rebooting."
+    if bootloader_upgraded:
+        status_msg = "Package and bootloader upgrade complete. Router is rebooting."
+    elif payload.stage_bootloader and not bootloader_upgraded:
+        status_msg = "Package update complete. Bootloader firmware not available."
+
     return {
         "status": "rebooting",
         "backup_id": backup.id,
         "target_version": latest,
-        "message": f"Upgrade initiated. Router {r.name} is rebooting into v{latest}.",
+        "bootloader_upgraded": bootloader_upgraded,
+        "message": status_msg,
     }
 
 

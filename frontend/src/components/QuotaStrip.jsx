@@ -133,7 +133,11 @@ export function QuotaStrip({ activeRouterId, onOpenSettings, refreshKey }) {
           {projPct > 0 ? (
             <div
               className="quota-strip-projection"
-              style={{ left: `${Math.min(100, Math.max(0, projPct))}%` }}
+              style={{
+                width: `${Math.min(100, Math.max(0, projPct))}%`,
+                color: accent,
+                '--proj-color': accent,
+              }}
               title={`${t('quota_projected')} ${projPct}%`}
             />
           ) : null}

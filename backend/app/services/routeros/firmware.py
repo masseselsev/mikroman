@@ -66,10 +66,21 @@ class FirmwareMixin:
         return await self.check_for_package_updates()
 
     async def install_package_update(self) -> None:
-        """Download packages and initiate reboot."""
+        """Download packages and initiate reboot.
+
+        The router begins rebooting immediately upon receiving this command,
+        so the connection is typically dropped before a response arrives.
+        A timeout or connection error here is expected and treated as success -
+        the command was received and the reboot is in progress.
+        """
+        import httpx
         async with self._get_client() as client:
-            resp = await client.post("/system/package/update/install", json={})
-            resp.raise_for_status()
+            try:
+                resp = await client.post("/system/package/update/install", json={})
+                resp.raise_for_status()
+            except (httpx.ReadTimeout, httpx.ConnectError, httpx.RemoteProtocolError) as e:
+                # Expected: router reboots immediately, dropping the connection
+                logger.info(f"Package install initiated, connection dropped as expected: {type(e).__name__}")
 
     async def get_routerboard_status(self) -> Dict[str, Any]:
         """Fetch RouterBOOT firmware information from /system/routerboard."""
@@ -104,7 +115,17 @@ class FirmwareMixin:
         }
 
     async def upgrade_routerboard_firmware(self) -> None:
-        """Trigger RouterBOOT bootloader flash upgrade."""
+        """Trigger RouterBOOT bootloader flash upgrade.
+
+        The router begins rebooting immediately upon receiving this command,
+        so the connection is typically dropped before a response arrives.
+        A timeout or connection error here is expected and treated as success.
+        """
+        import httpx
         async with self._get_client() as client:
-            resp = await client.post("/system/routerboard/upgrade", json={})
-            resp.raise_for_status()
+            try:
+                resp = await client.post("/system/routerboard/upgrade", json={})
+                resp.raise_for_status()
+            except (httpx.ReadTimeout, httpx.ConnectError, httpx.RemoteProtocolError) as e:
+                # Expected: router reboots immediately, dropping the connection
+                logger.info(f"RouterBOOT upgrade initiated, connection dropped as expected: {type(e).__name__}")

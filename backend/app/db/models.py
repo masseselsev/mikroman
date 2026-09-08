@@ -9,6 +9,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -180,6 +181,14 @@ class DeviceHistory(Base):
 
     device: Mapped["Device"] = relationship("Device", back_populates="history")
 
+    # The history a device page asks for is "the newest events", which is an
+    # ordered read on (device_id, created_at). With only the two single-column
+    # indexes, SQLite fetches by device and then sorts every row of it - and one
+    # flapping device on the live database has 35 123 rows.
+    __table_args__ = (
+        Index("ix_device_history_device_time", "device_id", "created_at"),
+    )
+
 
 class DeviceCoexistence(Base):
     """Two private MAC addresses seen active on the router in the same sweep.
@@ -225,6 +234,14 @@ class TrafficRollup(Base):
     bytes_in: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)   # Download
     bytes_out: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)  # Upload
 
+    # One index for the shape every aggregate actually asks for: a user (or a
+    # set of users) and a date range. With the two single-column indexes SQLite
+    # picks one, walks it, and sorts the rest in a temporary B-tree; measured on
+    # a copy of the live database, the composite turns that into a range scan.
+    __table_args__ = (
+        Index("ix_traffic_rollups_user_date", "user_id", "record_date"),
+    )
+
     user: Mapped["User"] = relationship("User", back_populates="traffic_rollups")
 
 
@@ -236,6 +253,10 @@ class DeviceTrafficRollup(Base):
     record_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
     bytes_in: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)   # Download
     bytes_out: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)  # Upload
+
+    __table_args__ = (
+        Index("ix_device_rollups_device_date", "device_id", "record_date"),
+    )
 
     device: Mapped["Device"] = relationship("Device", back_populates="traffic_rollups")
 
@@ -325,6 +346,10 @@ class RouterTrafficRollup(Base):
     record_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
     bytes_in: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)   # Download
     bytes_out: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)  # Upload
+
+    __table_args__ = (
+        Index("ix_router_rollups_router_date", "router_id", "record_date"),
+    )
 
 
 class InterfaceTrafficRollup(Base):
@@ -449,6 +474,16 @@ class SystemMetric(Base):
     voltage: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     timestamp: Mapped[datetime] = mapped_column(DateTime, default=func.now(), nullable=False, index=True)
 
+    # Every chart query is "this router, this window, bucketed by time". With
+    # separate indexes on router_id and timestamp the planner picked the router
+    # one and walked 296 403 entries to answer a one-hour question (EXPLAIN
+    # output, live database) - 232 ms on a desktop, and the same statement runs
+    # inside the background rollup pass every tick. The composite turns it into
+    # a range scan of the 6 778 rows that are actually in the window.
+    __table_args__ = (
+        Index("ix_system_metrics_router_time", "router_id", "timestamp"),
+    )
+
 
 class InterfaceMetric(Base):
     __tablename__ = "interface_metrics"
@@ -461,6 +496,15 @@ class InterfaceMetric(Base):
     rx_bytes_total: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
     tx_bytes_total: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
     timestamp: Mapped[datetime] = mapped_column(DateTime, default=func.now(), nullable=False, index=True)
+
+    # The largest table in the database (691 142 rows on the live install), read
+    # on every chart request and on every background rollup pass. Same reasoning
+    # as :class:`SystemMetric`, plus one more shape: the per-interface breakdown
+    # filters by name and time together.
+    __table_args__ = (
+        Index("ix_interface_metrics_router_time", "router_id", "timestamp"),
+        Index("ix_interface_metrics_name_time", "interface_name", "timestamp"),
+    )
 
 
 class RouterBackup(Base):

@@ -10,6 +10,7 @@ import {
   Search,
   ArrowRight,
   Terminal,
+  Minimize2,
 } from 'lucide-react';
 import { api } from '../api/client';
 import { useI18n } from '../context/I18nContext';
@@ -50,6 +51,9 @@ export default function RouterFirmwareModal({
   const [bootloaderConfirmName, setBootloaderConfirmName] = useState('');
   const [bootloaderUpgrading, setBootloaderUpgrading] = useState(false);
   const [showBootloaderPrompt, setShowBootloaderPrompt] = useState(false);
+
+  // Minimized state for background operation
+  const [minimized, setMinimized] = useState(false);
 
   const pollIntervalRef = useRef(null);
 
@@ -248,8 +252,42 @@ export default function RouterFirmwareModal({
   const isNameConfirmed = confirmName.trim() === (routerName || '').trim();
   const isBootloaderNameConfirmed = bootloaderConfirmName.trim() === (routerName || '').trim();
 
+  // Floating panel for background operation
+  if (minimized && rebootStage !== 'idle') {
+    return (
+      <div
+        onClick={() => setMinimized(false)}
+        style={{
+          position: 'fixed',
+          bottom: 20,
+          right: 20,
+          background: 'var(--bg-card)',
+          border: '1px solid var(--border-color)',
+          borderRadius: 'var(--radius-md)',
+          padding: '10px 14px',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 10,
+          cursor: 'pointer',
+          zIndex: 2000,
+          boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
+          fontSize: 'var(--fs-xs)',
+        }}
+      >
+        {rebootStage === 'online' ? (
+          <CheckCircle2 size={16} style={{ color: 'var(--color-success)' }} />
+        ) : (
+          <RefreshCw size={16} className="spin" style={{ color: 'var(--color-primary)' }} />
+        )}
+        <span style={{ fontWeight: 600 }}>
+          {rebootStage === 'online' ? t('router_back_online') : rebootMsg || t('reboot_in_progress_title')}
+        </span>
+      </div>
+    );
+  }
+
   return (
-    <div className="modal-backdrop" onClick={rebootStage === 'idle' ? onClose : undefined}>
+    <div className="modal-backdrop" onClick={onClose}>
       <div
         className="modal-card"
         onClick={e => e.stopPropagation()}
@@ -276,10 +314,20 @@ export default function RouterFirmwareModal({
               <RefreshCw size={13} className={refreshing ? 'spin' : ''} />
               {t('check_for_updates')}
             </button>
+            {rebootStage !== 'idle' && rebootStage !== 'online' && (
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                onClick={() => setMinimized(true)}
+                style={{ display: 'flex', alignItems: 'center', gap: 5 }}
+                title={t('minimize_to_background') || 'Minimize to background'}
+              >
+                <Minimize2 size={13} />
+              </button>
+            )}
             <button
               className="btn-icon"
               onClick={onClose}
-              disabled={rebootStage !== 'idle' && rebootStage !== 'online'}
               aria-label={t('log_close')}
             >
               <X size={16} />

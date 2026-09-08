@@ -528,8 +528,7 @@ export function TelemetryBar({ router, activeRouter, interfaces = [], onNavigate
         <Tile
           icon={<Globe size={15} />}
           tone="var(--text-secondary)"
-          // No label: the globe icon already says what this row is, and
-          // "WAN IP" was the single tightest-fitting piece of text in the bar.
+          label="IP"
           value={router.wan_ip || '—'}
           valueSize="var(--fs-sm)"
           title={router.isp

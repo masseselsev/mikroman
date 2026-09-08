@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from backend.app.core.tunables import alert_new_device_enabled
 from backend.app.db.models import (
     AlertLog,
     AppSetting,
@@ -440,13 +441,17 @@ class DeviceManager(DeviceConsolidationMixin):
                 newly_discovered.append(device)
                 db_devices[mac] = device
 
-                # Create alert log entry for new device
-                alert = AlertLog(
-                    router_id=self.router_id,
-                    alert_type="new_device",
-                    message=f"New device discovered: {device.hostname or 'Unknown'} ({device.mac_address}) at {device.ip_address} [Vendor: {vendor}]"
-                )
-                session.add(alert)
+                # Create alert log entry for new device. Gated by the setting the
+                # dialog has always shown: an inbox that announces every phone
+                # rejoining the network is how an operator ends up ignoring all of
+                # them, including the one that matters.
+                if await alert_new_device_enabled(session):
+                    alert = AlertLog(
+                        router_id=self.router_id,
+                        alert_type="new_device",
+                        message=f"New device discovered: {device.hostname or 'Unknown'} ({device.mac_address}) at {device.ip_address} [Vendor: {vendor}]"
+                    )
+                    session.add(alert)
 
         # Process ARP entries for static devices or existing devices without active DHCP leases
         for arp in arps:

@@ -15,6 +15,11 @@ from backend.app.api.v1.router import api_v1_router
 from backend.app.core.config import settings
 from backend.app.core.diagnostics import record
 from backend.app.core.logging_config import configure_logging, log_file_error, log_file_path
+from backend.app.core.tunables import (
+    alert_new_device_enabled,
+    heavy_sync_interval_seconds,
+    poll_interval_seconds,
+)
 from backend.app.db.session import AsyncSessionLocal, encrypt_legacy_secrets, init_db
 from backend.app.services.backup_scheduler import backup_scheduler
 from backend.app.services.device_manager import DeviceManager
@@ -282,10 +287,11 @@ async def _sync_one_router(r, *, auto_scan_enabled: bool, heavy_due: bool, sync_
                 # `/system/resource` traffic on its own.
                 try:
                     from backend.app.services.metrics_collector import metrics_collector
-                    await metrics_collector.collect_and_store(
+                    hardware_alerts = await metrics_collector.collect_and_store(
                         session, r.id, client, resource=router_resource
                     )
                 except Exception as me:
+                    hardware_alerts = []
                     logger.debug(f"Metrics collection tick error for router {r.id}: {me}")
                 record("sync.telemetry", time.monotonic() - telemetry_started)
 
@@ -305,7 +311,7 @@ async def _sync_one_router(r, *, auto_scan_enabled: bool, heavy_due: bool, sync_
                     except Exception:
                         pass
 
-                    if telegram_service:
+                    if telegram_service and await alert_new_device_enabled(session):
                         for dev in new_devices:
                             msg = (
                                 f"🔔 <b>New Device Discovered on {r.name}!</b>\n"
@@ -315,6 +321,15 @@ async def _sync_one_router(r, *, auto_scan_enabled: bool, heavy_due: bool, sync_
                                 f"• Vendor: <code>{dev.vendor or 'Unknown'}</code>"
                             )
                             await telegram_service.send_alert_to_admins(msg, parse_mode="HTML")
+
+                # The collector stored the alert row; the bot is the caller's
+                # business, because importing it here would make a leaf module
+                # depend on the application.
+                if hardware_alerts and telegram_service:
+                    for alert in hardware_alerts:
+                        await telegram_service.send_alert_to_admins(
+                            f"⚠️ <b>{r.name}</b>: {alert['message']}", parse_mode="HTML"
+                        )
         except Exception as e:
             failed = True
             text = f"{type(e).__name__}: {e}"
@@ -360,21 +375,27 @@ async def background_sync_worker():
     await _backfill_interface_rollups_once()
     while True:
         started = time.monotonic()
+        # Seeded with the environment value so a failure inside the tick below
+        # still leaves a sane sleep interval: an unbound name here would raise
+        # out of the worker and stop background collection entirely.
+        poll_every = float(settings.POLL_INTERVAL_SECONDS)
         try:
             async with AsyncSessionLocal() as session:
                 from backend.app.db.models import AppSetting
                 auto_scan_sett = await session.get(AppSetting, "auto_scan_enabled")
                 is_auto_scan_enabled = (auto_scan_sett.value.lower() != "false") if auto_scan_sett else True
+                # Re-read both clocks every tick: the Settings dialog is the place
+                # an operator adjusts load, and a change that needs a restart to
+                # take effect is indistinguishable from one that was ignored.
+                poll_every = await poll_interval_seconds(session)
+                heavy_every = await heavy_sync_interval_seconds(session)
                 active_routers = await router_manager.get_all_active_routers(session)
 
             passes = []
             for index, r in enumerate(active_routers):
                 not_before = last_heavy.get(
                     r.id,
-                    _heavy_deadline(
-                        started, settings.HEAVY_SYNC_INTERVAL_SECONDS,
-                        index, len(active_routers),
-                    ),
+                    _heavy_deadline(started, heavy_every, index, len(active_routers)),
                 )
                 heavy_due = started >= not_before
                 if heavy_due:
@@ -391,7 +412,7 @@ async def background_sync_worker():
         except Exception as e:
             logger.debug(f"Background sync tick error: {e}")
 
-        await asyncio.sleep(settings.POLL_INTERVAL_SECONDS)
+        await asyncio.sleep(poll_every)
 
 
 LOG_SCRAPE_INTERVAL_SECONDS = 60.0

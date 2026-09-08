@@ -71,11 +71,14 @@ export const api = {
     request(`/routers/${routerId}/containers/setup/plan`, { method: 'POST', body: JSON.stringify(payload) }),
   containerSetupApply: (routerId, payload) =>
     request(`/routers/${routerId}/containers/setup/apply`, { method: 'POST', body: JSON.stringify(payload) }),
-  // Snapshots the live database and uploads it with the key that decrypts it.
-  // A ~100 MB copy over the LAN takes longer than any other call here; the
-  // backend streams it and raises its own timeout, so nothing on this side does.
-  containerMigrateData: (routerId, payload) =>
-    request(`/routers/${routerId}/containers/migrate-data`, { method: 'POST', body: JSON.stringify(payload) }),
+  // Storage inventory from /disk, optionally judged against one slot. The picker
+  // is built from this so an unmounted or read-only device cannot be chosen.
+  containerStorage: (routerId, storageDir = null) =>
+    request(`/routers/${routerId}/containers/storage${storageDir ? `?storage_dir=${encodeURIComponent(storageDir)}` : ''}`),
+  // Destructive: the backend refuses unless `confirm` repeats the slot exactly
+  // and the device holds no container state.
+  containerFormat: (routerId, payload) =>
+    request(`/routers/${routerId}/containers/storage/format`, { method: 'POST', body: JSON.stringify(payload) }),
 
   // Speed test (runs in a container on the router, so it measures the ISP link
   // rather than the path from the router to this browser).
@@ -171,12 +174,16 @@ export const api = {
     method: 'POST',
     body: JSON.stringify({ is_paused: isPaused })
   }),
-  getTrafficAnalytics: ({ preset = '7d', startDate = null, endDate = null, routerId = null } = {}) => {
+  // `signal` lets a view cancel the request it replaced. This endpoint walks the
+  // rollup tables for the whole range, so on a router-hosted backend an
+  // abandoned preset click can still be running when the next one lands - and
+  // without a signal the older response is free to arrive last.
+  getTrafficAnalytics: ({ preset = '7d', startDate = null, endDate = null, routerId = null, signal = null } = {}) => {
     let url = `/analytics/traffic?preset=${preset}`;
     if (startDate) url += `&start_date=${startDate}`;
     if (endDate) url += `&end_date=${endDate}`;
     if (routerId) url += `&router_id=${routerId}`;
-    return request(url);
+    return request(url, signal ? { signal } : {});
   },
   getBillingCycleConfig: (routerId = null) => request(`/analytics/billing-cycle${routerId ? `?router_id=${routerId}` : ''}`),
   saveBillingCycleConfig: (anchorDay, anchorHour = 0, anchorMinute = 0, routerId = null) => request(`/analytics/billing-cycle${routerId ? `?router_id=${routerId}` : ''}`, {

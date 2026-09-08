@@ -1109,7 +1109,7 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
   align-items: center;
   gap: 8px;
   min-width: 0;
-  padding-left: 15px; /* clears the status dot + icon, so it aligns under the name */
+  padding-left: 13px; /* aligns IP under the device icon (status dot 7px + gap 6px) */
   font-size: var(--fs-2xs);
   color: var(--text-muted);
 }
@@ -1348,9 +1348,10 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
    footer - one class for both so they stay visually consistent (same size,
    same colour). */
 .brand-subtitle {
-  font-size: var(--fs-3xs);
+  font-size: 9px;
   color: var(--text-muted);
   white-space: nowrap;
+  line-height: 1.1;
 }
 
 /* Header-only tagline placement.
@@ -1361,22 +1362,17 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
    language.
    It is sized `max-content` rather than pinned to the title's right edge.
    Pinning clipped it: "MikroMan" at 20px bold measures about 90px and
-   "RouterOS Companion" at 10px about 94px, so the tagline lost its last word
-   to an ellipsis over a four-pixel shortfall. Allowed its natural width it
-   overhangs the app name by those few pixels and reads in full, while still
-   costing the layout nothing. */
+   "RouterOS Companion" at 9px about 85px. Sits neatly beneath the title without
+   colliding with the navbar border. */
 .brand-title-block {
   position: relative;
-  padding-bottom: 13px;
+  padding-bottom: 4px;
 }
 
 .brand-subtitle--clipped {
   position: absolute;
-  inset: 100% auto auto 0;
+  inset: auto auto 0 0;
   width: max-content;
-  /* A guard, not a layout rule: should the tagline ever be replaced with
-     something genuinely long, it clips here instead of running underneath the
-     router selector. */
   max-width: 190px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1890,7 +1886,7 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
   inset: 0 auto 0 0;
   border-radius: var(--radius-full);
   transition: width 0.4s ease, background 0.2s ease;
-  z-index: 1;
+  z-index: 2;
 }
 
 .quota-strip-notch {
@@ -1900,7 +1896,7 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
   width: 2px;
   background: rgba(255, 255, 255, 0.25);
   transform: translateX(-50%);
-  z-index: 2;
+  z-index: 3;
   transition: background 0.2s ease;
   pointer-events: none;
 }
@@ -1910,21 +1906,26 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
   box-shadow: 0 0 3px rgba(255, 255, 255, 0.8);
 }
 
-/* Projected end-of-cycle position. Drawn above the fill and the threshold
-   notches so it stays readable wherever it lands, and extended a pixel past the
-   bar top and bottom so it is legible even when it coincides with a notch. A
-   projection past 100% is pinned to the end of the bar - the bar cannot show
-   271%, and the exact figure is on the title and in the strip's own text. */
+/* Projected end-of-cycle position.
+   Rendered as a dashed bar matching the main bar's height and geometry,
+   visually continuing from current consumption up to the projected mark.
+   Dashed so the forecast is distinct from measured bytes. Layered behind
+   the solid fill (z-index: 1 vs 2) so actual usage always takes precedence. */
 .quota-strip-projection {
   position: absolute;
-  top: -1px;
-  bottom: -1px;
-  width: 0;
-  border-left: 1px dashed var(--text-primary);
-  opacity: 0.55;
-  transform: translateX(-0.5px);
-  z-index: 3;
+  inset: 0 auto 0 0;
+  border-radius: var(--radius-full);
+  z-index: 1;
   pointer-events: none;
+  opacity: 0.9;
+  background-image: repeating-linear-gradient(
+    90deg,
+    var(--proj-color, currentColor) 0,
+    var(--proj-color, currentColor) 1px,
+    transparent 1px,
+    transparent 5px
+  );
+  transition: width 0.4s ease;
 }
 
 .quota-strip-notches-labels {

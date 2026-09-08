@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useI18n } from '../context/I18nContext';
 import { api } from '../api/client';
 import { formatBytes } from '../utils/formatters';
@@ -17,6 +17,7 @@ import {
   Smartphone,
   Layers,
   Waypoints,
+  RefreshCw,
   X,
   Check,
   Activity,
@@ -84,23 +85,43 @@ export function TrafficAnalytics({ activeRouter, initialBreakdownTab = 'overview
     }
   }, []);
 
-  // Fetch traffic analytics data
+  // Fetch traffic analytics data.
+  //
+  // One controller per view, aborted by the next request: switching presets on
+  // a router-hosted backend used to queue the old read behind the new one, and
+  // whichever answer arrived last won - so the table could end up showing the
+  // range you had just clicked away from. `seq` covers the case a browser
+  // answers from cache after the abort has already been ignored.
+  const inflight = useRef(null);
+  const seq = useRef(0);
+
   const loadAnalytics = async (silent = false) => {
+    const my = ++seq.current;
+    if (inflight.current) {
+      try { inflight.current.abort(); } catch { /* nothing to abort */ }
+    }
+    const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    inflight.current = controller;
     if (!silent) setLoading(true);
     try {
       const res = await api.getTrafficAnalytics({
         preset,
         startDate: preset === 'custom' ? customStart : null,
         endDate: preset === 'custom' ? customEnd : null,
-        routerId: activeRouter?.id || null
+        routerId: activeRouter?.id || null,
+        signal: controller?.signal || null,
       });
+      if (my !== seq.current) return;      // a newer request already answered
       if (res?.data) {
         setData(res.data);
       }
     } catch (err) {
+      if (err?.name === 'AbortError' || err?.name === 'CanceledError') return;
+      if (my !== seq.current) return;
       console.error('Failed to load traffic analytics:', err);
     } finally {
-      if (!silent) setLoading(false);
+      if (my === seq.current && !silent) setLoading(false);
+      if (inflight.current === controller) inflight.current = null;
     }
   };
 
@@ -205,6 +226,18 @@ export function TrafficAnalytics({ activeRouter, initialBreakdownTab = 'overview
               <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-muted)' }}>
                 {t('analytics_subtitle')}
               </div>
+              {/* Feedback for the switch. `loading` was tracked and never shown,
+                  so a preset change left the previous range's numbers on screen
+                  with no indication that anything was happening - which is what
+                  read as "it is very slow" rather than "it is working". */}
+              {loading && (
+                <div style={{
+                  display: 'flex', alignItems: 'center', gap: 6,
+                  fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', marginTop: 4,
+                }}>
+                  <RefreshCw size={11} className="spin" /> {t('analytics_loading')}
+                </div>
+              )}
             </div>
           </div>
 

@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import noload, selectinload
 
 from backend.app.db.models import (
     AppSetting,
@@ -281,8 +282,20 @@ class AnalyticsEngine:
         # router; a row that names a *different* router must not leak in - that
         # is what put router 1's profiles into router 2's "By Users" table with
         # a row of zeros each.
-        users_query = select(User)
-        devices_query = select(Device)
+        #
+        # `Device.history` is eager by relationship, which means every device
+        # load also materialises its whole event log. That is 35 123 rows for a
+        # single flapping device on the live database, and none of it is read
+        # here: this function wants names, owners and rollup sums. Loading it
+        # cost 333 ms of the 356 ms this endpoint took on a desktop - several
+        # seconds on the ARM board it now runs on - so the collection is
+        # unloaded for the queries below and every path that does want history
+        # loads it explicitly (`devices.py:79`, `device_manager.py:303`,
+        # `device_consolidation.py:83`).
+        users_query = select(User).options(
+            selectinload(User.devices).noload(Device.history)
+        )
+        devices_query = select(Device).options(noload(Device.history))
         if router_id:
             users_query = users_query.where(
                 (User.router_id == router_id) | (User.router_id.is_(None))

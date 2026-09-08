@@ -81,11 +81,17 @@ class MetricsCollector:
     #: Wall-clock spacing between retention passes. The prune is a range delete
     #: over the two largest tables, and SQLite has one writer at a time.
     PRUNE_INTERVAL_SECONDS = 3600.0
+    #: How long a hardware alert stays armed once fired, so a board that sits
+    #: above the line is reported once per period rather than once per sample.
+    ALERT_REARM_SECONDS = 1800.0
 
     def __init__(self) -> None:
         # Last failure text per router, so a fault that repeats every tick is
         # reported once instead of once per poll. See _note_collect_failure.
         self._failures: Dict[int, str] = {}
+        # Monotonic instant of the last CPU / temperature alert per
+        # (router, kind) - see check_hardware_alerts.
+        self._hardware_alerts: Dict[tuple, float] = {}
         # Monotonic deadline for the next retention pass; 0 prunes on the first
         # tick after start, which is what catches up after the app was down.
         self._next_prune_at = 0.0
@@ -110,6 +116,61 @@ class MetricsCollector:
         if self._failures.pop(router_id, None) is not None:
             logger.info(f"Metrics collection recovered for router {router_id}")
 
+    async def check_hardware_alerts(
+        self,
+        session: AsyncSession,
+        router_id: int,
+        cpu_load: float,
+        temperature: Optional[float],
+    ) -> List[dict]:
+        """Raise one alert per crossing of the CPU / temperature line, and return them.
+
+        The thresholds were configurable for a long time without anything reading
+        them: the Settings dialog had a temperature field, the model's own comment
+        named a ``high_cpu`` alert type, and neither path ever compared a sample to
+        a limit. They are read from ``app_settings`` now (see
+        :mod:`backend.app.core.tunables`), with the environment as the fallback.
+
+        Alerts are edge-triggered and re-arm after
+        ``ALERT_REARM_SECONDS`` below the line, so a board that sits at 85 °C for
+        six hours produces one entry, not two thousand, while a temperature that
+        falls and climbs again is reported again.
+
+        The returned rows are what the caller may push to Telegram: this service
+        has no reference to the bot, and importing it would turn a leaf module
+        into a cycle.
+        """
+        from backend.app.core.tunables import alert_cpu_threshold, alert_temp_threshold_celsius
+        from backend.app.db.models import AlertLog
+
+        fired: List[dict] = []
+        cpu_limit = await alert_cpu_threshold(session)
+        temp_limit = await alert_temp_threshold_celsius(session, router_id)
+        now = time.monotonic()
+
+        checks = []
+        if cpu_load >= cpu_limit:
+            checks.append(("high_cpu", f"CPU load {cpu_load:.0f}% reached the {cpu_limit}% alert level",
+                           {"cpu_load": cpu_load, "threshold": cpu_limit}))
+        if temperature is not None and temperature >= temp_limit:
+            checks.append(("high_temperature",
+                           f"Board temperature {temperature:.0f}°C reached the {temp_limit:.0f}°C alert level",
+                           {"temperature": temperature, "threshold": temp_limit}))
+
+        for kind, message, payload in checks:
+            key = (router_id, kind)
+            last = self._hardware_alerts.get(key)
+            if last is not None and now - last < self.ALERT_REARM_SECONDS:
+                continue
+            self._hardware_alerts[key] = now
+            session.add(AlertLog(router_id=router_id, alert_type=kind, message=message,
+                                 metadata_payload=payload))
+            fired.append({"alert_type": kind, "message": message})
+        # Not committed here: the caller is already inside one transaction with
+        # the sample that triggered the alert, and splitting them would let the
+        # alert be recorded for a sample that then fails to store.
+        return fired
+
     async def collect_and_store(
         self,
         session: AsyncSession,
@@ -122,8 +183,12 @@ class MetricsCollector:
         ``resource`` lets a caller that already read ``/system/resource`` - the
         background tick does, for the uptime that tells it whether the router
         rebooted - hand the answer over instead of asking the router twice.
+
+        Returns any hardware alerts this sample crossed, so the caller can push
+        them to Telegram; the collector stores them and stays free of the bot.
         """
         now = datetime.now(timezone.utc).replace(tzinfo=None)
+        fired: List[dict] = []
 
         try:
             # 1. Collect System Resource & Health
@@ -181,7 +246,14 @@ class MetricsCollector:
                 )
                 session.add(iface_metric)
 
-            # 3. Retention Cleanup. Once an hour, not every tick: this is a
+            # 3. Thresholds. Done here rather than in a second loop because the
+            #    sample in front of us is the evidence: a CPU that spikes between
+            #    two polls is gone by the time anything else looks at it.
+            fired = await self.check_hardware_alerts(
+                session, router_id, float(res.cpu_load), health.temperature
+            )
+
+            # 4. Retention Cleanup. Once an hour, not every tick: this is a
             # range delete over the two largest tables in the database, and on
             # the router's flash it is exactly the kind of statement that keeps
             # SQLite's single write lock - which every other worker then times
@@ -192,6 +264,7 @@ class MetricsCollector:
             self._note_collect_success(router_id)
         except Exception as e:
             self._note_collect_failure(router_id, e)
+        return fired
 
     async def _prune_expired(self, session: AsyncSession, now: datetime) -> int:
         """Drop samples past the retention window, at most once per interval.

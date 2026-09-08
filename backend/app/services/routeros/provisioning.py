@@ -102,6 +102,28 @@ class ProvisioningMixin:
             rules = [r for r in rules if (r.get("chain") or "") == chain]
         return rules
 
+    async def list_disks(self) -> List[Dict[str, Any]]:
+        """Physical disks and partitions the router can see (``/disk``).
+
+        RouterOS 7.13+ keeps storage state here rather than inferring it from
+        ``/file``: one row per device and one per partition, with ``slot`` as the
+        name everything else uses. This is the only trustworthy answer to "is the
+        storage this container wants actually mounted, writable, and big enough" -
+        ``/file`` says only that some path resolved.
+
+        ``size``/``free`` are bytes; ``fs`` is ``-`` for a whole disk with no
+        filesystem of its own; ``mount-point`` is the name the path starts with
+        (``usb1-part1`` for ``/usb1-part1/...``).
+        """
+        props = ",".join((
+            "slot", "name", "type", "fs", "mount-point", "mounted", "mount-read-only",
+            "size", "free", "use", "formatting", "partition", "parent", "model",
+            "serial", "temperature", "io-errors", "disabled", "block-device",
+        ))
+        async with self._get_client() as client:
+            resp = await client.get("/disk", params={".proplist": props})
+            return _as_list(resp.json()) if resp.status_code == 200 else []
+
     async def list_file_names(self) -> List[str]:
         """Names of the files and mount points on the router.
 
@@ -153,6 +175,34 @@ class ProvisioningMixin:
 
     async def add_nat_rule(self, args: Dict[str, Any]) -> Dict[str, Any]:
         return await self._run("/ip/firewall/nat/add", args)
+
+    async def format_disk(
+        self,
+        slot: str,
+        file_system: str = "ext4",
+        label: str = "",
+        mbr_partition_table: bool = False,
+    ) -> Dict[str, Any]:
+        """Format a disk or partition. **This destroys everything on it.**
+
+        The command is real and reachable over REST (``/disk format`` with
+        ``file-system``, ``label`` and ``mbr-partition-table``; accepted
+        filesystems are ``ext4``, ``fat32``, ``exfat``, ``xfs`` and ``btrfs``),
+        which is exactly why nothing above this function may call it on a guess.
+        Every guard - which slot may be touched, the confirmation the operator has
+        to type, the refusal to wipe storage the running app is mounted on - lives
+        in :mod:`backend.app.services.container_setup`, and the caller has to pass
+        ``confirm`` equal to the slot name before this is reached at all.
+
+        Formatting is asynchronous: the command returns while the device works,
+        and the row reports ``formatting=true`` until it finishes.
+        """
+        payload: Dict[str, Any] = {"slot": slot, "file-system": file_system}
+        if label:
+            payload["label"] = label
+        if mbr_partition_table:
+            payload["mbr-partition-table"] = "yes"
+        return await self._run("/disk/format", payload)
 
     async def remove_by_id(self, menu: str, item_id: str) -> bool:
         """Remove one row, trying both forms RouterOS has used across releases."""
