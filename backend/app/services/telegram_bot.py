@@ -346,8 +346,58 @@ class TelegramBotService:
             except Exception as e:
                 logger.error(f"Failed to send Telegram alert to {chat_id}: {e}")
 
+    # Settings the wizard and the Settings page store in the database, mapped to
+    # the attributes this service reads. A row that is absent or empty is skipped
+    # rather than treated as a clearing, so an environment-provided value still
+    # wins when nothing was ever saved.
+    _PERSISTED_SETTINGS = (
+        ("telegram_bot_token", "TELEGRAM_BOT_TOKEN"),
+        ("telegram_admin_ids", "TELEGRAM_ADMIN_CHAT_IDS"),
+        ("telegram_mode", "TELEGRAM_MODE"),
+        ("telegram_webhook_url", "TELEGRAM_WEBHOOK_URL"),
+    )
+
+    async def load_persisted_settings(self) -> bool:
+        """Apply stored Telegram settings and build the bot if a token arrived.
+
+        Returns whether a token is available afterwards. The reason this exists:
+        the service is constructed from environment defaults, and until now the
+        database copy was consulted only by the `/test` endpoint - so a process
+        restart brought the app back with alerts silently off, which on the
+        router container meant every boot.
+        """
+        from backend.app.db.models import AppSetting
+
+        applied = []
+        try:
+            async with self.session_factory() as session:
+                for key, attribute in self._PERSISTED_SETTINGS:
+                    row = await session.get(AppSetting, key)
+                    value = (getattr(row, "value", "") or "").strip() if row else ""
+                    if not value:
+                        continue
+                    if attribute == "TELEGRAM_ADMIN_CHAT_IDS":
+                        ids = [int(p) for p in value.split(",") if p.strip().lstrip("-").isdigit()]
+                        if ids:
+                            self.config.TELEGRAM_ADMIN_CHAT_IDS = ids
+                            applied.append(attribute)
+                        continue
+                    setattr(self.config, attribute, value)
+                    applied.append(attribute)
+        except Exception as e:
+            # A database that cannot be read must not stop the app from serving;
+            # the bot simply stays off and says so, as it did before.
+            logger.warning(f"Could not load stored Telegram settings: {e}")
+
+        if self.config.TELEGRAM_BOT_TOKEN and not self.bot:
+            self._init_bot()
+        if applied:
+            logger.info(f"Applied stored Telegram settings: {', '.join(applied)}")
+        return bool(self.config.TELEGRAM_BOT_TOKEN)
+
     async def start(self) -> None:
         """Start Telegram bot according to mode (polling or webhook)."""
+        await self.load_persisted_settings()
         if not self.bot or not self.dp:
             logger.info("Telegram Bot Token not configured. Bot disabled.")
             return

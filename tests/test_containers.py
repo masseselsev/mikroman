@@ -140,7 +140,7 @@ async def test_create_translates_fields_to_routeros_argument_names():
     assert args["interface"] == "veth2"
     assert args["root-dir"] == "usb1/nginx"
     assert args["start-on-boot"] == "yes"
-    assert args["mounts"] == "webroot"
+    assert args["mountlists"] == "webroot"  # RouterOS binds by list, not "mounts"
     assert "hostname" not in args  # None fields are dropped
     assert "envlist" not in args
 
@@ -297,7 +297,9 @@ def _ready_state():
         srcnat=[{"action": "masquerade", "src-address": "172.17.0.0/24"}],
         dstnat=[{"dst-port": "1928", "in-interface": "br.lan", "comment": "mikroman:web ui, br.lan only"}],
         mounts=[{"name": "mikroman_data", "src": "usb1-part1/mikroman_data", "dst": "/data"}],
-        containers=[{"name": "mikroman", "status": "stopped", "tag": "ghcr.io/masseselsev/mikroman:latest"}],
+        containers=[{"name": "mikroman:latest", "status": "stopped",
+                     "tag": "ghcr.io/masseselsev/mikroman:latest",
+                     "comment": "mikroman:container", "mountlists": "mikroman_data"}],
         config={"tmpdir": "usb1-part1/container-tmp", "layer-dir": "usb1-part1/container-layers",
                 "dns-servers": "172.17.0.1"},
     )
@@ -339,6 +341,58 @@ async def test_apply_runs_exactly_the_commands_the_plan_promised(request_):
     config_call = fake.commands[0][1]
     assert config_call["layer-dir"].startswith("usb1-part1")
     assert config_call["tmpdir"].startswith("usb1-part1")
+
+
+@pytest.mark.asyncio
+async def test_the_container_is_bound_by_mountlists_not_mounts(request_):
+    """`mounts=` is not a parameter of /container/add; `mountlists=` is.
+
+    The device refused the whole add with "unknown parameter mounts", which also
+    means a run that got that far must not create a second container on a retry:
+    RouterOS names the row after the image, so the mikroman: comment is the only
+    handle that identifies what this step made.
+    """
+    from backend.app.services.container_setup import ContainerSetupService
+
+    fake = SetupFake()
+    await ContainerSetupService(fake).apply(request_)
+    added = next(c for c in fake.commands if c[0] == "container")[1]
+    assert added["mountlists"] == "mikroman_data"
+    assert "mounts" not in added
+    assert added["comment"].startswith("mikroman:")
+
+    # A second run over the same router must not add a twin container.
+    done = SetupFake(**_ready_state())
+    plan2 = await ContainerSetupService(done).apply(request_)
+    assert not [c for c in done.commands if c[0] == "container"]
+    assert next(s for s in plan2.steps if s.key == "container").action == "exists"
+
+
+@pytest.mark.asyncio
+async def test_create_maps_the_ui_fields_onto_the_routeros_names():
+    from backend.app.services.container_manager import ContainerManager
+
+    fake = FakeClient(packages=[{"name": "container", "disabled": "false"}])
+    await ContainerManager(fake).create({
+        "remote_image": "ghcr.io/masseselsev/mikroman:latest",
+        "interface": "veth-mikroman",
+        "mounts": "mikroman_data",
+        "envlist": "mikroman_envs",
+        "comment": "mikroman:container",
+    })
+    args = fake.commands[-1][1]
+    assert args["mountlists"] == "mikroman_data"
+    assert args["envlists"] == "mikroman_envs"
+    assert "mounts" not in args and "envlist" not in args
+
+
+def test_a_container_row_reports_its_mount_list():
+    from backend.app.services.container_manager import ContainerManager
+
+    row = {".id": "*1", "name": "mikroman:latest", "mountlists": "mikroman_data",
+           "envlists": "", "comment": "mikroman:container"}
+    dto = ContainerManager._to_container(row)
+    assert dto.mounts == "mikroman_data"
 
 
 @pytest.mark.asyncio
