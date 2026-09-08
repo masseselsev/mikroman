@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -12,6 +13,8 @@ from backend.app.api.v1.endpoints.telegram import set_telegram_service
 from backend.app.api.v1.endpoints.ws import router as ws_router
 from backend.app.api.v1.router import api_v1_router
 from backend.app.core.config import settings
+from backend.app.core.diagnostics import record
+from backend.app.core.logging_config import configure_logging, log_file_error, log_file_path
 from backend.app.db.session import AsyncSessionLocal, encrypt_legacy_secrets, init_db
 from backend.app.services.backup_scheduler import backup_scheduler
 from backend.app.services.device_manager import DeviceManager
@@ -19,10 +22,7 @@ from backend.app.services.guards import WriteGuardViolation
 from backend.app.services.router_manager import NoRouterConfiguredError, router_manager
 from backend.app.services.telegram_bot import TelegramBotService
 
-logging.basicConfig(
-    level=logging.DEBUG if settings.DEBUG else logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
-)
+configure_logging()
 logger = logging.getLogger("mikroman.main")
 
 telegram_service: TelegramBotService = None
@@ -102,181 +102,292 @@ async def _backfill_interface_rollups_once():
         logger.warning(f"Interface rollup backfill skipped: {e}")
 
 
+async def _reconcile_queues(client, session, router_id: int) -> None:
+    """Make the router's Simple Queues match what the database says they should be.
+
+    Reads the whole queue table, the address lists and the fasttrack rules, then
+    adds, changes or removes what drifted. Costs a dozen or more REST calls on a
+    router with several users, which is why it is on the heavy clock rather than
+    on every telemetry tick - and why an action taken in the UI does not wait for
+    it, because those endpoints call the same functions inline.
+    """
+    try:
+        from sqlalchemy import select
+
+        from backend.app.db.models import Device, User
+        from backend.app.services.traffic_controller import TrafficController
+
+        tc = TrafficController(client, router_id=router_id)
+
+        # Before shaping anything, make sure the stored intent is sane: a device
+        # that has an owner must not still be carrying the quarantine limit, or
+        # the sync below would faithfully re-apply it.
+        await tc.reconcile_device_limits(session, router_id=router_id)
+
+        users_res = await session.execute(
+            select(User).where((User.router_id == router_id) | (User.router_id.is_(None)))
+        )
+        for u in users_res.scalars().all():
+            active_ips = [
+                d.ip_address for d in u.devices
+                if d.is_active and d.ip_address and (d.router_id == router_id or d.router_id is None)
+            ]
+            try:
+                await tc.sync_user_queue(u.id, u.name, active_ips, u.speed_limit)
+            except WriteGuardViolation as e:
+                logger.warning(f"Skipped queue sync due to WriteGuard: {e}")
+            except Exception as e:
+                logger.debug(f"User queue sync error: {e}")
+
+        # Sync unassigned quarantine devices and custom device queues for this router
+        devs_res = await session.execute(
+            select(Device).where(
+                Device.is_active,
+                (Device.router_id == router_id) | (Device.router_id.is_(None)),
+                Device.user_id.is_(None) | (Device.speed_limit != "default")
+            )
+        )
+        for dev in devs_res.scalars().all():
+            try:
+                await tc.sync_device_queue(dev.id, session)
+            except WriteGuardViolation as e:
+                logger.warning(f"Skipped queue sync due to WriteGuard: {e}")
+            except Exception as e:
+                logger.debug(f"Device queue sync error: {e}")
+
+        # Remove managed queues whose owning user or device is gone, or that no
+        # longer needs its own queue. Runs after the syncs so freshly created
+        # queues are already accounted for.
+        await tc.reconcile_managed_queues(session, router_id=router_id)
+    except Exception as qe:
+        logger.debug(f"Queue sync tick error for router {router_id}: {qe}")
+
+
+async def _reconcile_traffic_state(client, session, router, router_uptime_s) -> None:
+    """Rollups, quota alerts and per-device accounting for one router.
+
+    The three write the counters back into SQLite and read the firewall mangle
+    tables, so together they were the bulk of the background traffic. Each keeps
+    its own error handling: a router that refuses one read should not stop the
+    others, and none of them invalidates the tick as a whole (which is why
+    failures here are logged but do not open the sync-fault bookkeeping).
+    """
+    # Rebuild the recent gateway / per-interface rollups from the samples the
+    # telemetry half just wrote. Deriving them from interface_metrics (rather
+    # than a live counter delta) attributes each byte to the day it moved and
+    # survives a restart.
+    try:
+        from backend.app.services.interface_rollups import recompute_recent
+        await recompute_recent(session, router.id)
+    except Exception as te:
+        logger.warning(f"Interface rollup tick error for router {router.id}: {te}")
+
+    # Quota thresholds for the ISP billing cycle. Checked here rather than on
+    # request so an alert fires even with no browser open.
+    try:
+        await check_quota_thresholds(session, router.id, telegram_service)
+    except Exception as qe:
+        logger.warning(f"Quota threshold check error for router {router.id}: {qe}")
+
+    # Per-device accounting via firewall mangle counters. Simple Queue byte
+    # counters are unreliable on RouterOS 7.x (measured frozen at zero while
+    # traffic flowed), so device and user volume is measured in the firewall
+    # forward chain.
+    try:
+        from backend.app.services.traffic_accounting import TrafficAccountingService
+
+        acct = TrafficAccountingService(client, router_id=router.id)
+        # collect() first: it reads the final counter of any device that has just
+        # gone inactive before sync_counter_rules() prunes that device's rule, so
+        # the last interval of its traffic is not lost.
+        await acct.collect(session, router_uptime_seconds=router_uptime_s)
+        await acct.sync_counter_rules(session)
+    except Exception as ae:
+        logger.warning(f"Traffic accounting tick error for router {router.id}: {ae}")
+
+
+def _heavy_deadline(started: float, interval: float, index: int, count: int) -> float:
+    """The monotonic instant at which router ``index`` first becomes due.
+
+    Spread across the interval instead of starting every router at once. With
+    three routers and no spread, the first tick after start runs all three
+    expensive halves back to back - a burst of dozens of REST calls against
+    three devices and, worse, three long SQLite write transactions in a row,
+    which is exactly the shape that trips the 5-second ``busy_timeout``. Only
+    the first router is due immediately; the rest join in over one interval and
+    keep their own cadence after that.
+    """
+    if count <= 1:
+        return started
+    return started + interval * index / count
+
+
+async def _sync_one_router(r, *, auto_scan_enabled: bool, heavy_due: bool, sync_failures: dict) -> None:
+    """One router's slice of a background tick, in its own database session.
+
+    The fleet used to be served by a single sequential loop over one session, so
+    every router sampled at the speed of the slowest member. Measured on the
+    router-hosted container with three routers - one on LAN, two across the
+    Internet with a 1.0-second TLS handshake each and periodic connect timeouts
+    that open the circuit breaker for 15 s - the *local* router was getting one
+    sample every ~100 seconds on a loop configured for one every 10, and the
+    third router one every fifteen minutes. The graphs then looked like holes in
+    the data, which is a data-density bug wearing the costume of a link problem.
+
+    Per-router tasks make each router's cadence its own: a router that is slow,
+    down, or in cooldown delays nobody but itself.
+    """
+    new_devices = []
+    failed = False
+    async with AsyncSessionLocal() as session:
+        try:
+            client = await router_manager.get_client(r.id, session=session)
+            if client:
+                if heavy_due and auto_scan_enabled:
+                    dev_mgr = DeviceManager(client, router_id=r.id)
+                    _, new_devices = await dev_mgr.sync_devices_from_router(session)
+
+                    # Collapse the rows left behind when a device rotated its
+                    # private MAC more than once - an access-point change can
+                    # produce several in a row, and discovery-time adoption only
+                    # handles the single-prior-record case.
+                    try:
+                        await dev_mgr.consolidate_rotated_devices(session)
+                    except Exception as ce:
+                        logger.debug(f"Rotation consolidation tick error for router {r.id}: {ce}")
+
+                if heavy_due:
+                    # Maintain RouterOS Simple Queues and FastTrack exemptions
+                    # for active users and unassigned devices of this router.
+                    await _reconcile_queues(client, session, r.id)
+
+                telemetry_started = time.monotonic()
+                # Router uptime, read once for this tick. If it has gone
+                # backwards since the last tick the router rebooted and every
+                # byte counter on it reset to that, so they credit the bytes
+                # since the reboot rather than a bogus delta. A network outage on
+                # its own is not a reboot - the counters keep running.
+                router_uptime_s = None
+                router_resource = None
+                try:
+                    from backend.app.services.routeros import parse_uptime_seconds
+                    router_resource = await client.get_system_resource()
+                    router_uptime_s = parse_uptime_seconds(router_resource.uptime)
+                except Exception as ue:
+                    logger.debug(f"Could not read uptime for router {r.id}: {ue}")
+
+                # Collect hardware and interface time-series metrics. The
+                # resource read above is handed in rather than repeated: same
+                # call, and at one per tick per router it was a third of
+                # `/system/resource` traffic on its own.
+                try:
+                    from backend.app.services.metrics_collector import metrics_collector
+                    await metrics_collector.collect_and_store(
+                        session, r.id, client, resource=router_resource
+                    )
+                except Exception as me:
+                    logger.debug(f"Metrics collection tick error for router {r.id}: {me}")
+                record("sync.telemetry", time.monotonic() - telemetry_started)
+
+                if heavy_due:
+                    heavy_started = time.monotonic()
+                    await _reconcile_traffic_state(client, session, r, router_uptime_s)
+                    record("sync.heavy", time.monotonic() - heavy_started)
+
+                if new_devices:
+                    try:
+                        from backend.app.api.v1.endpoints.ws import manager
+                        await manager.broadcast({
+                            "type": "devices_updated",
+                            "router_id": r.id,
+                            "new_count": len(new_devices)
+                        })
+                    except Exception:
+                        pass
+
+                    if telegram_service:
+                        for dev in new_devices:
+                            msg = (
+                                f"🔔 <b>New Device Discovered on {r.name}!</b>\n"
+                                f"• Host: <code>{dev.hostname or 'Unknown'}</code>\n"
+                                f"• IP: <code>{dev.ip_address}</code>\n"
+                                f"• MAC: <code>{dev.mac_address}</code>\n"
+                                f"• Vendor: <code>{dev.vendor or 'Unknown'}</code>"
+                            )
+                            await telegram_service.send_alert_to_admins(msg, parse_mode="HTML")
+        except Exception as e:
+            failed = True
+            text = f"{type(e).__name__}: {e}"
+            # One warning per distinct fault rather than one per tick: at debug
+            # level (what this was) a router that stopped answering for hours
+            # left no trace at all, and the outage only ever surfaced as a
+            # strange gap in the graphs.
+            if sync_failures.get(r.id) != text:
+                sync_failures[r.id] = text
+                logger.warning(f"Sync tick failing for router {r.name} ({r.id}): {text}")
+        if not failed and sync_failures.pop(r.id, None) is not None:
+            logger.info(f"Router {r.name} ({r.id}) is syncing again")
+
+
 async def background_sync_worker():
-    """Periodic background discovery and health monitor for all configured active routers."""
+    """Periodic background discovery and health monitor for all configured active routers.
+
+    The tick has two halves on deliberately different clocks.
+
+    * **Every ``POLL_INTERVAL_SECONDS``** (default 10 s): the hardware and
+      bandwidth samples the graphs are drawn from, plus router uptime so a
+      reboot does not read as a negative delta. Four REST calls per router.
+    * **Every ``HEAVY_SYNC_INTERVAL_SECONDS``** (default 60 s): device discovery,
+      simple-queue and mangle-counter reconciliation, rollup recompute, quota
+      thresholds. Measured on the router-hosted container these were ~40% of all
+      REST traffic against the devices (303 of 741 calls in a 320-second window)
+      for state that on a home network changes about as often as once a minute.
+
+    Nothing waits on this loop to take effect: pausing a device or changing a
+    limit is applied by its own endpoint, which calls the same sync functions
+    inline. Slowing the reconciliation back only widens how long a device can
+    join without being noticed, from ten seconds to a minute.
+
+    Routers are handled concurrently, each in its own session (see
+    :func:`_sync_one_router`), and each carries its own heavy-pass deadline, so
+    the expensive halves do not all land in the same tick and stack their SQLite
+    write transactions on top of each other.
+    """
     # Last sync fault per router, kept so a failure that repeats every tick is
     # logged once. Lives for the whole run of the worker, not a single tick.
     sync_failures = {}
+    last_heavy: dict = {}
     await _backfill_interface_rollups_once()
     while True:
+        started = time.monotonic()
         try:
             async with AsyncSessionLocal() as session:
                 from backend.app.db.models import AppSetting
                 auto_scan_sett = await session.get(AppSetting, "auto_scan_enabled")
                 is_auto_scan_enabled = (auto_scan_sett.value.lower() != "false") if auto_scan_sett else True
-
                 active_routers = await router_manager.get_all_active_routers(session)
-                for r in active_routers:
-                    failed = False
-                    try:
-                        client = await router_manager.get_client(r.id, session=session)
-                        if client:
-                            new_devices = []
-                            if is_auto_scan_enabled:
-                                dev_mgr = DeviceManager(client, router_id=r.id)
-                                _, new_devices = await dev_mgr.sync_devices_from_router(session)
 
-                                # Collapse the rows left behind when a device
-                                # rotated its private MAC more than once - an
-                                # access-point change can produce several in a
-                                # row, and discovery-time adoption only handles
-                                # the single-prior-record case.
-                                try:
-                                    await dev_mgr.consolidate_rotated_devices(session)
-                                except Exception as ce:
-                                    logger.debug(f"Rotation consolidation tick error for router {r.id}: {ce}")
-
-                            # Maintain RouterOS Simple Queues and FastTrack exemptions for active users & unassigned devices of this router
-                            try:
-                                from backend.app.db.models import Device, User
-                                from backend.app.services.traffic_controller import TrafficController
-                                tc = TrafficController(client, router_id=r.id)
-                                from sqlalchemy import select
-
-                                # Before shaping anything, make sure the stored
-                                # intent is sane: a device that has an owner must
-                                # not still be carrying the quarantine limit, or
-                                # the sync below would faithfully re-apply it.
-                                await tc.reconcile_device_limits(session, router_id=r.id)
-
-                                users_res = await session.execute(
-                                    select(User).where((User.router_id == r.id) | (User.router_id.is_(None)))
-                                )
-                                for u in users_res.scalars().all():
-                                    active_ips = [
-                                        d.ip_address for d in u.devices
-                                        if d.is_active and d.ip_address and (d.router_id == r.id or d.router_id is None)
-                                    ]
-                                    try:
-                                        await tc.sync_user_queue(u.id, u.name, active_ips, u.speed_limit)
-                                    except WriteGuardViolation as e:
-                                        logger.warning(f"Skipped queue sync due to WriteGuard: {e}")
-                                    except Exception as e:
-                                        logger.debug(f"User queue sync error: {e}")
-
-                                # Sync unassigned quarantine devices and custom device queues for this router
-                                devs_res = await session.execute(
-                                    select(Device).where(
-                                        Device.is_active,
-                                        (Device.router_id == r.id) | (Device.router_id.is_(None)),
-                                        Device.user_id.is_(None) | (Device.speed_limit != "default")
-                                    )
-                                )
-                                for dev in devs_res.scalars().all():
-                                    try:
-                                        await tc.sync_device_queue(dev.id, session)
-                                    except WriteGuardViolation as e:
-                                        logger.warning(f"Skipped queue sync due to WriteGuard: {e}")
-                                    except Exception as e:
-                                        logger.debug(f"Device queue sync error: {e}")
-
-                                # Remove managed queues whose owning user or device
-                                # is gone, or that no longer needs its own queue.
-                                # Runs after the syncs so freshly created queues
-                                # are already accounted for.
-                                await tc.reconcile_managed_queues(session, router_id=r.id)
-                            except Exception as qe:
-                                logger.debug(f"Queue sync tick error for router {r.id}: {qe}")
-
-                            # Router uptime, read once for this tick. If it has
-                            # gone backwards since the last tick the router
-                            # rebooted and every byte counter on it reset to
-                            # that so they credit the bytes since the reboot
-                            # rather than a bogus delta. A network outage on its
-                            # own is not a reboot - the counters keep running.
-                            router_uptime_s = None
-                            try:
-                                from backend.app.services.routeros import parse_uptime_seconds
-                                _res = await client.get_system_resource()
-                                router_uptime_s = parse_uptime_seconds(_res.uptime)
-                            except Exception as ue:
-                                logger.debug(f"Could not read uptime for router {r.id}: {ue}")
-
-                            # Collect hardware and interface time-series metrics
-                            try:
-                                from backend.app.services.metrics_collector import metrics_collector
-                                await metrics_collector.collect_and_store(session, r.id, client)
-                            except Exception as me:
-                                logger.debug(f"Metrics collection tick error for router {r.id}: {me}")
-
-                            # Rebuild the recent gateway / per-interface rollups
-                            # from the samples just written above. Deriving them
-                            # from interface_metrics (rather than a live counter
-                            # delta) attributes each byte to the day it moved and
-                            # survives a restart.
-                            try:
-                                from backend.app.services.interface_rollups import recompute_recent
-                                await recompute_recent(session, r.id)
-                            except Exception as te:
-                                logger.warning(f"Interface rollup tick error for router {r.id}: {te}")
-
-                            # Quota thresholds for the ISP billing cycle. Checked
-                            # here rather than on request so an alert fires even
-                            # with no browser open.
-                            try:
-                                await check_quota_thresholds(session, r.id, telegram_service)
-                            except Exception as qe:
-                                logger.warning(f"Quota threshold check error for router {r.id}: {qe}")
-
-                            # Per-device accounting via firewall mangle counters.
-                            # Simple Queue byte counters are unreliable on RouterOS 7.x
-                            # (measured frozen at zero while traffic flowed), so device
-                            # and user volume is measured in the firewall forward chain.
-                            try:
-                                from backend.app.services.traffic_accounting import TrafficAccountingService
-                                acct = TrafficAccountingService(client, router_id=r.id)
-                                # collect() first: it reads the final counter of
-                                # any device that has just gone inactive before
-                                # sync_counter_rules() prunes that device's rule,
-                                # so the last interval of its traffic is not lost.
-                                await acct.collect(session, router_uptime_seconds=router_uptime_s)
-                                await acct.sync_counter_rules(session)
-                            except Exception as ae:
-                                logger.warning(f"Traffic accounting tick error for router {r.id}: {ae}")
-
-                            if new_devices:
-                                try:
-                                    from backend.app.api.v1.endpoints.ws import manager
-                                    await manager.broadcast({
-                                        "type": "devices_updated",
-                                        "router_id": r.id,
-                                        "new_count": len(new_devices)
-                                    })
-                                except Exception:
-                                    pass
-
-                                if telegram_service:
-                                    for dev in new_devices:
-                                        msg = (
-                                            f"🔔 <b>New Device Discovered on {r.name}!</b>\n"
-                                            f"• Host: <code>{dev.hostname or 'Unknown'}</code>\n"
-                                            f"• IP: <code>{dev.ip_address}</code>\n"
-                                            f"• MAC: <code>{dev.mac_address}</code>\n"
-                                            f"• Vendor: <code>{dev.vendor or 'Unknown'}</code>"
-                                        )
-                                        await telegram_service.send_alert_to_admins(msg, parse_mode="HTML")
-                    except Exception as e:
-                        failed = True
-                        text = f"{type(e).__name__}: {e}"
-                        # One warning per distinct fault rather than one per tick:
-                        # at debug level (what this was) a router that stopped
-                        # answering for hours left no trace at all, and the outage
-                        # only ever surfaced as a strange gap in the graphs.
-                        if sync_failures.get(r.id) != text:
-                            sync_failures[r.id] = text
-                            logger.warning(f"Sync tick failing for router {r.name} ({r.id}): {text}")
-                    if not failed and sync_failures.pop(r.id, None) is not None:
-                        logger.info(f"Router {r.name} ({r.id}) is syncing again")
+            passes = []
+            for index, r in enumerate(active_routers):
+                not_before = last_heavy.get(
+                    r.id,
+                    _heavy_deadline(
+                        started, settings.HEAVY_SYNC_INTERVAL_SECONDS,
+                        index, len(active_routers),
+                    ),
+                )
+                heavy_due = started >= not_before
+                if heavy_due:
+                    # Record the attempt, not the outcome: if the expensive half
+                    # fails, it should be retried on the next heavy pass, not
+                    # hammered every telemetry tick until it clears.
+                    last_heavy[r.id] = started
+                passes.append(_sync_one_router(
+                    r, auto_scan_enabled=is_auto_scan_enabled, heavy_due=heavy_due,
+                    sync_failures=sync_failures,
+                ))
+            if passes:
+                await asyncio.gather(*passes)
         except Exception as e:
             logger.debug(f"Background sync tick error: {e}")
 
@@ -307,6 +418,7 @@ async def log_scrape_worker():
     collector = LogCollector()
     ticks = 0
     while True:
+        tick_started = time.monotonic()
         try:
             async with AsyncSessionLocal() as session:
                 enabled = await session.get(AppSetting, "log_scraping_enabled")
@@ -357,7 +469,41 @@ async def log_scrape_worker():
         except Exception as e:
             logger.warning(f"Log scrape worker tick failed: {e}")
 
+        # The duration is the interesting part: a scrape that sleeps for 60 s and
+        # then takes 30 s is collecting half as often as it appears to, and the
+        # time is usually spent waiting on SQLite's write lock rather than on the
+        # router.
+        record("log_scrape.tick", time.monotonic() - tick_started)
         await asyncio.sleep(LOG_SCRAPE_INTERVAL_SECONDS)
+
+
+async def _cancel_and_wait(*tasks) -> None:
+    """Cancel the given tasks and wait for them to actually stop."""
+    live = [t for t in tasks if t is not None]
+    for task in live:
+        task.cancel()
+    if live:
+        await asyncio.gather(*live, return_exceptions=True)
+
+
+async def _drain(coro, label: str, timeout: float = 3.0) -> None:
+    """Await one shutdown step within a deadline, never past it.
+
+    RouterOS sends SIGTERM and then SIGKILL after the container's ``stop-time``
+    (10 s by default). Shutting down without a budget is how the container ended
+    up recorded as ``Exited (137)`` - killed rather than closed, with the last
+    log lines lost. One step that hangs must not cost the others their turn: a
+    dropped Telegram connection is recoverable, an unclean teardown is what makes
+    the next start question SQLite's consistency.
+    """
+    try:
+        await asyncio.wait_for(coro, timeout=timeout)
+    except asyncio.TimeoutError:
+        logger.warning(f"Shutdown step '{label}' did not finish within {timeout:.0f}s, moving on")
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        logger.warning(f"Shutdown step '{label}' failed: {type(e).__name__}: {e}")
 
 
 @asynccontextmanager
@@ -382,18 +528,22 @@ async def lifespan(app: FastAPI):
     # `backup_interval_hours` on every pass, so a change in Settings takes
     # effect without a restart.
     await backup_scheduler.start()
+    log_path = log_file_path()
+    if log_path:
+        logger.info(f"Persistent app log: {log_path} (readable at GET /api/v1/logs?source=app)")
+    else:
+        logger.warning(f"No persistent app log ({log_file_error() or 'disabled'}); console only")
     logger.info("MikroMan Engine initialized successfully.")
 
     yield
 
-    if bg_sync_task:
-        bg_sync_task.cancel()
-    if log_scrape_task:
-        log_scrape_task.cancel()
-    await backup_scheduler.stop()
+    # Budget: 3 + 2 + 3 + 2 = 10 s of work at most, matching the container's
+    # default stop-time. Steps that need no budget get none of it.
+    await _drain(_cancel_and_wait(bg_sync_task, log_scrape_task), "background workers", timeout=3.0)
+    await _drain(backup_scheduler.stop(), "backup scheduler", timeout=2.0)
     if telegram_service:
-        await telegram_service.stop()
-    await router_manager.aclose()
+        await _drain(telegram_service.stop(), "telegram bot", timeout=3.0)
+    await _drain(router_manager.aclose(), "router connections", timeout=2.0)
     logger.info("MikroMan Engine shut down cleanly.")
 
 

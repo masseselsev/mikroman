@@ -8,7 +8,9 @@ class RouterLogItem(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: Optional[int] = None
-    router_id: int
+    # Optional because the `source=app` view returns MikroMan's own log, which
+    # belongs to the application rather than to any one router.
+    router_id: Optional[int] = None
     external_id: Optional[str] = None
     timestamp: datetime
     topics: str

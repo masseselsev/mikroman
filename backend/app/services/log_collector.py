@@ -6,10 +6,11 @@ import logging
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import delete, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.db.models import RouterLog
+from backend.app.db.prune import delete_matching_batches
 from backend.app.services.log_classifier import classify_log_entry
 from backend.app.services.routeros.client import RouterOSClient
 
@@ -146,29 +147,46 @@ class LogCollector:
         retention_days: int = 14,
         max_records: int = 10000,
     ) -> int:
-        """Delete log entries older than retention window or exceeding max records."""
-        cutoff = datetime.now() - timedelta(days=retention_days)
+        """Delete log entries older than retention window or exceeding max records.
 
-        # 1. Delete expired logs
-        stmt = delete(RouterLog).where(
-            RouterLog.router_id == router_id,
-            RouterLog.timestamp < cutoff,
+        Both passes are bounded transactions rather than one big delete. The
+        previous shape - ``SELECT id`` over the whole retained set, then
+        ``DELETE ... WHERE id IN (...)`` - held SQLite's single write lock long
+        enough at 10 000 rows to push other workers past their 5-second
+        ``busy_timeout``, which is how the metrics writer started reporting
+        "database is locked" on a router that was otherwise behaving.
+        """
+        now = datetime.now()
+        cutoff = now - timedelta(days=retention_days)
+
+        deleted = await delete_matching_batches(
+            session,
+            RouterLog.__table__,
+            (RouterLog.router_id == router_id) & (RouterLog.timestamp < cutoff),
+            RouterLog.timestamp.asc(),
         )
-        res = await session.execute(stmt)
-        deleted = res.rowcount or 0
 
-        # 2. Check if remaining records exceed max_records
-        count_q = select(RouterLog.id).where(RouterLog.router_id == router_id).order_by(RouterLog.timestamp.desc())
-        all_ids = (await session.execute(count_q)).scalars().all()
-
-        if len(all_ids) > max_records:
-            excess_ids = all_ids[max_records:]
-            del_stmt = delete(RouterLog).where(RouterLog.id.in_(excess_ids))
-            res_excess = await session.execute(del_stmt)
-            deleted += res_excess.rowcount or 0
+        # The cap is expressed as a timestamp, found by walking the index to the
+        # `max_records`-th newest row: everything at or before that instant is
+        # surplus. Cheaper and shorter-lived than materialising id lists.
+        boundary = (
+            await session.execute(
+                select(RouterLog.timestamp)
+                .where(RouterLog.router_id == router_id)
+                .order_by(RouterLog.timestamp.desc())
+                .offset(max_records)
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if boundary is not None:
+            deleted += await delete_matching_batches(
+                session,
+                RouterLog.__table__,
+                (RouterLog.router_id == router_id) & (RouterLog.timestamp <= boundary),
+                RouterLog.timestamp.asc(),
+            )
 
         if deleted > 0:
-            await session.commit()
             logger.info("Pruned %d old log entries for router %s", deleted, router_id)
 
         return deleted

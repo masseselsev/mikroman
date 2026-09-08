@@ -19,16 +19,23 @@ import {
 /**
  * Live RouterOS log viewer.
  *
- * Two sources, deliberately distinct:
+ * Three sources, deliberately distinct:
  *  - "live" reads `/log` off the router. RouterOS keeps that in a small memory
  *    ring, so it is the last few hundred lines and nothing older.
  *  - "db" reads what the background scraper has copied into SQLite, which is
  *    the only place yesterday's lines still exist.
+ *  - "app" reads MikroMan's own log file. It lives in the data directory, so it
+ *    is the only record of what the app did that survives a container restart -
+ *    and in a RouterOS container there is no `docker logs` to fall back on.
  *
  * Auto-scroll sticks to the bottom while the reader is at the bottom and
  * freezes the moment they scroll up, so a burst of DHCP chatter cannot yank a
  * line out from under them mid-read.
  */
+
+// Sources whose content moves while the panel is open. Stored router history
+// does not - it only changes when the scraper runs - so it refreshes on demand.
+const STREAMED_SOURCES = ['live', 'app'];
 
 // `icon` is what marks a line in the terminal gutter; the pill label comes from
 // the translation, which already carries its own emoji.
@@ -101,10 +108,15 @@ export function RouterLogsModal({ isOpen, onClose, routerId = null, routerName =
     if (showLoading) setLoading(true);
     try {
       const params = { source, limit: 500 };
-      if (routerId) params.router_id = routerId;
-      if (category !== 'all') params.category = category;
+      // The app's own log belongs to the application, not to a router, and it
+      // has no RouterOS categories or self-login lines to filter - sending those
+      // params would imply the panel can narrow it in ways the endpoint ignores.
+      if (source !== 'app') {
+        if (routerId) params.router_id = routerId;
+        if (category !== 'all') params.category = category;
+        if (hideSelfApi) params.hide_self_api = true;
+      }
       if (search.trim()) params.search = search.trim();
-      if (hideSelfApi) params.hide_self_api = true;
       const res = await api.getLogs(params);
       setEntries(res?.data || []);
       setError(res?.data?.length === 0 && res?.message ? res.message : null);
@@ -150,7 +162,7 @@ export function RouterLogsModal({ isOpen, onClose, routerId = null, routerName =
   // Live polling. Stored history does not change under the reader, so it only
   // refreshes on demand.
   useEffect(() => {
-    if (!isOpen || !isStreaming || source !== 'live') {
+    if (!isOpen || !isStreaming || !STREAMED_SOURCES.includes(source)) {
       if (timerRef.current) clearInterval(timerRef.current);
       return undefined;
     }
@@ -296,6 +308,7 @@ export function RouterLogsModal({ isOpen, onClose, routerId = null, routerName =
               {[
                 { id: 'live', label: t('source_live') },
                 { id: 'db', label: t('source_db') },
+                { id: 'app', label: t('source_app') },
               ].map(s => (
                 <button
                   key={s.id}
@@ -321,7 +334,7 @@ export function RouterLogsModal({ isOpen, onClose, routerId = null, routerName =
               type="button"
               className="btn btn-secondary btn-sm"
               onClick={() => setIsStreaming(v => !v)}
-              disabled={source !== 'live'}
+              disabled={!STREAMED_SOURCES.includes(source)}
               title={isStreaming ? t('pause_btn') : t('resume_btn')}
               style={{ display: 'flex', alignItems: 'center', gap: 5 }}
             >
@@ -373,6 +386,7 @@ export function RouterLogsModal({ isOpen, onClose, routerId = null, routerName =
           </div>
 
           {/* Category pills, plus the self-login declutter toggle */}
+          {source !== 'app' && (
           <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between' }}>
             <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
               {CATEGORIES.map(c => (
@@ -422,6 +436,13 @@ export function RouterLogsModal({ isOpen, onClose, routerId = null, routerName =
               </span>
             </label>
           </div>
+          )}
+
+          {source === 'app' && (
+            <div className="footnote" style={{ color: 'var(--text-muted)' }}>
+              {t('app_log_hint')}
+            </div>
+          )}
 
           {/* Logging topic drawer */}
           {rulesOpen && (
