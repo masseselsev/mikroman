@@ -23,6 +23,11 @@ import {
  * the API always returns a `support` block, and when the feature is not ready
  * this shows an explanatory banner with every control disabled, rather than an
  * error. Once the package is installed and enabled, the same page drives it.
+ *
+ * It also answers "what is this costing me", because on a router the app shares
+ * the board with the routing: the container's CPU and memory come straight off
+ * `/container`, the router's totals off `/system/resource`, and both are shown
+ * together so a number can be read as a share rather than in isolation.
  */
 
 const STATUS_TONE = {
@@ -32,9 +37,52 @@ const STATUS_TONE = {
   extracting: 'is-busy',
 };
 
+/** RouterOS 7.x reports a container's state as the `running` flag; `status` is
+ *  absent, which is why every row used to show a dash for a running container. */
+function containerState(c) {
+  if (c.status) return c.status;
+  if (c.running === true) return 'running';
+  if (c.running === false) return 'stopped';
+  return null;
+}
+
 function StatusPill({ status }) {
   const tone = STATUS_TONE[status] || 'is-idle';
   return <span className={`ctr-status ${tone}`}>{status || '—'}</span>;
+}
+
+function formatMB(bytes) {
+  if (bytes === null || bytes === undefined) return '—';
+  const mb = bytes / (1024 * 1024);
+  if (mb >= 1024) return `${(mb / 1024).toFixed(2)} GB`;
+  return `${mb.toFixed(0)} MB`;
+}
+
+/**
+ * A usage bar: the figure carries the tone, so a container using most of the
+ * board is visible in the row without reading the number.
+ */
+function UsageBar({ pct, text, cap }) {
+  const value = Math.min(Math.max(pct ?? 0, 0), 100);
+  const tone = value >= 80
+    ? 'var(--color-danger)'
+    : value >= (cap ?? 45) ? 'var(--color-warning)' : 'var(--color-success)';
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 7, minWidth: 92 }}>
+      <div style={{
+        flex: 1, height: 5, minWidth: 36, background: 'var(--bg-secondary)',
+        borderRadius: 'var(--radius-xs)', overflow: 'hidden',
+      }}>
+        <div style={{
+          width: `${value}%`, height: '100%', background: tone,
+          borderRadius: 'var(--radius-xs)',
+        }} />
+      </div>
+      <span className="font-mono" style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-secondary)', minWidth: 58 }}>
+        {text}
+      </span>
+    </div>
+  );
 }
 
 function AddContainerForm({ mounts, envs, disabled, busy, onSubmit, onCancel }) {
@@ -175,6 +223,8 @@ export function ContainersPage({ activeRouter }) {
   const mounts = data?.mounts || [];
   const envs = data?.envs || [];
   const config = data?.config || {};
+  const host = data?.host || {};
+  const totalMem = host.total_memory_bytes || 0;
 
   const runAction = async (id, action) => {
     if (action === 'remove' && !window.confirm(t('ctr_confirm_remove'))) return;
@@ -216,13 +266,32 @@ export function ContainersPage({ activeRouter }) {
         <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>{activeRouter?.name}</span>
         <span style={{ flex: 1 }} />
         <button className="btn btn-secondary btn-sm" onClick={load} disabled={loading}>
-          <RefreshCw size={14} style={loading ? { animation: 'spin 1s linear infinite' } : undefined} />
+          <RefreshCw size={14} className={loading ? 'spin' : ''} />
           {t('ctr_refresh')}
         </button>
         <button className="btn btn-primary btn-sm" disabled={!ready} onClick={() => setShowAdd(v => !v)}>
           <Plus size={14} /> {t('ctr_add')}
         </button>
       </div>
+
+      {/* The board the containers are competing with. Stated once at the top so
+          the per-container figures below read as shares of it rather than as
+          absolute verdicts - and deliberately not auto-refreshed: one poll of
+          this panel is six REST calls on a router that is also routing, so the
+          numbers are fetched on entry and on demand. */}
+      {ready && (host.cpu_load_pct !== undefined || totalMem) && (
+        <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)' }}>
+          <span>
+            {t('ctr_host_cpu')}: <strong className="font-mono" style={{ color: 'var(--text-secondary)' }}>{host.cpu_load_pct ?? '—'}%</strong>
+          </span>
+          <span>
+            {t('ctr_host_mem')}: <strong className="font-mono" style={{ color: 'var(--text-secondary)' }}>
+              {formatMB(Math.max(0, totalMem - (host.free_memory_bytes || 0)))} / {formatMB(totalMem)}
+            </strong>
+          </span>
+          {host.uptime && <span>{t('ctr_host_uptime')}: <strong className="font-mono" style={{ color: 'var(--text-secondary)' }}>{host.uptime}</strong></span>}
+        </div>
+      )}
 
       {support.status !== 'ready' && (
         <div className="card" style={{
@@ -265,40 +334,70 @@ export function ContainersPage({ activeRouter }) {
       )}
 
       <div className="card panel-flush" style={{ overflowX: 'auto' }}>
-        <table className="table" style={{ width: '100%', borderCollapse: 'collapse' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
           <thead>
             <tr>
-              <th>{t('ctr_col_name')}</th>
-              <th>{t('ctr_col_status')}</th>
-              <th>{t('ctr_col_arch')}</th>
-              <th>{t('ctr_col_iface')}</th>
-              <th>{t('ctr_col_root')}</th>
-              <th>{t('ctr_col_boot')}</th>
-              <th style={{ textAlign: 'right' }}>{t('ctr_col_actions')}</th>
+              {[
+                t('ctr_col_name'), t('ctr_col_status'), t('ctr_col_cpu'), t('ctr_col_mem'),
+                t('ctr_col_arch'), t('ctr_col_iface'), t('ctr_col_root'), t('ctr_col_boot'),
+              ].map(label => (
+                <th key={label} style={{
+                  padding: '8px 12px', textAlign: 'left', whiteSpace: 'nowrap',
+                  fontSize: 'var(--fs-xs)', color: 'var(--text-muted)',
+                  borderBottom: '1px solid var(--border-color)',
+                }}>{label}</th>
+              ))}
+              <th style={{
+                padding: '8px 12px', textAlign: 'right', whiteSpace: 'nowrap',
+                fontSize: 'var(--fs-xs)', color: 'var(--text-muted)',
+                borderBottom: '1px solid var(--border-color)',
+              }}>{t('ctr_col_actions')}</th>
             </tr>
           </thead>
           <tbody>
             {containers.length === 0 && (
               <tr>
-                <td colSpan={7} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 20 }}>
+                <td colSpan={9} className="empty-note" style={{ padding: 20, textAlign: 'center' }}>
                   {ready ? t('ctr_none') : t('ctr_unavailable_short')}
                 </td>
               </tr>
             )}
             {containers.map(c => {
-              const isRunning = c.status === 'running';
+              const state = containerState(c);
+              const isRunning = state === 'running';
+              // `memory-current` is the cgroup figure: it counts the page cache
+              // the container pushes through its data mount, so on a board
+              // holding a database on USB it is larger than the process. The
+              // label says "cgroup" rather than implying the app's heap.
+              const memPct = totalMem && c.memory_current_bytes
+                ? (c.memory_current_bytes / totalMem) * 100 : null;
               return (
                 <tr key={c.id}>
-                  <td>
+                  <td style={{ padding: '8px 12px', borderBottom: '1px solid var(--border-subtle)' }}>
                     <div style={{ fontWeight: 600 }}>{c.name || c.id}</div>
                     <div className="font-mono" style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)' }}>{c.tag}</div>
+                    <div className="font-mono" style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)' }}>
+                      {formatMB(c.disk_size_bytes)}{c.restart_count ? ` · ${t('ctr_restarts')} ${c.restart_count}` : ''}
+                    </div>
                   </td>
-                  <td><StatusPill status={c.status} /></td>
-                  <td className="font-mono" style={{ fontSize: 'var(--fs-2xs)' }}>{c.arch || '—'}</td>
-                  <td className="font-mono" style={{ fontSize: 'var(--fs-2xs)' }}>{c.interface || '—'}</td>
-                  <td className="font-mono" style={{ fontSize: 'var(--fs-2xs)' }}>{c.root_dir || '—'}</td>
-                  <td>{c.start_on_boot ? t('yes') : t('no')}</td>
-                  <td>
+                  <td style={{ padding: '8px 12px', borderBottom: '1px solid var(--border-subtle)' }}>
+                    <StatusPill status={state} />
+                  </td>
+                  <td style={{ padding: '8px 12px', borderBottom: '1px solid var(--border-subtle)' }}>
+                    {c.cpu_usage_pct === null || c.cpu_usage_pct === undefined
+                      ? <span className="font-mono" style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)' }}>—</span>
+                      : <UsageBar pct={c.cpu_usage_pct} text={`${c.cpu_usage_pct.toFixed(1)}%`} />}
+                  </td>
+                  <td style={{ padding: '8px 12px', borderBottom: '1px solid var(--border-subtle)' }}>
+                    {c.memory_current_bytes
+                      ? <UsageBar pct={memPct} text={formatMB(c.memory_current_bytes)} cap={25} />
+                      : <span className="font-mono" style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)' }}>—</span>}
+                  </td>
+                  <td className="font-mono" style={{ padding: '8px 12px', fontSize: 'var(--fs-2xs)', borderBottom: '1px solid var(--border-subtle)' }}>{c.arch || '—'}</td>
+                  <td className="font-mono" style={{ padding: '8px 12px', fontSize: 'var(--fs-2xs)', borderBottom: '1px solid var(--border-subtle)' }}>{c.interface || '—'}</td>
+                  <td className="font-mono" style={{ padding: '8px 12px', fontSize: 'var(--fs-2xs)', borderBottom: '1px solid var(--border-subtle)' }}>{c.root_dir || '—'}</td>
+                  <td style={{ padding: '8px 12px', borderBottom: '1px solid var(--border-subtle)' }}>{c.start_on_boot ? t('yes') : t('no')}</td>
+                  <td style={{ padding: '8px 12px', borderBottom: '1px solid var(--border-subtle)' }}>
                     <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
                       <button className="btn-icon" style={{ width: 26, height: 26 }} title={t('ctr_start')}
                         disabled={!ready || isRunning || busyId === c.id + 'start'}
@@ -333,26 +432,45 @@ export function ContainersPage({ activeRouter }) {
           definitions a new container can attach by name. */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 14 }}>
         <div className="card">
-          <strong style={{ fontSize: 'var(--fs-sm)' }}>{t('ctr_config')}</strong>
+          <div className="panel-head" style={{ padding: 0 }}>
+            <div className="panel-title">{t('ctr_config')}</div>
+          </div>
           <dl className="ctr-dl">
             <div><dt>registry-url</dt><dd className="font-mono">{config.registry_url || '—'}</dd></div>
             <div><dt>tmpdir</dt><dd className="font-mono">{config.tmpdir || '—'}</dd></div>
             <div><dt>layer-dir</dt><dd className="font-mono">{config.layer_dir || '—'}</dd></div>
             <div><dt>ram-high</dt><dd className="font-mono">{config.ram_high || '—'}</dd></div>
+            {config.memory_current_bytes
+              && <div><dt>{t('ctr_mem_all')}</dt><dd className="font-mono">{formatMB(config.memory_current_bytes)}</dd></div>}
           </dl>
         </div>
         <div className="card">
-          <strong style={{ fontSize: 'var(--fs-sm)' }}>{t('ctr_mounts')} ({mounts.length})</strong>
+          <div className="panel-head" style={{ padding: 0 }}>
+            <div className="panel-title">{t('ctr_mounts')} ({mounts.length})</div>
+          </div>
           <ul className="ctr-list">
             {mounts.length === 0 && <li style={{ color: 'var(--text-muted)' }}>—</li>}
             {mounts.map(m => <li key={m.id} className="font-mono">{m.name}: {m.src} → {m.dst}</li>)}
           </ul>
         </div>
         <div className="card">
-          <strong style={{ fontSize: 'var(--fs-sm)' }}>{t('ctr_envs')} ({envs.length})</strong>
+          <div className="panel-head" style={{ padding: 0 }}>
+            <div className="panel-title">{t('ctr_envs')} ({envs.length})</div>
+          </div>
           <ul className="ctr-list">
             {envs.length === 0 && <li style={{ color: 'var(--text-muted)' }}>—</li>}
-            {envs.map(v => <li key={v.id} className="font-mono">{v.name} · {v.key}={v.value}</li>)}
+            {/* Values are masked. An env row on a router is a credential store as
+                surely as the database is, and this list is rendered for whoever
+                has the dashboard open - which, with no auth on the API, is every
+                host the UI is reachable from. */}
+            {envs.map(v => (
+              <li key={v.id} className="font-mono">
+                {v.name} · {v.key}=
+                <span style={{ color: 'var(--text-muted)' }} title={t('ctr_env_hidden')}>
+                  ••••••
+                </span>
+              </li>
+            ))}
           </ul>
         </div>
       </div>

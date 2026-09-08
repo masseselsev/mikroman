@@ -8,7 +8,8 @@ vi.mock('../api/client', () => ({
   api: {
     containerSetupPlan: vi.fn(),
     containerSetupApply: vi.fn(),
-    containerMigrateData: vi.fn(),
+    containerStorage: vi.fn(),
+    containerFormat: vi.fn(),
   },
 }));
 
@@ -19,6 +20,7 @@ vi.mock('../context/I18nContext', () => ({
 const PLAN = {
   ok: true,
   steps: [
+    { key: 'storage_dir', action: 'exists', detail: 'usb1-part1: ext4, 261.4 GB free of 465.8 GB' },
     { key: 'config', action: 'set', detail: 'layer-dir=usb1-part1/container-layers' },
     { key: 'bridge', action: 'create', detail: 'bridge bridge-containers' },
     { key: 'mount', action: 'exists', detail: 'usb1-part1/mikroman_data -> /data' },
@@ -31,7 +33,24 @@ const BLOCKED = {
   ok: false,
   steps: [{ key: 'storage_dir', action: 'blocked', detail: 'not a storage the router can see' }],
   blockers: ["storage_dir: 'nosuch' is not a storage the router can see."],
+  storage: { ready: false, problems: ["'nosuch' is not a storage this router sees."] },
 };
+
+const DISKS = [
+  {
+    slot: 'usb1', type: 'hardware', fs: '-', mounted: false, read_only: false,
+    formatting: false, is_partition: false, size_bytes: 500107862016, free_bytes: null,
+    usable_for_containers: false, formatable: true, note: 'no filesystem',
+  },
+  {
+    slot: 'usb1-part1', type: 'partition', fs: 'ext4', mounted: true, read_only: false,
+    formatting: false, is_partition: true, mount_point: 'usb1-part1',
+    size_bytes: 500105740288, free_bytes: 280677068800, used_pct: 43,
+    usable_for_containers: true, formatable: false, note: 'in container use (usb1-part1)',
+  },
+];
+
+const STORAGE_OK = { ready: true, matched_slot: 'usb1-part1', fs: 'ext4', problems: [], warnings: [], disks: DISKS };
 
 // The button carries a count of the steps that would still change something, so
 // its text is "ctr_apply (2)" once a plan exists - match the prefix.
@@ -39,29 +58,57 @@ const applyButton = () => screen.getByText(/^ctr_apply/).closest('button');
 
 beforeEach(() => {
   vi.clearAllMocks();
+  api.containerStorage.mockResolvedValue({ data: STORAGE_OK });
   api.containerSetupPlan.mockResolvedValue({ data: PLAN });
   api.containerSetupApply.mockResolvedValue({
     data: { ...PLAN, steps: PLAN.steps.map(s => ({ ...s, applied: true, action: 'done' })) },
   });
-  api.containerMigrateData.mockResolvedValue({
-    data: {
-      database_bytes: 1048576,
-      staged_path: '/data/mikroman-migration.db',
-      destination: 'usb1-part1/mikroman_data/app.db',
-      secret_key: 'included',
-      next_steps: [
-        'copy /data/mikroman-migration.db to the router as usb1-part1/mikroman_data/app.db',
-        'copy /data/.secret_key to the router as usb1-part1/mikroman_data/.secret_key',
-        'start the container, then stop this instance - only one of them may write',
-      ],
-    },
-  });
+  api.containerFormat.mockResolvedValue({ data: { started: true, formatting: true } });
 });
 
 describe('ContainerSetupPanel', () => {
-  it('refuses to apply anything before a plan has been shown', () => {
+  it('asks the router what storage it has before offering a choice', async () => {
     render(<ContainerSetupPanel routerId={1} config={{}} />);
-    expect(screen.getByText('ctr_setup_title')).toBeTruthy();
+    await waitFor(() => expect(api.containerStorage).toHaveBeenCalled());
+    // The slots come from /disk, so the operator picks a device instead of
+    // typing a path that might name one that cannot be written.
+    expect(screen.getByText('usb1-part1')).toBeTruthy();
+    expect(screen.getByText('usb1')).toBeTruthy();
+  });
+
+  it('labels why a disk cannot be used', async () => {
+    const { container } = render(<ContainerSetupPanel routerId={1} config={{}} />);
+    await waitFor(() => expect(api.containerStorage).toHaveBeenCalled());
+    // The whole device is listed with the reason it cannot be used, because
+    // "format it" is the only way it ever becomes one. Unmounted is what the
+    // row says first; a missing filesystem is the same advice from the other side.
+    expect(screen.getByText('ctr_disk_unmounted')).toBeTruthy();
+    // Free space is split across nodes (figure + label), so match the row.
+    expect(container.textContent).toContain('261.4 GB');
+    expect(container.textContent).toContain('ctr_disk_free');
+  });
+
+  it('says so when a mounted volume cannot be written to', async () => {
+    api.containerStorage.mockResolvedValue({
+      data: {
+        ...STORAGE_OK,
+        ready: false,
+        problems: ["usb1-part1 is mounted read-only (ntfs); container layers and the database need writes."],
+        disks: [{ ...DISKS[1], fs: 'ntfs', read_only: true, usable_for_containers: false }],
+      },
+    });
+    const { container } = render(<ContainerSetupPanel routerId={1} config={{}} />);
+    await waitFor(() => expect(api.containerStorage).toHaveBeenCalled());
+    // A router that mounts NTFS read-only is a real deployment, and the plan
+    // would otherwise fail mid-pull with a registry error.
+    expect(screen.getByText('ctr_disk_readonly')).toBeTruthy();
+    expect(container.textContent).toContain('read-only');
+  });
+
+  it('refuses to apply anything before a plan has been shown', async () => {
+    const { container } = render(<ContainerSetupPanel routerId={1} config={{}} />);
+    await waitFor(() => expect(api.containerStorage).toHaveBeenCalled());
+    expect(container.textContent).toContain('ctr_setup_title');
     expect(applyButton().disabled).toBe(true);
     expect(api.containerSetupPlan).not.toHaveBeenCalled();
   });
@@ -99,6 +146,9 @@ describe('ContainerSetupPanel', () => {
     expect(sent.storage_dir).toBe('usb1-part1');
     expect(sent.subnet).toBe('172.17.0.0/24');
     expect(sent.expose_on_interface).toBe('br.lan');
+    // No RAM cap by default: an unset ceiling is the behaviour of every install
+    // today, and guessing one lower turns a slow app into a killed one.
+    expect(sent.ram_high).toBe(null);
   });
 
   it('sends a null interface when the forward field is cleared', async () => {
@@ -109,16 +159,36 @@ describe('ContainerSetupPanel', () => {
     expect(api.containerSetupPlan.mock.calls[0][1].expose_on_interface).toBe(null);
   });
 
-  it('stages the migration and spells out the copy it cannot do itself', async () => {
+  it('passes a typed RAM ceiling through to the plan', async () => {
     const { container } = render(<ContainerSetupPanel routerId={1} config={{}} />);
+    fireEvent.change(container.querySelector('input[placeholder="—"]'), { target: { value: '768M' } });
     fireEvent.click(screen.getByText('ctr_plan'));
     await waitFor(() => expect(api.containerSetupPlan).toHaveBeenCalled());
-    fireEvent.click(screen.getByText('ctr_migrate'));
-    await waitFor(() => expect(api.containerMigrateData).toHaveBeenCalled());
-    await waitFor(() => expect(container.textContent).toContain('1.0 MB'));
-    // Not a silent half-success: the remaining copy steps are shown as a list.
-    expect(container.textContent).toContain('copy /data/mikroman-migration.db');
-    expect(container.textContent).toContain('only one of them may write');
+    expect(api.containerSetupPlan.mock.calls[0][1].ram_high).toBe('768M');
+  });
+
+  it('offers formatting only for a device not holding container state', async () => {
+    const { container } = render(<ContainerSetupPanel routerId={1} config={{}} />);
+    await waitFor(() => expect(api.containerStorage).toHaveBeenCalled());
+    // usb1-part1 is in use by the mount, so it is not offered; usb1 is.
+    expect(container.textContent).toContain('ctr_format_available');
+    expect(container.querySelector('option[value="usb1-part1"]')).toBeNull();
+  });
+
+  it('will not send a format until the slot name has been typed back', async () => {
+    const { container } = render(<ContainerSetupPanel routerId={1} config={{}} />);
+    await waitFor(() => expect(api.containerStorage).toHaveBeenCalled());
+    fireEvent.click(screen.getByText('ctr_format'));
+    await waitFor(() => expect(container.textContent).toContain('ctr_format_confirm'));
+    expect(screen.getByText('ctr_format_confirm').closest('button').disabled).toBe(true);
+    expect(api.containerFormat).not.toHaveBeenCalled();
+
+    fireEvent.change(container.querySelector('input[placeholder="usb1"]'), { target: { value: 'usb1' } });
+    expect(screen.getByText('ctr_format_confirm').closest('button').disabled).toBe(false);
+    fireEvent.click(screen.getByText('ctr_format_confirm'));
+    await waitFor(() => expect(api.containerFormat).toHaveBeenCalled());
+    const sent = api.containerFormat.mock.calls[0][1];
+    expect(sent).toEqual({ slot: 'usb1', file_system: 'ext4', label: '', confirm: 'usb1' });
   });
 
   it('surfaces the router message when a command is refused mid-plan', async () => {

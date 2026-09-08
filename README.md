@@ -61,10 +61,12 @@
   * A stalled router leaves one WARNING on state change and one INFO on recovery, instead of a debug line nobody reads or a warning every 25 seconds.
 
 * **📦 Self-Hosting on the Router (RouterOS Containers)**:
-  * MikroMan can run as a container on the RouterOS device it manages: `POST /api/v1/routers/{id}/containers/setup/plan` shows every change it would make (container `layer-dir`/`tmpdir` on external storage, bridge, veth, gateway address, masquerade, mount, the container itself) and writes nothing; `.../setup/apply` executes that same plan.
-  * Idempotent and defensive: each step checks what the router already has, refuses to modify objects it did not create (`mikroman:` comments), blocks before creating anything when the storage is missing or the chosen subnet is already in use, and stops at the first refused command while reporting which steps landed.
+  * MikroMan can run as a container on the RouterOS device it manages: `POST /api/v1/routers/{id}/containers/setup/plan` shows every change it would make (storage paths, bridge, veth, gateway address, masquerade, mount, the container itself) and writes nothing; `.../setup/apply` executes that same plan.
+  * Storage is chosen from `/disk`, not typed. The router reports which devices are mounted, which are read-only, which have no filesystem and which have room for the image, so a plan is refused with the reason before 340 MB is half-downloaded (`GET .../containers/storage`).
+  * A device that cannot be used as-is can be formatted from the same panel (`POST .../containers/storage/format`). It is destructive and shaped like it: the slot name must be typed back, and anything holding `layer-dir`, `tmpdir` or a mount is refused — including the storage a running MikroMan booted its own database from.
+  * The Containers page shows what each container costs — CPU share, cgroup memory, unpacked image size, restart count — next to the router's own totals, because on a board that also routes, a figure without a denominator is not an answer.
+  * Idempotent and defensive: each step checks what the router already has, refuses to modify objects it did not create (`mikroman:` comments), blocks before creating anything when the storage is unusable or the chosen subnet is already in use, and stops at the first refused command while reporting which steps landed.
   * The web port forward is only ever created bound to one interface; an unbounded `dstnat` would expose the administrative UI on WAN.
-  * `POST .../containers/migrate-data` carries the existing installation over: a consistent snapshot of the live database via SQLite's backup API plus the `.secret_key` that decrypts it. It refuses to run while the target container is up, so a live database is never replaced underneath its application.
   * No credentials are written into `/container/envs`: router logins and the bot token already travel inside the encrypted database, and copying them to env would put them in plaintext in the running config and every exported `.rsc`.
   * Manual path for a bare router: `scripts/setup_ros_container.rsc`.
 
@@ -75,6 +77,8 @@
   * The background tick is split: hardware/bandwidth samples every `POLL_INTERVAL_SECONDS` (10 s), and device discovery, queue/mangle reconciliation, rollups and quota checks every `HEAVY_SYNC_INTERVAL_SECONDS` (60 s), staggered per router. UI actions apply their changes inline, so nothing waits on the slower clock. Set it to `10` to restore the previous behaviour.
   * Retention pruning is batched and runs hourly, never per tick. SQLite allows one writer; a range delete over a 116 MB database held that lock past the 5-second `busy_timeout` and every other worker failed with `database is locked`.
   * `GET /api/v1/system/diagnostics` answers "is this much CPU normal?" without a shell: resident set and peak (the process, not the cgroup's page-cache-inflated figure), RouterOS requests per device, and count/avg/max duration of each background pass. It needs neither a router nor the database.
+  * History and chart reads are indexed for their actual shape. Composite indexes on `(router_id, timestamp)`, `(device_id, record_date)`, `(device_id, created_at)` and friends are created by migration `024_query_indexes` and, for installs that never run Alembic, at start-up; planner statistics (`ANALYZE`) are refreshed exactly when indexes are added. Measured on a copy of a live 691 142-row database: a one-hour interface chart went from 296 403 index entries visited to 6 778 (`51.6 ms → 1.4 ms`), and switching a preset stopped paying 484 ms for device event logs it never reads.
+  * Tuning knobs live in the UI, not in the environment: background sample interval, housekeeping interval, telemetry stream rate, temperature and CPU alert lines, log retention. The stored value wins and the environment is its default — which matters because a RouterOS container has no `.env` to edit, no shell and no `docker exec`.
 
 * **🤖 Dual-Mode Telegram Bot**:
   * Operates in both Long Polling (zero-config NAT) and Authenticated Webhook modes.
@@ -126,6 +130,34 @@ by environment marker instead. Neither is required for correctness: uvicorn
 falls back to the standard asyncio event loop and the `h11` parser.
 
 </details>
+
+### Two ways to run it
+
+| | **On the router itself** (RouterOS container) | **On separate hardware** (Docker Compose) |
+|---|---|---|
+| Needs | RouterOS **v7.13+** with the `container` package installed and enabled, external USB/NVMe storage, container support turned on in `/system/device-mode` | Any Docker host; `linux/amd64`, `linux/arm64` or `linux/arm/v7` |
+| Setup | Containers page → **Prepare this router for a container** → *Plan*, then *Apply* | `docker compose up -d` |
+| Data lives in | `<storage>/mikroman_data/` mounted at `/data` | named volume `mikroman_data` |
+| Restart behaviour | `start-on-boot=yes`, survives a router reboot | `restart: unless-stopped` |
+| Updates | Containers page → update the image, then start it again | `docker compose pull && docker compose up -d` |
+| Same image | `ghcr.io/masseselsev/mikroman:latest` — nothing is built on the device in either case | |
+
+**On the router (option 1).** Everything the setup needs is done by the app from
+inside itself: it reads `/disk` to judge the storage you point it at (mounted,
+writable, room for a ~340 MB image), sets `layer-dir`/`tmpdir` off internal
+flash, creates the bridge, veth, gateway address, masquerade and a LAN-bound web
+forward, writes the data directory, and finally registers the container without
+starting it. Each step is idempotent, refuses objects it did not create
+(`mikroman:` comments), and *Plan* shows the exact list *Apply* will execute. A
+device that cannot be used as-is can be formatted from the same panel — guarded
+by typing the slot name back, and refused outright for storage that holds image
+layers, `tmp` or an existing mount. The manual fallback for a router with no
+working MikroMan on it is [`scripts/setup_ros_container.rsc`](scripts/setup_ros_container.rsc).
+
+**Off the router (option 2).** Use `docker compose` (Option A below) or plain
+`docker run` (Option B). Both are the recommended path for boards with little
+memory, and neither needs an env file: the router credentials, the bot token and
+every tuning knob are stored in the database and edited in the UI.
 
 ### Option A: Docker Compose (Recommended)
 ```bash

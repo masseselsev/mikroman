@@ -355,6 +355,10 @@ class TelegramBotService:
         ("telegram_admin_ids", "TELEGRAM_ADMIN_CHAT_IDS"),
         ("telegram_mode", "TELEGRAM_MODE"),
         ("telegram_webhook_url", "TELEGRAM_WEBHOOK_URL"),
+        # The wizard's language was the one Telegram setting never read back from
+        # the database, so a container - which has no .env - answered every alert
+        # in the compiled-in default whatever the operator had chosen.
+        ("telegram_lang", "TELEGRAM_DEFAULT_LANG"),
     )
 
     async def load_persisted_settings(self) -> bool:
@@ -384,6 +388,18 @@ class TelegramBotService:
                         continue
                     setattr(self.config, attribute, value)
                     applied.append(attribute)
+
+                # No explicit bot language: follow the dashboard. Nobody is
+                # served MikroMan in two languages at once, so an operator who
+                # set the UI to Russian should not be answered in English by a
+                # setting they never saw - and `TELEGRAM_DEFAULT_LANG` as an
+                # environment variable is not reachable at all in a RouterOS
+                # container, which is where this deployment runs.
+                ui_lang = await session.get(AppSetting, "lang")
+                ui_value = (getattr(ui_lang, "value", "") or "").strip()
+                stored_bot_lang = await session.get(AppSetting, "telegram_lang")
+                if ui_value in ("en", "ru") and not (stored_bot_lang and stored_bot_lang.value.strip()):
+                    self.config.TELEGRAM_DEFAULT_LANG = ui_value
         except Exception as e:
             # A database that cannot be read must not stop the app from serving;
             # the bot simply stays off and says so, as it did before.
@@ -391,6 +407,10 @@ class TelegramBotService:
 
         if self.config.TELEGRAM_BOT_TOKEN and not self.bot:
             self._init_bot()
+        # `self.lang` was read from the config at construction, before any stored
+        # row existed to consult; re-read it so the applied setting is the one
+        # the messages actually use.
+        self.lang = self.config.TELEGRAM_DEFAULT_LANG
         if applied:
             logger.info(f"Applied stored Telegram settings: {', '.join(applied)}")
         return bool(self.config.TELEGRAM_BOT_TOKEN)

@@ -227,6 +227,22 @@ async def get_settings(
         data["temp_warning_threshold"] = "80"
     if "auto_scan_enabled" not in data:
         data["auto_scan_enabled"] = "true"
+    # The two background clocks, reported as what the app will actually use: the
+    # stored value if there is one, otherwise the environment default. Without
+    # this the selects in the dialog always showed their own placeholder and a
+    # setting that was in force looked unset (and vice versa).
+    if "poll_interval_seconds" not in data:
+        data["poll_interval_seconds"] = str(int(settings.POLL_INTERVAL_SECONDS))
+    if "heavy_sync_interval_seconds" not in data:
+        data["heavy_sync_interval_seconds"] = str(int(settings.HEAVY_SYNC_INTERVAL_SECONDS))
+    if "telemetry_interval_seconds" not in data:
+        data["telemetry_interval_seconds"] = str(settings.TELEMETRY_STREAM_INTERVAL_SECONDS)
+    if "alert_cpu_threshold" not in data:
+        data["alert_cpu_threshold"] = str(settings.ALERT_CPU_THRESHOLD_PERCENT)
+    if "alert_new_device_enabled" not in data:
+        data["alert_new_device_enabled"] = "true" if settings.ALERT_NEW_DEVICE_ENABLED else "false"
+    if "telegram_lang" not in data:
+        data["telegram_lang"] = settings.TELEGRAM_DEFAULT_LANG
     if "pause_allowed_networks" not in data:
         data["pause_allowed_networks"] = "192.168.0.0/16, 10.0.0.0/8, 172.16.0.0/12"
     if "monitored_wan_interfaces" not in data:

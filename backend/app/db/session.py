@@ -78,6 +78,57 @@ AsyncSessionLocal = async_sessionmaker(
 )
 
 
+#: Composite indexes the aggregators need, as (name, table, columns).
+#:
+#: Declared on the models *and* here, and cross-checked by
+#: ``tests/test_query_performance.py``: `create_all` skips tables that already
+#: exist along with any index on them, so a list is the only way an installed
+#: database gets them - and a name that drifts from the model is an index that
+#: silently never appears.
+_INDEXES = (
+    ("ix_interface_metrics_router_time", "interface_metrics", "router_id, timestamp"),
+    ("ix_interface_metrics_name_time", "interface_metrics", "interface_name, timestamp"),
+    ("ix_system_metrics_router_time", "system_metrics", "router_id, timestamp"),
+    ("ix_device_history_device_time", "device_history", "device_id, created_at"),
+    ("ix_device_rollups_device_date", "device_traffic_rollups", "device_id, record_date"),
+    ("ix_traffic_rollups_user_date", "traffic_rollups", "user_id, record_date"),
+    ("ix_router_rollups_router_date", "router_traffic_rollups", "router_id, record_date"),
+)
+
+
+async def _ensure_query_indexes(conn) -> int:
+    """Create the composite indexes the aggregators need, if they are missing.
+
+    ``create_all()`` skips tables that already exist - and with them any index
+    declared on those tables later - while this application has never run
+    Alembic at start-up. So the same set lives in
+    ``backend/migrations/versions/024_query_indexes.py`` for a managed schema and
+    here for the installs that are already running, which is the pattern the
+    column additions above already follow.
+
+    Returns the number of indexes created, so the start-up log says something
+    specific the first time a slow router gets faster.
+    """
+    created = 0
+    for name, table, columns in _INDEXES:
+        try:
+            before = (await conn.execute(
+                text("SELECT count(*) FROM sqlite_master WHERE type='index' AND name = :n"),
+                {"n": name},
+            )).scalar()
+            if before:
+                continue
+            await conn.execute(text(f"CREATE INDEX IF NOT EXISTS {name} ON {table} ({columns})"))
+            created += 1
+        except Exception as e:
+            # An index that cannot be created (a column the schema does not have
+            # yet, a table that is mid-migration) must not stop the app: it just
+            # stays as slow as it was, which is a worse outcome than a crash but
+            # not a broken one.
+            logger.warning(f"Could not create {name} on {table}: {e}")
+    return created
+
+
 async def init_db() -> None:
     """Initialize database tables and sync dynamic schema columns."""
     async with engine.begin() as conn:
@@ -98,6 +149,28 @@ async def init_db() -> None:
                     f"serialised and an online backup may capture a torn file; take "
                     f"backups with the container stopped."
                 )
+
+            # Indexes and planner statistics, applied before anything below can
+            # return early. `create_all` will not add an index to a table that
+            # already exists, and nothing in the runtime path runs Alembic, so
+            # this is how a database that has been growing for months - the
+            # 691 142-row interface_metrics table on the router, for one - gets
+            # the composite index its queries have been wanting.
+            created = await _ensure_query_indexes(conn)
+            if created:
+                # Statistics are what make the planner choose the new index at
+                # all: without sqlite_stat1 it kept walking a router_id index
+                # over 296 403 entries for a one-hour question. A full ANALYZE
+                # costs ~1 s on a desktop (measured, 691 142 rows) and several
+                # times that on the ARM board, so it runs exactly once per
+                # database - here, when the plan actually changed - and
+                # `PRAGMA optimize` (free) keeps it from being stale later.
+                logger.info(
+                    f"Created {created} query index/indices for the history and metrics reads; "
+                    f"refreshing planner statistics"
+                )
+                await conn.execute(text("ANALYZE"))
+            await conn.execute(text("PRAGMA optimize"))
 
         # SQLite automatic schema evolution for runtime changes
         if "sqlite" in settings.DATABASE_URL:

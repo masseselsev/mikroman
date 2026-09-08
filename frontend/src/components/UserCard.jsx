@@ -276,18 +276,30 @@ function DeviceRow({ group, t, lang, grandTotal = 0, onOpen, onUpdate, onViewTra
         <span style={{ flexShrink: 0, display: 'flex', color: 'var(--text-secondary)' }}>
           {getDeviceIcon(d.vendor, d.hostname)}
         </span>
-        <span className="drow-name" title={deviceName}>{deviceName}</span>
-
-        {multiHomed && (
-          <button
-            type="button"
-            className="badge badge-chip drow-adapters-toggle"
-            title={t('multi_adapter_manage_hint')}
-            onClick={(e) => { e.stopPropagation(); setShowAdapters(v => !v); }}
-          >
-            {group.adapters.length}×
-          </button>
-        )}
+        <span className="drow-name" title={deviceName}>
+          {multiHomed && (
+            <span
+              className="drow-merge-badge"
+              title={t('multi_adapter_manage_hint')}
+              onClick={(e) => { e.stopPropagation(); setShowAdapters(v => !v); }}
+              style={{
+                fontSize: 'var(--fs-3xs)',
+                color: 'var(--color-primary)',
+                background: 'rgba(59, 130, 246, 0.12)',
+                padding: '0 3px',
+                borderRadius: 2,
+                fontWeight: 600,
+                cursor: 'pointer',
+                marginRight: 3,
+                verticalAlign: 'middle',
+                lineHeight: 1.4,
+              }}
+            >
+              {group.adapters.length}×
+            </span>
+          )}
+          {deviceName}
+        </span>
         {hasCustomLimit && (
           <span className="badge badge-chip badge-chip-warn" title={`${t('table_speed_limit')}: ${d.speed_limit}`}>
             ⚡ {d.speed_limit}

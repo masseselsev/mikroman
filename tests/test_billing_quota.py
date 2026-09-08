@@ -408,9 +408,12 @@ async def test_quota_used_bytes_is_scoped_to_the_active_router_not_summed_across
     session.add(Router(id=2, name="Heavy", host="192.168.99.1", username="admin", password="x"))
     await session.commit()
 
-    # router-local clock == container clock, so "today" is unambiguous
+    # router-local clock == container clock (UTC), so "today" must be UTC date, not local date.
+    # The test environment's local timezone may be ahead of UTC, so date.today() could be tomorrow
+    # in UTC. Use datetime.now(UTC).date() to match what router_local_now returns with offset=0.
     session.add(AppSetting(key=ROUTER_OFFSET_SETTING_KEY, value="0"))
-    today = date.today()
+    from datetime import datetime, timezone
+    today = datetime.now(timezone.utc).date()
     # The active router's own traffic this cycle: 10 GB.
     session.add(RouterTrafficRollup(router_id=1, record_date=today, bytes_in=9_000_000_000, bytes_out=1_000_000_000))
     # A second router's traffic - much heavier, and must never be added in.

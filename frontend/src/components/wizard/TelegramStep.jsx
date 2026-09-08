@@ -45,7 +45,7 @@ export function TelegramStep({ telegramForm, setTelegramForm, onNext, onBack }) 
                 onChange={e => setTelegramForm({ ...telegramForm, bot_token: e.target.value })}
               />
             </div>
-            <span className="form-hint">{t('tg_token_hint')}</span>
+            <span className="form-hint">{t('telegram_bot_token_hint')}</span>
           </div>
 
           <div className="form-group">

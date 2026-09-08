@@ -23,11 +23,21 @@ class ContainerSupportDTO(BaseModel):
 
 
 class ContainerDTO(BaseModel):
-    """One container as reported by ``/container``."""
+    """One container as reported by ``/container``.
+
+    The resource fields are what the page had nothing to show before. RouterOS
+    reports them live on the container row, so no polling endpoint is needed:
+    ``cpu-usage`` is a percentage of the device, ``memory-current`` is the
+    cgroup's usage in bytes. That memory figure is deliberately labelled as the
+    cgroup and not the process, because it includes the page cache the container
+    pushes through its data mount - the difference between "the app uses 500 MB"
+    and the ~230 MB it actually holds.
+    """
     id: str
     name: Optional[str] = None
     tag: Optional[str] = None
     status: Optional[str] = None          # running | stopped | error | extracting …
+    running: Optional[bool] = None        # `/container` reports `running`, not `status`, on 7.x
     os: Optional[str] = None
     arch: Optional[str] = None
     interface: Optional[str] = None
@@ -40,6 +50,24 @@ class ContainerDTO(BaseModel):
     logging: Optional[bool] = None
     start_on_boot: Optional[bool] = None
     comment: Optional[str] = None
+    cpu_usage_pct: Optional[float] = None
+    memory_current_bytes: Optional[int] = None
+    memory_high_bytes: Optional[int] = None
+    memory_max_bytes: Optional[int] = None
+    # Unpacked size of the container's own storage, bytes.
+    disk_size_bytes: Optional[int] = None
+    restart_count: Optional[int] = None
+    # Seconds the device waits after SIGTERM before SIGKILL.
+    stop_time_seconds: Optional[int] = None
+
+
+class ContainerHostDTO(BaseModel):
+    """The router's own totals, so a container's numbers can be read as a share."""
+
+    cpu_load_pct: Optional[int] = None
+    total_memory_bytes: Optional[int] = None
+    free_memory_bytes: Optional[int] = None
+    uptime: Optional[str] = None
 
 
 class ContainerMountDTO(BaseModel):
@@ -57,19 +85,88 @@ class ContainerEnvDTO(BaseModel):
 
 
 class ContainerConfigDTO(BaseModel):
+    """``/container/config`` - where the device keeps container state.
+
+    ``layer_dir``/``tmpdir`` decide whether a pull survives on flash or on
+    external storage; ``memory_high`` is the ceiling across all containers, which
+    on a board shared with routing is the difference between a slow app and an
+    unrestrained one.
+    """
+
     tmpdir: Optional[str] = None
     registry_url: Optional[str] = None
     ram_high: Optional[str] = None
     layer_dir: Optional[str] = None
+    memory_current_bytes: Optional[int] = None
+    memory_high_bytes: Optional[int] = None
+    memory_max_bytes: Optional[int] = None
+
+
+class ContainerDiskDTO(BaseModel):
+    """One row of ``/disk``: a device or a partition, as the router sees it.
+
+    RouterOS 7.13+ exposes storage here rather than letting a path name imply a
+    mounted volume, which matters because the failure modes are different and
+    only some of them are fixable by the operator: a disk that is present but
+    unmounted, a filesystem RouterOS mounts read-only, a partition with no room
+    for a 340 MB image, and a device with no filesystem at all.
+    """
+
+    slot: str
+    parent: Optional[str] = None
+    is_partition: bool = False
+    model: Optional[str] = None
+    serial: Optional[str] = None
+    fs: Optional[str] = None                 # '-', 'ext4', 'fat32', 'ntfs', …
+    mount_point: Optional[str] = None
+    mounted: bool = False
+    read_only: bool = False
+    formatting: bool = False
+    disabled: bool = False
+    size_bytes: Optional[int] = None
+    free_bytes: Optional[int] = None
+    used_pct: Optional[int] = None
+    temperature_c: Optional[int] = None
+    io_errors: Optional[int] = None
+    # What this service would do with it, and why. Populated by the assessment.
+    usable_for_containers: bool = False
+    formatable: bool = False
+    note: str = ""
+
+
+class ContainerStorageDTO(BaseModel):
+    """Verdict on one storage directory, plus every disk the router can see.
+
+    ``ready`` is the answer the plan needs. ``disks`` is the whole inventory, so
+    the UI can offer the alternatives (and the format action) instead of telling
+    the operator to go and look in Winbox.
+    """
+
+    ready: bool = False
+    storage_dir: str = ""
+    matched_slot: Optional[str] = None
+    free_bytes: Optional[int] = None
+    size_bytes: Optional[int] = None
+    fs: Optional[str] = None
+    # Blocking: Apply refuses while any of these is present.
+    problems: List[str] = Field(default_factory=list)
+    # Non-blocking: worth showing to the operator, but the pull will work.
+    warnings: List[str] = Field(default_factory=list)
+    disks: List[ContainerDiskDTO] = Field(default_factory=list)
+    # Bytes a pull needs before anything else is considered: the unpacked image
+    # plus room for a layer or two of churn.
+    required_bytes: int = 0
 
 
 class ContainerOverviewDTO(BaseModel):
     """Everything the container page needs in one round trip."""
     support: ContainerSupportDTO
+    host: ContainerHostDTO = Field(default_factory=ContainerHostDTO)
     containers: List[ContainerDTO] = Field(default_factory=list)
     mounts: List[ContainerMountDTO] = Field(default_factory=list)
     envs: List[ContainerEnvDTO] = Field(default_factory=list)
     config: ContainerConfigDTO = Field(default_factory=ContainerConfigDTO)
+    storage: ContainerStorageDTO = Field(default_factory=ContainerStorageDTO)
 
 
 class ContainerCreateRequest(BaseModel):
@@ -107,7 +204,8 @@ class ContainerSetupRequest(BaseModel):
 
     storage_dir: str = Field(
         ..., min_length=2,
-        description="Router path with room for image layers and the database, e.g. 'usb1-part1'",
+        description="Router storage slot with room for image layers and the database, e.g. 'usb1-part1'. "
+                    "Validated against /disk, not guessed from a path that happens to resolve.",
     )
     image: str = "ghcr.io/masseselsev/mikroman:latest"
     container_name: str = "mikroman"
@@ -122,6 +220,12 @@ class ContainerSetupRequest(BaseModel):
         description="LAN interface allowed to reach the web UI (e.g. 'br.lan'). "
                     "None keeps the port forward off, and the UI stays reachable only from the router.",
     )
+    ram_high: Optional[str] = Field(
+        None,
+        description="Ceiling for all containers together, e.g. '768M'. Left alone when unset: the "
+                    "unlimited default is what a 2 GB board runs on today, and a value that is too low "
+                    "turns a slow app into an OOM-killed one.",
+    )
     dns_servers: Optional[str] = Field(
         None,
         description="Only sent if /container/config actually has the attribute on this RouterOS release; "
@@ -131,8 +235,8 @@ class ContainerSetupRequest(BaseModel):
     extra_env: dict = Field(
         default_factory=dict,
         description="Non-secret environment overrides. Router credentials and the Telegram token are NOT "
-                    "needed here - they live in the database the migration carries, and writing them as env "
-                    "would put them in plaintext in the router config and in every exported .rsc.",
+                    "needed here - they live in the encrypted database, and writing them as env would put "
+                    "them in plaintext in the running config and in every exported .rsc.",
     )
 
 
@@ -157,30 +261,47 @@ class ContainerSetupPlanDTO(BaseModel):
     storage_dir: str = ""
     gateway_ip: str = ""
     container_ip: str = ""
+    # What /disk said about the chosen storage, including every alternative the
+    # router can see. The plan refuses to describe storage as a step without it.
+    storage: ContainerStorageDTO = Field(default_factory=ContainerStorageDTO)
     steps: List[ContainerSetupStepDTO] = Field(default_factory=list)
     blockers: List[str] = Field(default_factory=list)
 
 
-class ContainerMigrateRequest(BaseModel):
-    """Carry this installation's data into the container's mount."""
+# --- Preparing storage --------------------------------------------------------
 
-    storage_dir: str = Field(..., min_length=2)
-    data_dir_name: str = "mikroman_data"
-    container_name: str = "mikroman"
+#: Filesystems RouterOS can write on a USB disk. ``ntfs`` is absent on purpose:
+#: it mounts read-only without extra packages, which is precisely the state a
+#: container must not have its layer directory on.
+SUPPORTED_FILE_SYSTEMS = ("ext4", "fat32", "exfat", "xfs", "btrfs")
 
 
-class ContainerMigrateResultDTO(BaseModel):
-    """A staged snapshot and the hand-off that is still the operator's to make.
+class ContainerFormatRequest(BaseModel):
+    """Format one disk or partition. Destructive, and shaped like it.
 
-    RouterOS exposes no upload endpoint for binaries on this release, so the API
-    says plainly what has been prepared and what has to be copied - a migration
-    that silently did half the job would be worse than one that stops and tells.
+    ``confirm`` has to repeat the slot exactly. That is not ceremony for the
+    operator's sake - a request body that can be assembled from a dropdown alone
+    is one mis-click from erasing the stick a router serves its shares off, and
+    the app cannot undo it.
     """
 
-    database_bytes: int = 0
-    staged_path: str = ""
-    secret_key_path: str = ""
-    destination: str = ""
-    # 'included' or 'absent' - the key's value is never returned.
-    secret_key: str = "absent"
-    next_steps: List[str] = Field(default_factory=list)
+    slot: str = Field(..., min_length=1, description="The /disk slot, e.g. 'usb1-part1'")
+    file_system: str = Field("ext4", description=f"One of: {', '.join(SUPPORTED_FILE_SYSTEMS)}")
+    label: str = Field("", max_length=16)
+    mbr_partition_table: bool = Field(
+        False, description="Write an MBR table when formatting a whole device (yes/no in RouterOS)"
+    )
+    confirm: str = Field(..., min_length=1, description="Must equal 'slot' exactly, or the request is refused")
+
+
+class ContainerFormatResultDTO(BaseModel):
+    """What the device accepted, and how to watch it finish."""
+
+    started: bool = False
+    slot: str = ""
+    file_system: str = ""
+    label: str = ""
+    # Formatting runs in the background; the row reports formatting=true until
+    # it is done, so the UI refreshes rather than pretending to poll a job id.
+    formatting: bool = False
+    detail: str = ""

@@ -16,20 +16,19 @@ description rewritten afterwards.
 import asyncio
 import ipaddress
 import logging
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
-# Importing the rule rather than repeating it: where the database lives and where
-# the key that decrypts it lives are decided by the app's own config and secrets
-# module, and a migration that guessed either path would quietly copy the wrong
-# thing.
-from backend.app.core.config import settings
-from backend.app.core.secrets import _data_dir as resolve_data_dir
 from backend.app.schemas.container import (
+    SUPPORTED_FILE_SYSTEMS,
+    ContainerDiskDTO,
+    ContainerFormatRequest,
     ContainerSetupPlanDTO,
     ContainerSetupRequest,
     ContainerSetupStepDTO,
+    ContainerStorageDTO,
 )
 from backend.app.services.routeros.provisioning import RouterOSCommandError
+from backend.app.utils_format import format_bytes_human
 
 logger = logging.getLogger("mikroman.container_setup")
 
@@ -39,6 +38,14 @@ logger = logging.getLogger("mikroman.container_setup")
 # own later cleanups.
 OWNED = "mikroman:"
 
+# Measured on the hAP be3 Media: mikroman:latest unpacks to 262 MB on top of a
+# ~340 MB download. Below this, a pull cannot finish and the router is left with
+# half an image, so it is a hard block rather than advice.
+MIN_FREE_BYTES = 400 * 1024 * 1024
+# Above the floor but still tight: the layers grow with every release until the
+# old ones are pruned, and the database lives on the same stick.
+COMFORT_FREE_BYTES = 1 * 1024 * 1024 * 1024
+
 
 def _is_owned(comment: Optional[str]) -> bool:
     return str(comment or "").strip().startswith(OWNED)
@@ -46,6 +53,202 @@ def _is_owned(comment: Optional[str]) -> bool:
 
 def _first(iterable, predicate):
     return next((item for item in iterable if predicate(item)), None)
+
+
+def _as_int(value: Any) -> Optional[int]:
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _as_bool(value: Any) -> bool:
+    return str(value).strip().lower() in ("true", "yes", "1")
+
+
+def _slot_of(path: Optional[str]) -> str:
+    """The storage slot a RouterOS path starts with: ``/usb1-part1/x`` → ``usb1-part1``.
+
+    Paths and slot names are used interchangeably in the UI and in ``/file``
+    listings, and the device itself normalises ``usb1-part1`` to ``/usb1-part1``.
+    Comparing anything else invites a plan that refuses a storage it is already
+    using.
+    """
+    return str(path or "").strip().strip("/").split("/")[0]
+
+
+def _format_bytes(value: Optional[int]) -> str:
+    """Bytes for a message an operator reads, with an honest unknown.
+
+    Delegates to the shared formatter rather than reimplementing the ladder - the
+    only thing added here is that a disk which reports no free space must not be
+    described as having zero.
+    """
+    if value is None:
+        return "unknown size"
+    return format_bytes_human(value)
+
+
+def storage_slots_in_use(
+    config: Dict[str, Any],
+    mounts: Sequence[Dict[str, Any]],
+) -> Set[str]:
+    """Slots that hold container state right now, and must never be formatted.
+
+    This is the data-loss guard for :func:`format_storage`. It covers the two
+    places RouterOS keeps container bytes (``layer-dir``, ``tmpdir``) and every
+    mount source - which on a running deployment includes the storage this very
+    instance is booted from, so the app cannot saw off the branch it sits on.
+    """
+    slots: Set[str] = set()
+    for key in ("layer-dir", "layer_dir", "tmpdir"):
+        slot = _slot_of(config.get(key))
+        if slot:
+            slots.add(slot)
+    for mount in mounts or []:
+        slot = _slot_of(mount.get("src"))
+        if slot:
+            slots.add(slot)
+    return slots
+
+
+def _disk_dto(row: Dict[str, Any], *, in_use: Set[str]) -> ContainerDiskDTO:
+    """One ``/disk`` row, plus this service's verdict on it.
+
+    ``formatable`` is deliberately narrow. A device is offered for formatting
+    only when it is not already holding container state, is not its parent's
+    mounted sibling's only content, and is not busy. Everything else has to be
+    reconfigured first, because formatting is the one operation here with no
+    undo.
+    """
+    slot = str(row.get("slot") or row.get("name") or "")
+    parent = str(row.get("parent") or "")
+    size = _as_int(row.get("size"))
+    free = _as_int(row.get("free"))
+    fs = str(row.get("fs") or "").strip() or None
+    mounted = _as_bool(row.get("mounted"))
+    read_only = _as_bool(row.get("mount-read-only"))
+    formatting = _as_bool(row.get("formatting"))
+    is_partition = _as_bool(row.get("partition"))
+
+    usable = bool(slot) and mounted and not read_only and not formatting and fs not in (None, "-")
+    reasons: List[str] = []
+    if not mounted:
+        reasons.append("not mounted")
+    if read_only:
+        reasons.append("read-only")
+    if formatting:
+        reasons.append("formatting in progress")
+    if fs in (None, "-"):
+        reasons.append("no filesystem")
+
+    # A whole device is only offered when none of its own partitions carry
+    # container state: formatting the disk erases the table and every partition
+    # under it, however healthy they look from here.
+    conflicts = slot in in_use or (bool(parent) and parent in in_use)
+    return ContainerDiskDTO(
+        slot=slot,
+        parent=parent or None,
+        is_partition=is_partition,
+        model=str(row.get("model") or "").strip() or None,
+        serial=str(row.get("serial") or "").strip() or None,
+        fs=fs,
+        mount_point=str(row.get("mount-point") or "").strip() or None,
+        mounted=mounted,
+        read_only=read_only,
+        formatting=formatting,
+        disabled=_as_bool(row.get("disabled")),
+        size_bytes=size,
+        free_bytes=free,
+        used_pct=_as_int(row.get("use")),
+        temperature_c=_as_int(row.get("temperature")),
+        io_errors=_as_int(row.get("io-errors")),
+        usable_for_containers=usable,
+        formatable=not conflicts and not formatting,
+        note="; ".join(reasons) if reasons else (
+            f"in container use ({slot}) - formatting is refused while it holds layers, "
+            f"tmp or a mount" if conflicts else ""
+        ),
+    )
+
+
+def assess_storage(
+    disks: Sequence[Dict[str, Any]],
+    storage_dir: str,
+    *,
+    in_use: Optional[Set[str]] = None,
+) -> ContainerStorageDTO:
+    """Judge one storage choice against what the router actually has mounted.
+
+    The previous check was "does some path under this name appear in ``/file``".
+    That passes for a disk mounted read-only, for an NTFS stick RouterOS cannot
+    write, and for a 128 MB partition that cannot hold a 340 MB image - each of
+    which fails later, during the pull, with a message from the registry rather
+    than from here. ``/disk`` reports the real state, so the plan can refuse up
+    front and say what to do about it.
+    """
+    in_use = set(in_use or ())
+    dto = ContainerStorageDTO(
+        storage_dir=storage_dir,
+        required_bytes=MIN_FREE_BYTES,
+        disks=[_disk_dto(row, in_use=in_use) for row in disks or []],
+    )
+    wanted = _slot_of(storage_dir)
+
+    row = _first(disks or [], lambda d: _slot_of(d.get("slot") or d.get("name")) == wanted
+                 or _slot_of(d.get("mount-point")) == wanted)
+    if row is None:
+        seen = ", ".join(sorted({str(d.get("slot") or d.get("name")) for d in disks or []} - {""})) or "none"
+        dto.problems.append(
+            f"'{wanted}' is not a storage this router sees. It reports: {seen}."
+        )
+        return dto
+
+    slot = str(row.get("slot") or row.get("name") or wanted)
+    fs = str(row.get("fs") or "").strip() or "-"
+    size = _as_int(row.get("size"))
+    free = _as_int(row.get("free"))
+    dto.matched_slot = slot
+    dto.fs = None if fs == "-" else fs
+    dto.size_bytes = size
+    dto.free_bytes = free
+
+    if _as_bool(row.get("disabled")):
+        dto.problems.append(f"{slot} is disabled on the router (/disk set {slot} disabled=no).")
+    if not _as_bool(row.get("mounted")):
+        dto.problems.append(
+            f"{slot} is present but not mounted; reseat or mount it before continuing."
+        )
+    if _as_bool(row.get("mount-read-only")):
+        dto.problems.append(
+            f"{slot} is mounted read-only ({fs}); container layers and the database need writes."
+        )
+    if fs == "-":
+        dto.problems.append(
+            f"{slot} has no filesystem RouterOS can use - format it first (ext4 recommended)."
+        )
+    elif fs not in SUPPORTED_FILE_SYSTEMS:
+        dto.warnings.append(
+            f"{fs} is not one of the filesystems RouterOS formats ({', '.join(SUPPORTED_FILE_SYSTEMS)}); "
+            f"it works, but expect weaker performance and no journal on a power loss."
+        )
+    if free is not None:
+        if free < MIN_FREE_BYTES:
+            dto.problems.append(
+                f"{slot} has {_format_bytes(free)} free and a pull needs at least "
+                f"{_format_bytes(MIN_FREE_BYTES)} (the image unpacks to ~340 MB)."
+            )
+        elif free < COMFORT_FREE_BYTES:
+            dto.warnings.append(
+                f"{_format_bytes(free)} free is enough for one pull, but layers accumulate across "
+                f"releases until the old image is removed - plan on {_format_bytes(COMFORT_FREE_BYTES)}."
+            )
+    else:
+        dto.warnings.append(f"{slot} does not report free space, so the plan cannot check it.")
+
+    dto.ready = not dto.problems
+    return dto
+
 
 
 class ContainerSetupService:
@@ -78,7 +281,7 @@ class ContainerSetupService:
         c = self.client
         (
             config, bridges, veths, ports, addresses, srcnat, dstnat,
-            mounts, envs, containers, files,
+            mounts, envs, containers, files, disks,
         ) = await asyncio.gather(
             c.get_container_config(),
             c.list_bridge_interfaces(),
@@ -91,11 +294,13 @@ class ContainerSetupService:
             c.get_container_envs(),
             c.get_containers(),
             c.list_file_names(),
+            c.list_disks(),
         )
         return {
             "config": config or {}, "bridges": bridges, "veths": veths, "ports": ports,
             "addresses": addresses, "srcnat": srcnat, "dstnat": dstnat, "mounts": mounts,
             "envs": envs, "containers": containers, "files": set(files or []),
+            "disks": disks,
         }
 
     def _subnet(self, request: ContainerSetupRequest) -> Tuple[ipaddress.IPv4Network, str, str]:
@@ -151,16 +356,22 @@ class ContainerSetupService:
             plan.ok = False
             plan.steps.append(ContainerSetupStepDTO(key=key, action="blocked", detail=detail))
 
-        # 1. Where the layers and the writable root go. This is the step that
-        #    decides whether the pull survives, so it is checked before anything
-        #    else and refused outright when the storage is not there.
-        if request.storage_dir.rstrip("/") not in {f.split("/")[0] for f in state["files"]}:
-            block(
-                "storage_dir",
-                f"'{request.storage_dir}' is not a storage the router can see. "
-                f"Check Winbox -> Files for the mount name (e.g. usb1-part1).",
-            )
+        # 1. The storage everything else lands on. Judged from /disk, before any
+        #    write is considered: a pull that fails halfway leaves a broken image
+        #    on the device, and the router's own error for that arrives as a
+        #    registry message with no hint that the answer was a mount flag.
+        in_use = storage_slots_in_use(state["config"], state["mounts"])
+        storage = assess_storage(state["disks"], request.storage_dir, in_use=in_use)
+        plan.storage = storage
+        if not storage.ready:
+            block("storage_dir", " ".join(storage.problems))
             return plan
+        await step(
+            "storage_dir", "exists",
+            f"{storage.matched_slot}: {storage.fs}, "
+            f"{_format_bytes(storage.free_bytes)} free of {_format_bytes(storage.size_bytes)}"
+            + (f"; {storage.warnings[0]}" if storage.warnings else ""),
+        )
 
         config = state["config"]
         layer_dir = f"{request.storage_dir.rstrip('/')}/container-layers"
@@ -168,6 +379,8 @@ class ContainerSetupService:
         wanted = {"layer-dir": layer_dir, "tmpdir": tmpdir}
         if request.dns_servers:
             wanted["dns-servers"] = request.dns_servers
+        if request.ram_high:
+            wanted["ram-high"] = request.ram_high
 
         # RouterOS applies one set atomically, and a single attribute this release
         # does not have - v7.24.2's /container/config has no dns-servers - makes
@@ -332,11 +545,15 @@ class ContainerSetupService:
                                   env_list, key, str(wanted[key]))):
                 return plan
         if not wanted:
-            await step("env", "skip", "none: the migrated database carries the router credentials and the bot token")
+            await step("env", "skip",
+                       "none: router credentials and the bot token live in the encrypted database, and "
+                       "/container/envs would put them in plaintext in the running config and every .rsc")
 
-        # 10. The container itself. Created but not started - the migration has
-        #     to land in the mount first, or the app boots against an empty
-        #     database and writes a fresh one over the path we are about to use.
+        # 10. The container itself. Created but deliberately not started: the
+        #     operator should see the row, its mount and its environment in the
+        #     page before the app boots on the router, because starting is the
+        #     point where a wrong mount path becomes a second, empty installation
+        #     writing over the first one.
         if request.create_container:
             # RouterOS names the row after the image (`mikroman:latest`), not
             # after anything the operator chose, so matching on the requested
@@ -382,114 +599,122 @@ def _overlaps(address: Optional[str], network: ipaddress.IPv4Network) -> bool:
         return False
 
 
-# --- Carrying the existing installation's data over ----------------------------
+# --- Storage: reading it, and preparing it ------------------------------------
 
 
-class DataMigrationError(RuntimeError):
-    """Why the data could not be carried over, phrased for the operator."""
+async def read_storage(client: Any, storage_dir: Optional[str] = None) -> ContainerStorageDTO:
+    """What the router has, and whether ``storage_dir`` is one of them.
 
-
-def _database_path(database_url: str, data_dir):
-    """The sqlite file this installation is using, from DATABASE_URL.
-
-    Handles both shapes the setting takes in practice: an absolute path inside
-    the container image (``sqlite+aiosqlite:////data/app.db``) and the relative
-    one a source checkout uses (``sqlite+aiosqlite:///./data/app.db``).
+    Separate from the plan because the page needs the inventory *before* the
+    operator chooses: the choice should be a pick from what exists, not a text
+    box they guess at. ``storage_dir`` is optional for the same reason - with
+    nothing chosen yet, the caller still wants the disk list.
     """
-    from pathlib import Path
-
-    raw = str(database_url or "")
-    tail = raw.split(":///", 1)[-1] if ":///" in raw else raw.split("://", 1)[-1]
-    tail = tail.split("?", 1)[0]
-    candidate = Path(tail)
-    if not candidate.is_absolute():
-        candidate = data_dir / candidate.name
-    return candidate
-
-
-def _snapshot_local_db(data_dir, destination: str) -> int:
-    """Copy the running database to ``data_dir/destination``; return its size.
-
-    The SQLite backup API, not a file copy. The app writes samples every few
-    seconds, so copying a live database file byte-for-byte catches it mid-
-    transaction and the result arrives on the router reporting "database disk
-    image is malformed". ``backup()`` yields a consistent snapshot from a
-    concurrently-written source, and the output is one self-contained file with
-    no -wal left behind to transfer.
-    """
-    import sqlite3
-
-    source = _database_path(settings.DATABASE_URL, data_dir)
-    if not source.exists():
-        raise DataMigrationError(f"no database found at {source}")
-    target = data_dir / destination
-    src = sqlite3.connect(f"file:{source}?mode=ro", uri=True)
-    try:
-        dst = sqlite3.connect(target)
-        try:
-            src.backup(dst)
-        finally:
-            dst.close()
-    finally:
-        src.close()
-    return target.stat().st_size
-
-
-async def migrate_data(
-    client: Any,
-    *,
-    storage_dir: str,
-    data_dir_name: str = "mikroman_data",
-    container_name: str = "mikroman",
-    tmp_name: str = "mikroman-migration.db",
-) -> Dict[str, Any]:
-    """Stage a consistent copy of this installation for the container to boot on.
-
-    Not a transfer - a staging. RouterOS 7.24.2 has no upload endpoint over REST,
-    and ``/file/add`` carries JSON text, so a hundred-megabyte binary cannot leave
-    by the channel that configured the rest of it. The snapshot is taken here
-    (SQLite's backup API, so it stays consistent while this instance keeps writing
-    samples every few seconds) and reported with the two paths that must end up
-    beside each other in the mount: ``app.db`` and ``.secret_key``.
-
-    The key travels with the database because it has to: router credentials and
-    the bot token are stored encrypted, and an install that gets ``app.db``
-    without the matching ``.secret_key`` generates a new key on first boot and
-    then cannot decrypt anything - which surfaces as a broken, empty deployment
-    rather than as a missing file.
-
-    Refuses while the target container is running: replacing a live application's
-    database underneath it is the one action here that really can lose data.
-    """
-    containers = await client.get_containers()
-    running = _first(
-        containers or [],
-        lambda c: (c.get("name") or "") == container_name and (c.get("status") or "") == "running",
+    config, mounts, disks = await asyncio.gather(
+        client.get_container_config(),
+        client.get_container_mounts(),
+        client.list_disks(),
     )
-    if running is not None:
-        raise DataMigrationError(
-            f"container '{container_name}' is running - stop it first, or this would replace "
-            f"the database underneath a live application"
+    in_use = storage_slots_in_use(config or {}, mounts or [])
+    if not storage_dir:
+        # No choice made yet: report the inventory, and mark the verdict as not
+        # ready rather than inventing a directory to judge.
+        return ContainerStorageDTO(
+            ready=False,
+            storage_dir="",
+            problems=["no storage chosen yet"],
+            disks=[_disk_dto(row, in_use=in_use) for row in disks or []],
+            required_bytes=MIN_FREE_BYTES,
+        )
+    return assess_storage(disks or [], storage_dir, in_use=in_use)
+
+
+class StorageFormatError(RuntimeError):
+    """Why a format request was refused, phrased for the operator."""
+
+
+async def format_storage(client: Any, request: ContainerFormatRequest) -> Dict[str, Any]:
+    """Format one disk or partition, if and only if the guards all pass.
+
+    This function exists to be uncallable by accident. ``/disk format`` is a
+    single REST call that erases a device, and the router will happily accept it
+    for the wrong slot, with no confirmation prompt of its own and nothing to
+    restore afterwards. So four things are checked here, in this order, before
+    the command is sent:
+
+    1. the operator typed the slot name into ``confirm`` - the body cannot be
+       assembled from a dropdown alone;
+    2. the target is one of the slots ``/disk`` actually reports, so a typo
+       cannot address a device nobody listed;
+    3. the filesystem is one RouterOS formats (an arbitrary string would be
+       refused by the device with a worse message than this one);
+    4. the slot - or the device it is a partition of - holds no container state:
+       not ``layer-dir``, not ``tmpdir``, not the source of any mount. That set
+       includes the storage a running MikroMan booted its own database from, so
+       the app cannot wipe the ground it stands on.
+    """
+    if request.confirm.strip() != request.slot.strip():
+        raise StorageFormatError(
+            "confirmation does not match the slot - type the device name exactly to format it"
+        )
+    if request.file_system not in SUPPORTED_FILE_SYSTEMS:
+        raise StorageFormatError(
+            f"unknown filesystem '{request.file_system}'; RouterOS formats: "
+            f"{', '.join(SUPPORTED_FILE_SYSTEMS)}"
         )
 
-    data_dir = resolve_data_dir()
-    key_path = data_dir / ".secret_key"
-    size = await asyncio.to_thread(_snapshot_local_db, data_dir, tmp_name)
-    staged = data_dir / tmp_name
-    remote = f"{storage_dir.rstrip('/')}/{data_dir_name}"
+    config, mounts, disks = await asyncio.gather(
+        client.get_container_config(),
+        client.get_container_mounts(),
+        client.list_disks(),
+    )
+    slot = request.slot.strip()
+    row = _first(disks or [], lambda d: str(d.get("slot") or d.get("name") or "").strip() == slot)
+    if row is None:
+        seen = ", ".join(sorted({str(d.get("slot") or d.get("name") or "") for d in disks or []} - {""})) or "none"
+        raise StorageFormatError(f"the router reports no storage '{slot}'. It has: {seen}.")
+    if _as_bool(row.get("formatting")):
+        raise StorageFormatError(f"{slot} is already being formatted; wait for it to finish.")
 
+    in_use = storage_slots_in_use(config or {}, mounts or [])
+    parent = str(row.get("parent") or "").strip()
+    children = {
+        str(d.get("slot") or d.get("name") or "").strip()
+        for d in disks or [] if str(d.get("parent") or "").strip() == slot
+    }
+    touched = {slot} | ({parent} if parent else set()) | children
+    conflicts = sorted(touched & in_use)
+    if conflicts:
+        raise StorageFormatError(
+            f"{', '.join(conflicts)} holds container storage (layer-dir, tmpdir or a mount"
+            + (" source" if children & in_use else "")
+            + f"); repoint that elsewhere before formatting {slot}."
+        )
+
+    await client.format_disk(
+        slot,
+        file_system=request.file_system,
+        label=request.label.strip(),
+        mbr_partition_table=request.mbr_partition_table,
+    )
+    logger.warning(
+        f"Started formatting {slot} as {request.file_system}"
+        + (f" (label {request.label})" if request.label else "")
+        + "; the router reports it under /disk until it finishes"
+    )
+
+    # Read the row back so the caller sees the device's own answer rather than an
+    # assumption about how far it got in the two seconds since the command.
+    after = await client.list_disks()
+    now = _first(after or [], lambda d: str(d.get("slot") or "") == slot) or {}
     return {
-        "database_bytes": size,
-        "staged_path": str(staged),
-        "secret_key_path": str(key_path) if key_path.exists() else "",
-        "destination": f"{remote}/app.db",
-        "secret_key": "included" if key_path.exists() else "absent",
-        # Spelled out rather than half-automated: the operator has to see that the
-        # last metre is theirs, and what for.
-        "next_steps": [
-            f"copy {staged} to the router as {remote}/app.db",
-            (f"copy {key_path} to the router as {remote}/.secret_key" if key_path.exists()
-             else "no .secret_key here; the container will create one"),
-            "start the container, then stop this instance - only one of them may write",
-        ],
+        "started": True,
+        "slot": slot,
+        "file_system": request.file_system,
+        "label": request.label.strip(),
+        "formatting": _as_bool(now.get("formatting")),
+        "detail": (
+            f"{slot} -> {request.file_system}. Formatting runs in the background; "
+            f"refresh the page - the mount and its free space reappear when it is done."
+        ),
     }

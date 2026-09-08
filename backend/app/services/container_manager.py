@@ -13,10 +13,13 @@ from backend.app.schemas.container import (
     ContainerConfigDTO,
     ContainerDTO,
     ContainerEnvDTO,
+    ContainerHostDTO,
     ContainerMountDTO,
     ContainerOverviewDTO,
+    ContainerStorageDTO,
     ContainerSupportDTO,
 )
+from backend.app.services.container_setup import read_storage
 from backend.app.services.routeros import RouterOSClient
 
 logger = logging.getLogger("mikroman.container_manager")
@@ -29,6 +32,65 @@ def _as_bool(value: Any) -> Optional[bool]:
     if isinstance(value, bool):
         return value
     return str(value).strip().lower() in {"true", "yes", "1"}
+
+
+def _as_count(value: Any) -> Optional[int]:
+    """A byte count or percentage from a router that spells "no limit" as text.
+
+    `memory-high` and `memory-max` read back as ``unlimited`` when no ceiling is
+    set, and reporting that as 0 would tell the UI the container is out of room.
+    """
+    if value is None or value == "":
+        return None
+    text = str(value).strip()
+    if text.lower() in {"unlimited", "none", "-", "auto"}:
+        return None
+    try:
+        return int(float(text))
+    except ValueError:
+        return None
+
+
+def _as_float(value: Any) -> Optional[float]:
+    """A percentage the device spells as text, or None when it is not a number."""
+    if value is None or value == "":
+        return None
+    try:
+        return float(str(value).strip())
+    except ValueError:
+        return None
+
+
+def _as_seconds(value: Any) -> Optional[int]:
+    """RouterOS duration ("10s", "1m", "1d2h3m4s") in seconds."""
+    if value is None or value == "":
+        return None
+    text = str(value).strip().lower()
+    if text in {"none", "-", "unlimited"}:
+        return None
+    total = 0
+    number = ""
+    for char in text:
+        if char.isdigit():
+            number += char
+            continue
+        if not number:
+            continue
+        unit, value_of = char, int(number)
+        number = ""
+        if unit == "s":
+            total += value_of
+        elif unit == "m":
+            total += value_of * 60
+        elif unit == "h":
+            total += value_of * 3600
+        elif unit == "d":
+            total += value_of * 86400
+        elif unit == "w":
+            total += value_of * 604800
+    if number:  # a bare number in RouterOS durations means seconds
+        total += int(number)
+    return total or None
 
 
 class ContainerManager:
@@ -84,6 +146,10 @@ class ContainerManager:
             name=raw.get("name"),
             tag=raw.get("tag"),
             status=raw.get("status"),
+            # 7.x reports the live state as `running`; there is no `status`
+            # attribute, which is why the table used to show a dash for every
+            # container that was in fact up.
+            running=_as_bool(raw.get("running")),
             os=raw.get("os"),
             arch=raw.get("arch"),
             interface=raw.get("interface"),
@@ -99,6 +165,17 @@ class ContainerManager:
             logging=_as_bool(raw.get("logging")),
             start_on_boot=_as_bool(raw.get("start-on-boot")),
             comment=raw.get("comment"),
+            # Resource usage, reported live on the row - no extra call needed.
+            # `cpu-usage` is a share of the whole device, and `memory-current`
+            # is the cgroup figure, which counts the page cache the container
+            # pushes through its data mount as well as its own heap.
+            cpu_usage_pct=_as_float(raw.get("cpu-usage")),
+            memory_current_bytes=_as_count(raw.get("memory-current")),
+            memory_high_bytes=_as_count(raw.get("memory-high")),
+            memory_max_bytes=_as_count(raw.get("memory-max")),
+            disk_size_bytes=_as_count(raw.get("container-size")),
+            restart_count=_as_count(raw.get("restart-count")),
+            stop_time_seconds=_as_seconds(raw.get("stop-time")),
         )
 
     async def get_overview(self) -> ContainerOverviewDTO:
@@ -110,6 +187,7 @@ class ContainerManager:
         mounts: List[ContainerMountDTO] = []
         envs: List[ContainerEnvDTO] = []
         config = ContainerConfigDTO()
+        host = ContainerHostDTO()
 
         try:
             containers = [self._to_container(c) for c in await self.client.get_containers()]
@@ -142,14 +220,40 @@ class ContainerManager:
             config = ContainerConfigDTO(
                 tmpdir=raw_cfg.get("tmpdir"),
                 registry_url=raw_cfg.get("registry-url"),
-                ram_high=raw_cfg.get("ram-high"),
+                # Reported as `memory-high` by the device on current releases;
+                # `ram-high` is the older name, accepted so the value survives an
+                # upgrade either way.
+                ram_high=raw_cfg.get("ram-high") or raw_cfg.get("memory-high"),
                 layer_dir=raw_cfg.get("layer-dir"),
+                memory_current_bytes=_as_count(raw_cfg.get("memory-current")),
+                memory_high_bytes=_as_count(raw_cfg.get("memory-high")),
+                memory_max_bytes=_as_count(raw_cfg.get("memory-max")),
             )
         except Exception as e:
             logger.debug(f"Could not read container config: {e}")
 
+        # The router's own totals, so a container's 500 MB can be read as a share
+        # of the 2 GB it is competing with routing for.
+        try:
+            resource = await self.client.get_system_resource()
+            host = ContainerHostDTO(
+                cpu_load_pct=resource.cpu_load,
+                total_memory_bytes=resource.total_memory,
+                free_memory_bytes=resource.free_memory,
+                uptime=resource.uptime,
+            )
+        except Exception as e:
+            logger.debug(f"Could not read router resource totals: {e}")
+
+        try:
+            storage = await read_storage(self.client)
+        except Exception as e:
+            logger.debug(f"Could not read storage inventory: {e}")
+            storage = ContainerStorageDTO()
+
         return ContainerOverviewDTO(
-            support=support, containers=containers, mounts=mounts, envs=envs, config=config
+            support=support, host=host, containers=containers, mounts=mounts,
+            envs=envs, config=config, storage=storage,
         )
 
     async def run_action(self, action: str, container_id: str) -> bool:

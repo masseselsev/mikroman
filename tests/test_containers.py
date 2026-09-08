@@ -21,12 +21,15 @@ from backend.app.services.container_manager import ContainerManager, _as_bool
 class FakeClient:
     """Stands in for RouterOSClient with canned container-API responses."""
 
-    def __init__(self, *, packages=None, containers=None, mounts=None, envs=None, config=None):
+    def __init__(self, *, packages=None, containers=None, mounts=None, envs=None, config=None,
+                 disks=None, resource=None):
         self._packages = packages if packages is not None else []
         self._containers = containers or []
         self._mounts = mounts or []
         self._envs = envs or []
         self._config = config or {}
+        self._disks = disks or []
+        self._resource = resource
         self.commands = []
 
     async def get_packages(self):
@@ -43,6 +46,15 @@ class FakeClient:
 
     async def get_container_config(self):
         return self._config
+
+    async def list_disks(self):
+        """Storage inventory, read by the overview so the page can judge mounts."""
+        return self._disks
+
+    async def get_system_resource(self):
+        if self._resource is None:
+            raise ConnectionError("no canned resource for this test")
+        return self._resource
 
     async def container_command(self, action, container_id):
         self.commands.append((action, container_id))
@@ -104,6 +116,70 @@ async def test_overview_maps_containers_when_ready():
     assert c.root_dir == "usb1/adguard"
     assert c.start_on_boot is True
     assert overview.config.registry_url == "https://registry-1.docker.io"
+
+
+@pytest.mark.asyncio
+async def test_overview_carries_the_resources_each_container_is_using():
+    """The page has to show what a container costs, not just that it exists.
+
+    Everything here already arrives on the ``/container`` row - ``cpu-usage``,
+    ``memory-current``, ``container-size`` - and was being dropped on the way to
+    the DTO, which is why the deployed router showed a container and no answer to
+    "is this much normal?".
+
+    Note ``memory-high: "unlimited"``: the device spells "no ceiling" as text, and
+    reading that as 0 would render a full bar for a container with no limit set.
+    """
+    from backend.app.schemas.routeros import RouterSystemResource
+
+    mgr = ContainerManager(FakeClient(
+        packages=[{"name": "container", "version": "7.24.2", "disabled": "false"}],
+        containers=[{
+            ".id": "*1", "name": "mikroman:latest", "running": "true", "cpu-usage": "17.6",
+            "memory-current": "519647232", "memory-high": "unlimited", "memory-max": "unlimited",
+            "container-size": "262440508", "restart-count": "0", "stop-time": "10s",
+            "logging": "true", "mountlists": "mikroman_data", "comment": "mikroman:container",
+        }],
+        config={"layer-dir": "/usb1-part1/container-layers", "memory-current": "519647232",
+                "memory-high": "unlimited"},
+        disks=[{"slot": "usb1-part1", "type": "partition", "fs": "ext4", "mounted": "true",
+                "mount-point": "usb1-part1", "parent": "usb1", "partition": "true",
+                "size": "500105740288", "free": "280677068800", "use": "43"}],
+        resource=RouterSystemResource(
+            cpu_load=19, total_memory=2147483648, free_memory=885293056, uptime="1d6h15m8s"
+        ),
+    ))
+    overview = await mgr.get_overview()
+    container = overview.containers[0]
+    assert container.running is True
+    assert container.cpu_usage_pct == 17.6
+    assert container.memory_current_bytes == 519647232
+    assert container.memory_high_bytes is None, "'unlimited' is not a zero-byte ceiling"
+    assert container.disk_size_bytes == 262440508
+    assert container.stop_time_seconds == 10
+    assert container.restart_count == 0
+    assert container.mounts == "mikroman_data"
+
+    # The device totals, so 519 MB reads as a share of what the board has.
+    assert overview.host.cpu_load_pct == 19
+    assert overview.host.total_memory_bytes == 2147483648
+
+    # Storage comes along too: the page judges the mount without a second call.
+    assert [d.slot for d in overview.storage.disks] == ["usb1-part1"]
+    assert overview.storage.disks[0].usable_for_containers is True
+
+
+@pytest.mark.asyncio
+async def test_a_router_that_reports_no_resource_still_returns_the_overview():
+    """One unreadable menu must not take the whole page down."""
+    mgr = ContainerManager(FakeClient(
+        packages=[{"name": "container", "version": "7.24.2", "disabled": "false"}],
+        containers=[{".id": "*1", "name": "mikroman:latest", "running": "true"}],
+    ))
+    overview = await mgr.get_overview()
+    assert len(overview.containers) == 1
+    assert overview.host.cpu_load_pct is None
+    assert overview.storage.disks == []
 
 
 @pytest.mark.asyncio
@@ -180,7 +256,13 @@ def test_container_routes_are_registered():
     # test checks, because route order decides that and OpenAPI does not.
     assert "/api/v1/routers/{router_id}/containers/setup/plan" in paths
     assert "/api/v1/routers/{router_id}/containers/setup/apply" in paths
-    assert "/api/v1/routers/{router_id}/containers/migrate-data" in paths
+    # Storage is read and prepared from the page, so the picker never offers a
+    # device that cannot take a pull.
+    assert "/api/v1/routers/{router_id}/containers/storage" in paths
+    assert "/api/v1/routers/{router_id}/containers/storage/format" in paths
+    # Carrying an installation across was a one-time cutover helper and is not
+    # part of the product: it is deliberately not registered.
+    assert "/api/v1/routers/{router_id}/containers/migrate-data" not in paths
 
 
 # --- Provisioning a router to host a container --------------------------------
@@ -191,6 +273,19 @@ class SetupFake:
 
     def __init__(self, **state):
         self.files = state.get("files", ["usb1-part1", "usb1-part1/shared"])
+        # Mirrors what a real hAP be3 Media reports: one hardware row for the
+        # device with no filesystem of its own, one mounted ext4 partition. The
+        # plan judges storage from /disk, not from these path names, so a test
+        # that wants "no such storage" has to take the row away, not the file.
+        self.disks = state.get("disks", [
+            {".id": "*1", "slot": "usb1", "type": "hardware", "fs": "-", "mounted": "false",
+             "parent": "", "partition": "false", "size": "500107862016",
+             "model": "DM  HD001", "mount-read-only": "false", "formatting": "false"},
+            {".id": "*2", "slot": "usb1-part1", "type": "partition", "fs": "ext4",
+             "mounted": "true", "mount-point": "usb1-part1", "parent": "usb1",
+             "partition": "true", "size": "500105740288", "free": "280677068800",
+             "use": "43", "mount-read-only": "false", "formatting": "false"},
+        ])
         self.addresses = state.get("addresses", [
             {"address": "192.168.123.1/24", "interface": "br.lan"},
             {"address": "10.75.16.78/30", "interface": "ether1"},
@@ -241,7 +336,16 @@ class SetupFake:
     async def list_file_names(self):
         return self.files
 
+    async def list_disks(self):
+        return self.disks
+
     # writes
+    async def format_disk(self, slot, file_system="ext4", label="", mbr_partition_table=False):
+        self._check("format")
+        self.commands.append(
+            ("format", slot, file_system, label, "yes" if mbr_partition_table else "no")
+        )
+
     async def set_container_config(self, fields):
         self.commands.append(("config", dict(fields)))
 
@@ -319,10 +423,14 @@ async def test_plan_is_a_dry_run_that_names_every_step(request_):
     plan = await ContainerSetupService(fake).plan(request_)
     assert plan.ok is True and plan.blockers == []
     assert [s.key for s in plan.steps] == [
-        "config", "data_dir", "bridge", "veth", "bridge_port", "address",
+        "storage_dir", "config", "data_dir", "bridge", "veth", "bridge_port", "address",
         "nat_masquerade", "nat_web", "mount", "env", "container",
     ]
     assert plan.gateway_ip == "172.17.0.1" and plan.container_ip == "172.17.0.2"
+    # The storage verdict travels with the plan, so the UI shows the mount state
+    # it judged rather than a step that says only "ok".
+    assert plan.storage.ready is True and plan.storage.matched_slot == "usb1-part1"
+    assert plan.storage.free_bytes == 280677068800
     # A plan touches nothing: it has to be safe to show before it is obeyed.
     assert fake.commands == []
 
@@ -336,7 +444,7 @@ async def test_apply_runs_exactly_the_commands_the_plan_promised(request_):
     assert plan.ok is True
     kinds = [c[0] for c in fake.commands]
     assert kinds == ["config", "file", "bridge", "veth", "port", "address", "nat", "nat", "mount", "container"]
-    assert all(s.action == "done" or s.action == "skip" for s in plan.steps), plan.steps
+    assert all(s.action in ("done", "skip", "exists") for s in plan.steps), plan.steps
     # Storage is what the whole exercise turns on: layers must never land on flash.
     config_call = fake.commands[0][1]
     assert config_call["layer-dir"].startswith("usb1-part1")
@@ -489,10 +597,55 @@ async def test_it_refuses_a_subnet_the_router_already_uses(request_):
 async def test_storage_that_is_not_there_blocks_before_anything_is_created(request_):
     from backend.app.services.container_setup import ContainerSetupService
 
-    fake = SetupFake(files=["flash"])
+    fake = SetupFake(disks=[
+        {".id": "*1", "slot": "usb1", "type": "hardware", "fs": "-", "mounted": "false",
+         "parent": "", "partition": "false", "size": "500107862016"},
+    ])
     plan = await ContainerSetupService(fake).plan(request_)
     assert plan.ok is False and plan.steps[0].key == "storage_dir"
+    # The message has to name what the router does have - "not found" without it
+    # sends the operator to Winbox to work out the spelling themselves.
+    assert "usb1" in plan.blockers[0]
     assert fake.commands == []
+
+
+@pytest.mark.asyncio
+async def test_a_mount_read_only_partition_is_refused_not_retried(request_):
+    """The failure a filesystem RouterOS cannot write produces is a half-pull.
+
+    Better to say "mounted read-only" before 340 MB has been downloaded than to
+    let the registry explain it afterwards.
+    """
+    from backend.app.services.container_setup import ContainerSetupService
+
+    fake = SetupFake(disks=[
+        {".id": "*2", "slot": "usb1-part1", "type": "partition", "fs": "ntfs",
+         "mounted": "true", "mount-point": "usb1-part1", "parent": "usb1",
+         "partition": "true", "size": "32000000000", "free": "30000000000",
+         "mount-read-only": "true"},
+    ])
+    plan = await ContainerSetupService(fake).plan(request_)
+    assert plan.ok is False
+    assert any("read-only" in b for b in plan.blockers)
+    assert fake.commands == []
+
+
+@pytest.mark.asyncio
+async def test_a_partition_too_small_for_the_image_blocks_with_the_numbers(request_):
+    from backend.app.services.container_setup import ContainerSetupService
+
+    fake = SetupFake(disks=[
+        {".id": "*2", "slot": "usb1-part1", "type": "partition", "fs": "ext4",
+         "mounted": "true", "mount-point": "usb1-part1", "parent": "usb1",
+         "partition": "true", "size": "128000000", "free": "120000000"},
+    ])
+    plan = await ContainerSetupService(fake).plan(request_)
+    assert plan.ok is False
+    blocker = " ".join(plan.blockers)
+    # The numbers have to be in the message: "not enough space" without them is
+    # not actionable when the disk shows 128 MB in Winbox and the image is 340 MB.
+    assert "114.4 MB free" in blocker, blocker
+    assert "400.0 MB" in blocker, blocker
 
 
 @pytest.mark.asyncio
@@ -570,7 +723,7 @@ def test_the_setup_route_is_not_read_as_a_container_action():
         )
         assert response.status_code == 200, response.text
         steps = response.json()["data"]["steps"]
-        assert [s["key"] for s in steps][:3] == ["config", "data_dir", "bridge"]
+        assert [s["key"] for s in steps][:3] == ["storage_dir", "config", "data_dir"]
         # Reaching the router through the API must still write nothing.
         assert fake.commands == []
     finally:
@@ -652,76 +805,164 @@ async def test_file_listing_never_asks_for_contents(ros_settings):
         assert "contents" not in str(route.calls.last.request.url)
 
 
-# --- Carrying the installation's data into the container ----------------------
+# --- Preparing storage: format only where it cannot cost anything -------------
+
+
+def _format_request(**overrides):
+    from backend.app.schemas.container import ContainerFormatRequest
+
+    args = {"slot": "usb1-part1", "file_system": "ext4", "label": "data",
+            "confirm": "usb1-part1"}
+    args.update(overrides)
+    return ContainerFormatRequest(**args)
 
 
 @pytest.mark.asyncio
-async def test_migration_refuses_to_replace_a_running_containers_database():
-    from backend.app.services.container_setup import DataMigrationError, migrate_data
+async def test_format_needs_the_slot_retyped_before_anything_is_sent():
+    """A body a dropdown can fill is one mis-click from erasing a device.
 
-    fake = SetupFake(containers=[{"name": "mikroman", "status": "running"}])
-    with pytest.raises(DataMigrationError) as exc:
-        await migrate_data(fake, storage_dir="usb1-part1")
-    assert "running" in str(exc.value)
+    The confirmation is the only thing between this endpoint and an
+    unrecoverable action, so it is checked before the router is even asked.
+    """
+    from backend.app.services.container_setup import StorageFormatError, format_storage
+
+    fake = SetupFake()
+    with pytest.raises(StorageFormatError) as exc:
+        await format_storage(fake, _format_request(confirm="yes"))
+    assert "confirmation" in str(exc.value).lower()
     assert fake.commands == []
 
 
 @pytest.mark.asyncio
-async def test_migration_sends_the_database_and_the_key_together(tmp_path, monkeypatch):
-    """Both or neither: app.db without .secret_key decrypts nothing on the other side."""
-    import sqlite3
+async def test_format_refuses_the_storage_container_state_lives_on():
+    """The app must not saw off the branch it is running from.
 
-    from backend.app.services import container_setup as cs
+    On a deployed router, /container/config points layer-dir and tmpdir at
+    usb1-part1 and the data mount reads its src from the same partition - so
+    formatting that slot would destroy the image layers and the database in one
+    command, including the storage this very instance booted from.
+    """
+    from backend.app.services.container_setup import StorageFormatError, format_storage
 
-    source = tmp_path / "app.db"
-    con = sqlite3.connect(source)
-    con.execute("create table routers (id integer primary key, name text)")
-    con.execute("insert into routers (name) values ('hAP be3 Media')")
-    con.commit()
-    con.close()
-    (tmp_path / ".secret_key").write_bytes(b"a-key-value")
-
-    data_dir = tmp_path / "runtime"
-    data_dir.mkdir()
-    # The key belongs in the data directory, beside the database it decrypts -
-    # that is where secrets.py looks, and the same rule holds for /data inside the
-    # container image.
-    (data_dir / ".secret_key").write_bytes(b"a-key-value")
-    monkeypatch.setattr(cs, "resolve_data_dir", lambda: data_dir)
-    monkeypatch.setattr(cs.settings, "DATABASE_URL", f"sqlite+aiosqlite:///{source}")
-
-    fake = SetupFake()
-    result = await cs.migrate_data(fake, storage_dir="usb1-part1")
-
-    # Staged, not shipped: RouterOS takes no binary upload, so the API's job is to
-    # produce a consistent file and say exactly where it has to land.
-    staged = data_dir / "mikroman-migration.db"
-    assert result["database_bytes"] > 0
-    assert staged.exists() and staged.stat().st_size == result["database_bytes"]
-    assert result["destination"] == "usb1-part1/mikroman_data/app.db"
-    assert result["secret_key"] == "included"
-    assert fake.commands == []  # nothing is pushed over REST on this release
-    # The snapshot is a readable SQLite database with the row that was in the
-    # source - proof it is an actual backup and not a truncated copy.
-    import sqlite3
-    con = sqlite3.connect(staged)
-    assert con.execute("select name from sqlite_master where type='table'").fetchall() == [("routers",)]
-    assert con.execute("select count(*) from routers").fetchone()[0] == 1
-    con.close()
-    assert any("app.db" in step for step in result["next_steps"])
-    assert any(".secret_key" in step for step in result["next_steps"])
+    fake = SetupFake(
+        config={"tmpdir": "/usb1-part1/container-tmp", "layer-dir": "/usb1-part1/container-layers"},
+        mounts=[{".id": "*1", "list": "mikroman_data", "src": "/usb1-part1/mikroman_data", "dst": "/data"}],
+    )
+    with pytest.raises(StorageFormatError) as exc:
+        await format_storage(fake, _format_request())
+    assert "usb1-part1" in str(exc.value)
+    assert fake.commands == []
 
 
 @pytest.mark.asyncio
-async def test_migration_reports_a_missing_source_database(tmp_path, monkeypatch):
-    from backend.app.services import container_setup as cs
-    from backend.app.services.container_setup import DataMigrationError
+async def test_formatting_a_device_refuses_when_a_partition_of_it_is_in_use():
+    """A whole disk is only offered when nothing under it is holding anything.
 
-    data_dir = tmp_path / "runtime"
-    data_dir.mkdir()
-    monkeypatch.setattr(cs, "resolve_data_dir", lambda: data_dir)
-    monkeypatch.setattr(cs.settings, "DATABASE_URL", f"sqlite+aiosqlite:///{tmp_path}/nowhere.db")
+    Formatting `usb1` erases the partition table and every partition on it,
+    however healthy those partitions look when listed separately.
+    """
+    from backend.app.services.container_setup import StorageFormatError, format_storage
 
-    with pytest.raises(DataMigrationError) as exc:
-        await cs.migrate_data(SetupFake(), storage_dir="usb1-part1")
-    assert "no database" in str(exc.value)
+    fake = SetupFake(mounts=[{"list": "mikroman_data", "src": "/usb1-part1/mikroman_data", "dst": "/data"}])
+    with pytest.raises(StorageFormatError) as exc:
+        await format_storage(fake, _format_request(slot="usb1", confirm="usb1"))
+    assert "usb1-part1" in str(exc.value)
+    assert fake.commands == []
+
+
+@pytest.mark.asyncio
+async def test_format_accepts_only_a_filesystem_routeros_can_write():
+    from backend.app.schemas.container import ContainerFormatRequest
+    from backend.app.services.container_setup import StorageFormatError, format_storage
+
+    fake = SetupFake()
+    with pytest.raises(StorageFormatError):
+        await format_storage(fake, _format_request(file_system="ntfs"))
+    with pytest.raises(StorageFormatError):
+        # An arbitrary string would be refused by the device with a worse
+        # message; `discard` is a mode, not a filesystem.
+        ContainerFormatRequest(slot="usb2", file_system="discard", confirm="usb2")
+        await format_storage(fake, _format_request(slot="usb2", file_system="discard", confirm="usb2"))
+    assert fake.commands == []
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_slot_is_refused_with_what_does_exist():
+    from backend.app.services.container_setup import StorageFormatError, format_storage
+
+    fake = SetupFake()
+    with pytest.raises(StorageFormatError) as exc:
+        await format_storage(fake, _format_request(slot="usb9", confirm="usb9"))
+    message = str(exc.value)
+    assert "usb9" in message and "usb1" in message
+    assert fake.commands == []
+
+
+@pytest.mark.asyncio
+async def test_a_free_device_is_formatted_with_the_operators_parameters():
+    from backend.app.services.container_setup import format_storage
+
+    fake = SetupFake(disks=[
+        {".id": "*3", "slot": "usb2", "type": "partition", "fs": "fat32", "mounted": "true",
+         "mount-point": "usb2", "parent": "usb2", "partition": "true",
+         "size": "64000000000", "free": "63000000000"},
+    ])
+    result = await format_storage(fake, _format_request(slot="usb2", confirm="usb2",
+                                                        file_system="ext4", label="media"))
+    assert result["started"] is True
+    assert ("format", "usb2", "ext4", "media", "no") in fake.commands
+
+
+@pytest.mark.asyncio
+async def test_format_reports_the_devices_own_state_afterwards():
+    """`/disk format` returns while the device is still working.
+
+    The answer has to say so, or the UI shows a finished job that has not
+    started writing yet and the next step fails against an unmounted disk.
+    """
+    from backend.app.services.container_setup import format_storage
+
+    class Busy(SetupFake):
+        """Idle when asked whether to format, busy when asked how it went."""
+
+        def __init__(self, **state):
+            super().__init__(**state)
+            self._reads = 0
+
+        async def list_disks(self):
+            self._reads += 1
+            return [{"slot": "usb2-part1", "type": "partition", "fs": "-", "mounted": "false",
+                     "partition": "true", "parent": "usb2", "size": "64000000000",
+                     "formatting": "true" if self._reads > 1 else "false"}]
+
+    result = await format_storage(Busy(), _format_request(slot="usb2-part1", confirm="usb2-part1"))
+    assert result["formatting"] is True
+    assert "background" in result["detail"]
+
+
+@pytest.mark.asyncio
+async def test_storage_inventory_marks_what_is_and_is_not_usable():
+    from backend.app.services.container_setup import read_storage
+
+    storage = await read_storage(SetupFake())
+    by_slot = {d.slot: d for d in storage.disks}
+    assert by_slot["usb1-part1"].usable_for_containers is True
+    assert by_slot["usb1-part1"].formatable is True
+    # The device row itself: no filesystem of its own, and its partition is the
+    # one the app would run on.
+    assert by_slot["usb1"].usable_for_containers is False
+    assert "no filesystem" in by_slot["usb1"].note
+
+    chosen = await read_storage(SetupFake(), "usb1-part1")
+    assert chosen.ready is True and chosen.free_bytes == 280677068800
+    assert chosen.problems == []
+
+
+@pytest.mark.asyncio
+async def test_storage_inventory_without_a_choice_still_lists_the_disks():
+    """The picker needs the list before anything is selected."""
+    from backend.app.services.container_setup import read_storage
+
+    storage = await read_storage(SetupFake(), None)
+    assert storage.ready is False
+    assert {d.slot for d in storage.disks} == {"usb1", "usb1-part1"}

@@ -394,7 +394,7 @@ export function SettingsModal({
           <form onSubmit={handleSaveGeneral}>
             <div className="modal-body">
               <div className="form-group" style={{ marginBottom: 16 }}>
-                <label className="form-label">{t('tg_token')}</label>
+                <label className="form-label">{t('telegram_bot_token')}</label>
                 <input
                   type="password"
                   className="form-input font-mono"
@@ -705,6 +705,45 @@ export function SettingsModal({
                     <option value="5">5s — Light</option>
                     <option value="10">10s — Minimal router load</option>
                   </select>
+                </div>
+
+                {/* The two background clocks. They were environment-only, which on
+                    a RouterOS container means "unchangeable": the platform has no
+                    docker exec, no shell and no env editing without recreating the
+                    container. Both are re-read by the worker on every tick, so a
+                    change here takes effect within seconds. */}
+                <div className="form-group" style={{ marginBottom: 6 }}>
+                  <label className="form-label">{t('poll_telemetry_label')}</label>
+                  <select
+                    className="form-select font-mono"
+                    value={settings.poll_interval_seconds || '10'}
+                    onChange={e => setSettings({ ...settings, poll_interval_seconds: e.target.value })}
+                    style={{ width: '100%', height: 36, fontSize: 'var(--fs-sm)' }}
+                  >
+                    <option value="5">5s</option>
+                    <option value="10">10s — {t('poll_telemetry_default')}</option>
+                    <option value="30">30s</option>
+                    <option value="60">60s</option>
+                    <option value="300">5 min</option>
+                  </select>
+                  <div className="form-hint">{t('poll_telemetry_hint')}</div>
+                </div>
+
+                <div className="form-group" style={{ marginBottom: 6 }}>
+                  <label className="form-label">{t('poll_heavy_label')}</label>
+                  <select
+                    className="form-select font-mono"
+                    value={settings.heavy_sync_interval_seconds || '60'}
+                    onChange={e => setSettings({ ...settings, heavy_sync_interval_seconds: e.target.value })}
+                    style={{ width: '100%', height: 36, fontSize: 'var(--fs-sm)' }}
+                  >
+                    <option value="10">10s — {t('poll_heavy_legacy')}</option>
+                    <option value="30">30s</option>
+                    <option value="60">60s — {t('poll_heavy_default')}</option>
+                    <option value="300">5 min</option>
+                    <option value="900">15 min</option>
+                  </select>
+                  <div className="form-hint">{t('poll_heavy_hint')}</div>
                 </div>
               </div>
 
