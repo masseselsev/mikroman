@@ -6,6 +6,8 @@ own echo, ``DELETE FROM system_metrics WHERE timestamp < ?`` was failing with
 "database is locked", and 741 RouterOS REST calls went out in a measured
 320-second window.
 """
+import ast
+import inspect
 import logging
 import logging.config
 from datetime import datetime, timedelta, timezone
@@ -21,13 +23,21 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
+import backend.app.main as main_module
 from backend.app.core import diagnostics
 from backend.app.core import logging_config as lc
 from backend.app.core.config import Settings
 from backend.app.db.models import Base, InterfaceMetric, Router, RouterLog, SystemMetric
 from backend.app.db.prune import delete_older_than
 from backend.app.db.session import get_db
-from backend.app.main import _heavy_deadline, app
+from backend.app.main import (
+    DESTINATION_SAMPLE_EVERY_TICKS,
+    LOG_SCRAPE_INTERVAL_SECONDS,
+    SECURITY_AUDIT_EVERY_TICKS,
+    _heavy_deadline,
+    _tick_due,
+    app,
+)
 from backend.app.schemas.routeros import RouterSystemResource
 from backend.app.services.log_collector import LogCollector
 from backend.app.services.metrics_collector import MetricsCollector
@@ -548,3 +558,87 @@ async def test_the_app_log_is_readable_over_the_api(point_logging_at):
     assert all(row["router_id"] is None for row in rows), "these are the app's own lines, not a router's"
     assert rows[-1]["severity"] == "warning"
     assert rows[-1]["topics"] == "mikroman.main"
+
+
+def test_the_scrape_tick_runs_each_job_at_its_own_rate():
+    """Three jobs shared one 60-second tick; only the log copy needs it.
+
+    Measured on the device: the tick averaged 17 s of a 60 s cycle and peaked at
+    40 s, and the expensive half of it was the conntrack plus DNS-cache read
+    feeding a history tab.
+    """
+    ticks = range(15)
+    destinations = [t for t in ticks if _tick_due(t, DESTINATION_SAMPLE_EVERY_TICKS)]
+    audits = [t for t in ticks if _tick_due(t, SECURITY_AUDIT_EVERY_TICKS)]
+    assert len(list(destinations)) == 5
+    assert len(list(audits)) == 3
+    assert _tick_due(0, DESTINATION_SAMPLE_EVERY_TICKS), "start-up must not leave the tab blank"
+    assert _tick_due(0, SECURITY_AUDIT_EVERY_TICKS)
+    assert _tick_due(1, DESTINATION_SAMPLE_EVERY_TICKS) is False
+    assert _tick_due(1, SECURITY_AUDIT_EVERY_TICKS) is False
+
+
+def test_a_gate_of_one_puts_the_job_back_on_every_tick():
+    """The constant is the supported way to undo a gate, so it has to work."""
+    assert all(_tick_due(t, 1) for t in range(12))
+    assert all(_tick_due(t, 0) for t in range(12))
+
+
+def _guards_around(tree_source: str, call_name: str):
+    """Names appearing in the `if` tests wrapping a call, read off the AST.
+
+    Substring ordering in a source dump measures the wrong distance: the gate is
+    *assigned* above the router loop, so a gated call still appears later in the
+    file than the gate. Nesting is the property, and nesting is what the AST has.
+    """
+    tree = ast.parse(tree_source)
+    parents = {}
+    for node in ast.walk(tree):
+        for child in ast.iter_child_nodes(node):
+            parents[child] = node
+
+    def callee_name(node):
+        # `collector.collect_logs_for_router(...)` and a bare
+        # `check_and_alert(...)` are both calls of interest: the first is an
+        # attribute, the second a plain name imported inside the worker.
+        return getattr(node.func, "attr", None) or getattr(node.func, "id", None)
+
+    found = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and callee_name(node) == call_name:
+            conditions = []
+            current = node
+            while current in parents:
+                current = parents[current]
+                if isinstance(current, ast.If):
+                    conditions.append(ast.unparse(current.test))
+            found.append(conditions)
+    return found
+
+
+def test_log_copying_stays_on_every_tick_while_the_rest_is_gated():
+    """Gating the log read would lose lines: the ring turns over in minutes.
+
+    The nesting is asserted rather than the line order because the gate is
+    computed once per tick above the router loop, so the copy call legitimately
+    appears later in the file than the gate does.
+    """
+    src = inspect.getsource(main_module.log_scrape_worker)
+    assert _guards_around(src, "collect_logs_for_router") == [[]], \
+        "the log copy is behind a gate"
+    destinations = _guards_around(src, "sample_router")
+    assert destinations and all(
+        any("sample_destinations" in c for c in guards) for guards in destinations
+    ), "destination sampling runs ungated again"
+    audits = _guards_around(src, "check_and_alert")
+    assert audits and all(
+        any("run_audit" in c for c in guards) for guards in audits
+    ), "the security audit runs ungated again"
+    assert LOG_SCRAPE_INTERVAL_SECONDS == 60.0, "the ring needs a minute, not a minute-and-a-bit"
+
+
+def test_each_sub_pass_is_timed_separately():
+    """"The tick takes 17 s" is not actionable; "14 s of it is sampling" is."""
+    src = inspect.getsource(main_module.log_scrape_worker)
+    for name in ("log_scrape.collect", "log_scrape.destinations", "log_scrape.audit"):
+        assert f'record("{name}"' in src, f"{name} is not measured on its own"
