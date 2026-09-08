@@ -78,9 +78,19 @@ which writes nothing), then applies exactly that plan (`/setup/apply`), creating
 the storage settings, bridge, veth, gateway address, masquerade, LAN-bound web
 forward, mount and the container itself. It is idempotent, refuses to modify
 objects it did not create, refuses a subnet that overlaps an existing address, and
-`/migrate-data` carries the existing database and its `.secret_key` across (it
-refuses while the target container is running, so a live database is never
-replaced underneath its application).
+refuses a storage that `/disk` says is unmounted, read-only or too small for the
+image — with the reason, before a pull fails halfway through.
+`GET /api/v1/routers/{id}/containers/storage` is the inventory that picker is
+built from, and `POST .../storage/format` prepares a device that cannot be used
+as it is; formatting erases the device, so the slot must be typed back and it is
+refused for anything holding `layer-dir`, `tmpdir` or a mount source.
+
+Moving an *existing* installation's data across is deliberately not a feature. It
+was a one-time cutover (old instance → `/data` on the stick), and left in the
+product it is a button that replaces a live deployment's database. The manual
+order — snapshot with `sqlite3 ".backup"`, copy `app.db` **and** `.secret_key`
+together by SFTP, then start, then stop the old writer — is documented in
+[`scripts/setup_ros_container.rsc`](../scripts/setup_ros_container.rsc) section 6.
 
 **Fallback - on a bare router**, where there is no working MikroMan to ask:
 1. **Enable Container Mode on RouterOS**:

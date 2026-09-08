@@ -18,7 +18,7 @@ import { Box, RefreshCw } from 'lucide-react';
  * far as the mangle counters are concerned — it simply belongs to the router
  * rather than to a person.
  */
-export function ContainerWorkloads() {
+export function ContainerWorkloads({ routerId = null }) {
   const { t } = useI18n();
   const [devices, setDevices] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -26,14 +26,18 @@ export function ContainerWorkloads() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await api.getContainerDevices();
+      // Scoped to the router being viewed. Asked for no router, the endpoint
+      // answers with container workloads from *every* router the account has -
+      // on a multi-router setup that put router 2's `mikroman` inside router 1's
+      // page, where it cannot be acted on and does not belong.
+      const res = await api.getContainerDevices(routerId);
       setDevices(res?.data || []);
     } catch {
       setDevices([]);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [routerId]);
 
   useEffect(() => { load(); }, [load]);
 

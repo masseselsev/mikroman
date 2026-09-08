@@ -115,4 +115,12 @@ describe('ContainerWorkloads', () => {
     renderWithProviders(<ContainerWorkloads />);
     await waitFor(() => expect(api.getContainerDevices).toHaveBeenCalled());
   });
+
+  it('scopes the list to the router being viewed', async () => {
+    // Unscoped, the endpoint answers with container workloads from every router
+    // the account has, so router 1's page listed router 2's `mikroman` — a row
+    // whose actions are not on this screen and whose traffic is not this box's.
+    renderWithProviders(<ContainerWorkloads routerId={3} />);
+    await waitFor(() => expect(api.getContainerDevices).toHaveBeenCalledWith(3));
+  });
 });
