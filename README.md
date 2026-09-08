@@ -87,6 +87,7 @@
   * Operates in both Long Polling (zero-config NAT) and Authenticated Webhook modes.
   * Proactive alerts for new device arrivals, CPU spikes, thermal thresholds, and WAN IP changes.
   * Interactive inline commands for gateway status, user limits, and pausing access.
+  * Exactly one polling session per token, always: the bot's own session is closed when settings change, because cancelling the polling task without closing the HTTPS session leaves Telegram holding the old `getUpdates` slot and the replacement answers every retry with `Conflict: terminated by other getUpdates request` — which is what a Settings save used to do.
 
 ---
 
