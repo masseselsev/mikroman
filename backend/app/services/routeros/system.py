@@ -6,6 +6,7 @@ hardware identity cannot change while the router is up, and it is asked for on
 every telemetry frame.
 """
 import logging
+import time
 from typing import Any, Dict, List, Optional
 
 from backend.app.schemas.routeros import (
@@ -17,6 +18,10 @@ from backend.app.services.guards import guard_foreign_resources
 from backend.app.services.routeros.parsing import parse_gmt_offset_minutes
 
 logger = logging.getLogger("mikroman.routeros")
+
+#: How long a cached `/ip/cloud` public address stays acceptable. Longer than the
+#: telemetry frame interval by design, shorter than a typical DHCP lease.
+CLOUD_ADDRESS_TTL_SECONDS = 900.0
 
 
 class SystemMixin:
@@ -122,7 +127,7 @@ class SystemMixin:
                 logger.debug(f"RouterOS /system/health not available: {e}")
                 return RouterSystemHealth(temperature=None, voltage=None)
 
-    async def get_cloud_public_address(self) -> Optional[str]:
+    async def get_cloud_public_address(self, *, refresh: bool = False) -> Optional[str]:
         """The router's own public IP as it knows it, from ``/ip/cloud``.
 
         RouterOS maintains this for its DDNS name and refreshes it on its own,
@@ -130,7 +135,19 @@ class SystemMixin:
         sits behind carrier-grade NAT. Returns ``None`` when the field is
         absent, ``0.0.0.0`` (DDNS never reached), or otherwise unusable - the
         caller then falls back to a container-side lookup.
+
+        Cached for ``CLOUD_ADDRESS_TTL_SECONDS`` because the telemetry loop asks
+        once per frame per browser tab and the answer moves, at most, when the
+        ISP reassigns it. A ``None`` is cached too: a router with DDNS off would
+        otherwise pay for the refusal every few seconds.
         """
+        cached = getattr(self, "_cloud_address", None)
+        if cached is not None and not refresh:
+            address, read_at = cached
+            if time.monotonic() - read_at < CLOUD_ADDRESS_TTL_SECONDS:
+                return address
+
+        address: Optional[str] = None
         async with self._get_client() as client:
             try:
                 resp = await client.get("/ip/cloud")
@@ -139,10 +156,12 @@ class SystemMixin:
                 if isinstance(data, list):
                     data = data[0] if data else {}
                 addr = str(data.get("public-address") or "").strip()
-                return addr or None
+                address = addr or None
             except Exception as e:
                 logger.debug(f"RouterOS /ip/cloud not available: {e}")
-                return None
+                address = None
+        self._cloud_address = (address, time.monotonic())
+        return address
 
     async def get_log(self, topics: Optional[str] = None, limit: int = 300) -> List[Dict[str, Any]]:
         """Recent entries from the RouterOS in-memory log, newest last.

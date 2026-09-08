@@ -1,11 +1,13 @@
 import logging
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
 
-from sqlalchemy import Integer, cast, delete, func, select
+from sqlalchemy import Integer, cast, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.db.models import InterfaceMetric, SystemMetric
+from backend.app.db.prune import delete_older_than
 from backend.app.schemas.metrics import (
     InterfaceHistoryResponse,
     InterfaceRatePoint,
@@ -73,10 +75,20 @@ def format_rate(bps: float) -> str:
 class MetricsCollector:
     """Collects, aggregates, and serves time-series performance and interface traffic metrics."""
 
+    #: How much raw sample detail the graph ranges need. `30d` is the longest
+    #: range offered, so nothing older than this can ever be displayed.
+    RETENTION_DAYS = 30
+    #: Wall-clock spacing between retention passes. The prune is a range delete
+    #: over the two largest tables, and SQLite has one writer at a time.
+    PRUNE_INTERVAL_SECONDS = 3600.0
+
     def __init__(self) -> None:
         # Last failure text per router, so a fault that repeats every tick is
         # reported once instead of once per poll. See _note_collect_failure.
         self._failures: Dict[int, str] = {}
+        # Monotonic deadline for the next retention pass; 0 prunes on the first
+        # tick after start, which is what catches up after the app was down.
+        self._next_prune_at = 0.0
 
     def _note_collect_failure(self, router_id: int, error: Exception) -> None:
         """Report a collection fault on state change, not on every tick.
@@ -98,13 +110,24 @@ class MetricsCollector:
         if self._failures.pop(router_id, None) is not None:
             logger.info(f"Metrics collection recovered for router {router_id}")
 
-    async def collect_and_store(self, session: AsyncSession, router_id: int, client: RouterOSClient) -> None:
-        """Fetch live system resource and interface rates and append to SQLite time-series."""
+    async def collect_and_store(
+        self,
+        session: AsyncSession,
+        router_id: int,
+        client: RouterOSClient,
+        resource=None,
+    ) -> None:
+        """Fetch live system resource and interface rates and append to SQLite time-series.
+
+        ``resource`` lets a caller that already read ``/system/resource`` - the
+        background tick does, for the uptime that tells it whether the router
+        rebooted - hand the answer over instead of asking the router twice.
+        """
         now = datetime.now(timezone.utc).replace(tzinfo=None)
 
         try:
             # 1. Collect System Resource & Health
-            res = await client.get_system_resource()
+            res = resource if resource is not None else await client.get_system_resource()
             health = await client.get_system_health()
 
             mem_used = max(0, res.total_memory - res.free_memory)
@@ -158,15 +181,40 @@ class MetricsCollector:
                 )
                 session.add(iface_metric)
 
-            # 3. Retention Cleanup (Prune records older than 30 days)
-            cutoff = now - timedelta(days=30)
-            await session.execute(delete(SystemMetric).where(SystemMetric.timestamp < cutoff))
-            await session.execute(delete(InterfaceMetric).where(InterfaceMetric.timestamp < cutoff))
+            # 3. Retention Cleanup. Once an hour, not every tick: this is a
+            # range delete over the two largest tables in the database, and on
+            # the router's flash it is exactly the kind of statement that keeps
+            # SQLite's single write lock - which every other worker then times
+            # out on. Samples age in batches of 500 rows per transaction.
+            await self._prune_expired(session, now)
 
             await session.commit()
             self._note_collect_success(router_id)
         except Exception as e:
             self._note_collect_failure(router_id, e)
+
+    async def _prune_expired(self, session: AsyncSession, now: datetime) -> int:
+        """Drop samples past the retention window, at most once per interval.
+
+        ``RETENTION_DAYS`` of detail is what the graph ranges need; anything
+        older is gone regardless of how long the app has been down, because the
+        cutoff is recomputed from the clock rather than from a stored cursor. The
+        interval is tracked on the monotonic clock so an NTP step - which this
+        device did once, moving the clock back by 98 minutes - cannot either skip
+        a prune or make one run on every tick.
+
+        Returns the number of deleted rows so a caller (or a test) can see that
+        the throttle worked.
+        """
+        if time.monotonic() < self._next_prune_at:
+            return 0
+        self._next_prune_at = time.monotonic() + self.PRUNE_INTERVAL_SECONDS
+        cutoff = now - timedelta(days=self.RETENTION_DAYS)
+        deleted = await delete_older_than(session, InterfaceMetric.__table__, cutoff)
+        deleted += await delete_older_than(session, SystemMetric.__table__, cutoff)
+        if deleted:
+            logger.info(f"Retention prune removed {deleted} sample(s) older than {cutoff:%Y-%m-%d %H:%M}")
+        return deleted
 
     async def get_system_history(self, session: AsyncSession, router_id: Optional[int], range_key: str = "1h") -> SystemMetricsResponse:
         """Fetch system metric history: the bucket mean plus its worst case.

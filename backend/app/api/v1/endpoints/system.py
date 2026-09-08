@@ -128,6 +128,42 @@ async def reboot_router(router_client: RouterOSClient = Depends(get_router_clien
     return APIResponse(data=success, message="Reboot signal dispatched to router")
 
 
+@router.get("/diagnostics", response_model=APIResponse[Dict[str, Any]])
+async def get_diagnostics():
+    """What MikroMan is doing and what it costs - for answering "is this much CPU normal?".
+
+    Deliberately depends on nothing: no database session, no router client. When
+    the thing being diagnosed is the app's own load, an endpoint that cannot
+    answer because the router is unreachable is useless.
+
+    The numbers are since the app started. RouterOS' own ``/container`` view
+    reports the container's cgroup usage, which includes the page cache this
+    process pushes through its data mount; ``memory_bytes`` here is the process's
+    resident set, which is the part that is actually MikroMan's.
+    """
+    from backend.app.core.diagnostics import snapshot
+    from backend.app.core.logging_config import log_file_error, log_file_path
+
+    data = snapshot()
+    path = log_file_path()
+    data["app_version"] = settings.APP_VERSION
+    data["log_file"] = {
+        "path": str(path) if path else None,
+        "bytes": path.stat().st_size if path and path.exists() else 0,
+        "unavailable_because": log_file_error(),
+        "rotation": {
+            "max_bytes": settings.LOG_FILE_MAX_BYTES,
+            "backups": settings.LOG_FILE_BACKUP_COUNT,
+        },
+    }
+    data["cadence_seconds"] = {
+        "telemetry_poll": settings.POLL_INTERVAL_SECONDS,
+        "heavy_sync": settings.HEAVY_SYNC_INTERVAL_SECONDS,
+        "telemetry_stream": settings.TELEMETRY_STREAM_INTERVAL_SECONDS,
+    }
+    return APIResponse(data=data)
+
+
 @router.get("/alerts", response_model=APIResponse[List[AlertLogDTO]])
 async def get_alerts(limit: int = 50, db: AsyncSession = Depends(get_db)):
     """Fetch recent alert events."""

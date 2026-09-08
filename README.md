@@ -68,6 +68,14 @@
   * No credentials are written into `/container/envs`: router logins and the bot token already travel inside the encrypted database, and copying them to env would put them in plaintext in the running config and every exported `.rsc`.
   * Manual path for a bare router: `scripts/setup_ros_container.rsc`.
 
+* **🧭 Bounded Footprint and Self-Diagnostics**:
+  * MikroMan's own log goes to `<data dir>/mikroman.log` — the same directory as the database, so on a router container it lands on the USB stick and survives a restart. Size-capped rotation (4 MB × 3 by default, `LOG_FILE_MAX_BYTES` / `LOG_FILE_BACKUP_COUNT`), and a data directory that cannot be written to degrades to console logging instead of failing to start.
+  * `GET /api/v1/logs?source=app` serves that file back to the browser, since a RouterOS container has no `docker logs`. System Events shows it as a third source next to *Live Stream* and *Stored History*.
+  * Per-request logging is off at the source (`httpx`, `httpcore`, `uvicorn.access`, `aiogram` sit at WARNING). On the live device those four loggers were 995 of the 1000 lines in the router's log ring — which meant the ring turned over in about five minutes and real device events were evicted before the 60-second scraper could copy them.
+  * The background tick is split: hardware/bandwidth samples every `POLL_INTERVAL_SECONDS` (10 s), and device discovery, queue/mangle reconciliation, rollups and quota checks every `HEAVY_SYNC_INTERVAL_SECONDS` (60 s), staggered per router. UI actions apply their changes inline, so nothing waits on the slower clock. Set it to `10` to restore the previous behaviour.
+  * Retention pruning is batched and runs hourly, never per tick. SQLite allows one writer; a range delete over a 116 MB database held that lock past the 5-second `busy_timeout` and every other worker failed with `database is locked`.
+  * `GET /api/v1/system/diagnostics` answers "is this much CPU normal?" without a shell: resident set and peak (the process, not the cgroup's page-cache-inflated figure), RouterOS requests per device, and count/avg/max duration of each background pass. It needs neither a router nor the database.
+
 * **🤖 Dual-Mode Telegram Bot**:
   * Operates in both Long Polling (zero-config NAT) and Authenticated Webhook modes.
   * Proactive alerts for new device arrivals, CPU spikes, thermal thresholds, and WAN IP changes.

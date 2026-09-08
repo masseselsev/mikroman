@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.core.logging_config import log_file_error, log_file_path, read_recent_entries
 from backend.app.db.models import Router, RouterLog
 from backend.app.db.session import get_db
 from backend.app.schemas.common import APIResponse
@@ -60,7 +61,11 @@ async def _resolve_router_id(session: AsyncSession, router_id: Optional[int]) ->
 @router.get("", response_model=APIResponse[List[RouterLogItem]])
 async def get_logs(
     router_id: Optional[int] = Query(None, description="Target router ID"),
-    source: str = Query("db", pattern="^(db|live)$", description="Data source: 'db' or 'live'"),
+    source: str = Query(
+        "db", pattern="^(db|live|app)$",
+        description="Data source: stored router history ('db'), live from the device ('live'), "
+                    "or MikroMan's own persistent log file ('app')",
+    ),
     category: Optional[str] = Query(None, description="Category filter (auth, interface, dhcp, wireless, firewall, system)"),
     severity: Optional[str] = Query(None, description="Severity filter (info, warning, error, critical)"),
     search: Optional[str] = Query(None, description="Substring search in message or topics"),
@@ -71,6 +76,30 @@ async def get_logs(
     db: AsyncSession = Depends(get_db),
 ):
     """Fetch router logs from SQLite history or live from the RouterOS device."""
+    if source == "app":
+        # MikroMan's own log, read from the rotating file in the data directory.
+        # Not tied to a router: this is the application talking about itself, and
+        # on a router-hosted container it is the only record that survives a
+        # restart - `docker logs` does not exist here.
+        items = [
+            RouterLogItem(
+                id=None,
+                router_id=None,
+                external_id=None,
+                timestamp=entry["timestamp"] or datetime.now(),
+                topics=entry["logger"],
+                message=entry["message"],
+                severity=entry["severity"],
+                category="system",
+            )
+            for entry in read_recent_entries(
+                lines=limit, contains=search, severity=severity
+            )
+        ]
+        if not items and log_file_path() is None:
+            return APIResponse(data=[], message=f"App log file unavailable: {log_file_error() or 'not configured'}")
+        return APIResponse(data=items)
+
     target_router_id = await _resolve_router_id(db, router_id)
     if not target_router_id:
         return APIResponse(data=[], message="No active router found")

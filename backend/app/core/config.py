@@ -19,6 +19,13 @@ class Settings(BaseSettings):
     # Database
     DATABASE_URL: str = "sqlite+aiosqlite:///./data/app.db"
 
+    # Logging. The file lives in the same directory as the database so that a
+    # container which restarts - or a router that reboots - does not take the
+    # app's own history with it. See core/logging_config.py.
+    LOG_TO_FILE: bool = True
+    LOG_FILE_MAX_BYTES: int = 4_000_000
+    LOG_FILE_BACKUP_COUNT: int = 3
+
     # MikroTik RouterOS REST API settings (7.1+, see routeros_compat.py)
     ROUTEROS_HOST: str = "192.168.88.1"
     ROUTEROS_PORT: int = 443
@@ -30,6 +37,13 @@ class Settings(BaseSettings):
 
     # Polling & Synchronization
     POLL_INTERVAL_SECONDS: int = 10
+    # The housekeeping half of the background tick - device discovery, simple
+    # queue and mangle-counter reconciliation, rollup recompute - costs dozens of
+    # REST calls per router, while the telemetry half costs four. Nothing in the
+    # housekeeping set changes once a minute on a home network, and a limit or
+    # pause typed into the UI is applied by its own endpoint immediately, not by
+    # this loop. So it runs on its own, slower clock.
+    HEAVY_SYNC_INTERVAL_SECONDS: int = 60
     # 3s, matching the option the settings dialog marks as recommended. At 1s
     # the dialog showed "recommended" while the app actually polled three times
     # as often, and each poll costs several REST calls against the router.

@@ -21,6 +21,7 @@ from typing import Any, AsyncIterator, Optional
 import httpx
 
 from backend.app.core.config import settings as global_settings
+from backend.app.core.diagnostics import note_request
 from backend.app.schemas.routeros import RouterBoardInfo
 
 logger = logging.getLogger("mikroman.routeros")
@@ -54,6 +55,10 @@ class _CircuitBreakerTransport(httpx.AsyncHTTPTransport):
         self._owner = owner
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        # Counted before the attempt, not after it: a request that fails is load
+        # on the router just the same, and knowing how many went where is what
+        # makes a cadence change measurable.
+        note_request(str(request.url.host or self._owner.host))
         try:
             response = await super().handle_async_request(request)
         except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout) as e:
@@ -110,6 +115,12 @@ class RouterOSTransport:
         # cached per router and retired when its settings change, so this never
         # goes stale in a way that matters.
         self._routerboard: Optional[RouterBoardInfo] = None
+        # Public address from `/ip/cloud` with the monotonic instant it was read.
+        # RouterOS refreshes that field itself, and the telemetry loop caches its
+        # own resolver answer for 15 minutes, so re-reading it on every frame
+        # bought nothing: 58 calls in a measured 320-second window, all of them
+        # feeding a value nobody was asking for again.
+        self._cloud_address: Optional[tuple] = None
 
     def _note_unreachable(self, error: Exception) -> None:
         """Open the circuit after a failure to reach the router."""
@@ -180,3 +191,4 @@ class RouterOSTransport:
             await self._client.aclose()
         self._client = None
         self._routerboard = None
+        self._cloud_address = None

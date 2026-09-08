@@ -22,6 +22,8 @@ vi.mock('../context/I18nContext', () => ({
         router_logs_title: 'Router Logs',
         source_live: 'Live Stream (2.5s)',
         source_db: 'Stored History (DB)',
+        source_app: 'MikroMan Log',
+        app_log_hint: "MikroMan's own log, kept in the data directory",
         cat_all: 'All',
         cat_auth: '🚨 Security / Auth',
         cat_dhcp: '⚡ DHCP',
@@ -217,6 +219,37 @@ describe('RouterLogsModal hide-own-logins toggle', () => {
     open();
     await waitFor(() => {
       expect(api.getLogs.mock.calls[0][0].hide_self_api).toBe(true);
+    });
+  });
+
+  it('asks for the app log without router-scoped filters', async () => {
+    // MikroMan's own log belongs to the application, not to a router: sending
+    // router_id / category / hide_self_api would let the panel look like it can
+    // narrow a source whose endpoint silently ignores them.
+    open();
+    await waitFor(() => expect(api.getLogs).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByText('MikroMan Log'));
+
+    await waitFor(() => {
+      const last = api.getLogs.mock.calls[api.getLogs.mock.calls.length - 1][0];
+      expect(last.source).toBe('app');
+      expect(last.router_id).toBeUndefined();
+      expect(last.category).toBeUndefined();
+      expect(last.hide_self_api).toBeUndefined();
+    });
+  });
+
+  it('drops the RouterOS category pills when reading the app log', async () => {
+    open();
+    await waitFor(() => expect(api.getLogs).toHaveBeenCalled());
+    expect(screen.getByText('⚡ DHCP')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText('MikroMan Log'));
+
+    await waitFor(() => {
+      expect(screen.queryByText('⚡ DHCP')).toBeNull();
+      expect(screen.getByText("MikroMan's own log, kept in the data directory")).toBeInTheDocument();
     });
   });
 });
