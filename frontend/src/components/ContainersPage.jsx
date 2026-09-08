@@ -217,8 +217,13 @@ export function ContainersPage({ activeRouter }) {
 
   useEffect(() => { load(); }, [load]);
 
-  const support = data?.support || { status: 'unreachable', message: null };
-  const ready = support.status === 'ready';
+  // The support block only exists once the router has answered. Inferring
+  // "unreachable" from a request that is still in flight showed a red
+  // unreachable banner over an empty page on every single visit to this tab,
+  // which is a diagnosis nobody made - so while the first load runs there is no
+  // banner and no controls to act on, just the spinner on Refresh.
+  const support = data?.support || null;
+  const ready = support?.status === 'ready';
   const containers = data?.containers || [];
   const mounts = data?.mounts || [];
   const envs = data?.envs || [];
@@ -293,7 +298,7 @@ export function ContainersPage({ activeRouter }) {
         </div>
       )}
 
-      {support.status !== 'ready' && (
+      {support && support.status !== 'ready' && (
         <div className="card" style={{
           display: 'flex', gap: 12, alignItems: 'flex-start',
           borderLeft: `3px solid ${support.status === 'unreachable' ? 'var(--color-danger)' : 'var(--color-warning)'}`,
@@ -426,7 +431,7 @@ export function ContainersPage({ activeRouter }) {
       {/* Devices discovery found on veth interfaces - the containers above,
           seen from the network side. Kept out of the unassigned inbox, which
           is for devices that belong to somebody. */}
-      <ContainerWorkloads />
+      <ContainerWorkloads routerId={routerId} />
 
       {/* Reference panels: the router's container config, and the mount / env
           definitions a new container can attach by name. */}

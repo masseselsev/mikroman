@@ -98,19 +98,26 @@
 # its own manifest, so no tag suffix is needed here.
 
 # ------------------------------------------------------------------------------
-# 6. Order of operations for a migration, and why this order.
+# 6. Moving an existing installation onto the router, by hand, and why in this
+#    order. This is the bare-router fallback: MikroMan has no feature for it, on
+#    purpose — the copy is a one-time cutover, and left in the product it becomes
+#    a button that replaces a live deployment's database.
 #
-#   1. apply the setup above (or the UI) - the container exists, nothing runs
-#   2. carry the old install's data in: app.db AND .secret_key -> the mount above
-#      (the UI takes the snapshot from the live database through SQLite's backup
-#      API, so it is consistent while the old instance keeps writing)
-#   3. start the container - the pull happens now, with the old instance still the
-#      only writer
+#   1. apply the setup above - the container exists, nothing runs yet
+#   2. carry the data in: app.db AND .secret_key -> the mount created above
+#      (/usb1-part1/mikroman_data). Take the snapshot from the old side with
+#      `sqlite3 old.db ".backup snapshot.db"` rather than copying the live file:
+#      a database written every few seconds copied byte-for-byte arrives here as
+#      "database disk image is malformed". Both files must land together — the
+#      credentials and the bot token are stored encrypted, so app.db without the
+#      matching .secret_key generates a new key on first boot and then cannot
+#      decrypt any of them. Binary transfer is SFTP with one of the router's own
+#      /user accounts; there is no upload endpoint over REST on 7.24.2.
+#   3. start the container - the pull happens now, with the old instance still
+#      the only writer
 #   4. when its status reads `running`, stop the old instance
 #
-# 2 and 3 are not interchangeable. A container that boots against an empty /data
+# 2 and 3 are not interchangeable: a container that boots against an empty /data
 # writes a fresh database there, and the copy would then have to replace a file
-# underneath a running application - which is exactly what the app refuses to do
-# (POST /api/v1/routers/{id}/containers/migrate-data answers 409 while that
-# container is running).
+# underneath a running application. Only one of the two may be writing.
 # ------------------------------------------------------------------------------
