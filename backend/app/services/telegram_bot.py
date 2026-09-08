@@ -21,6 +21,12 @@ from backend.app.services.traffic_controller import TrafficController
 
 logger = logging.getLogger("mikroman.telegram")
 
+#: How long ``stop()`` waits for the polling loop to acknowledge before it gives
+#: up and cancels. A RouterOS container gets ~10 s between SIGTERM and SIGKILL,
+#: and shutdown also has to fit the webhook deletion, the drain budget in
+#: ``main.lifespan`` and the database teardown in that window.
+POLLING_STOP_TIMEOUT_SECONDS = 4.0
+
 
 class TelegramBotService:
     """Telegram Bot Service supporting Long Polling & Webhooks with bilingual multi-router commands."""
@@ -430,6 +436,13 @@ class TelegramBotService:
             except Exception as e:
                 logger.debug(f"Could not clear a previous webhook before polling: {e}")
             self.webhook_secret = None
+            if self.polling_task and not self.polling_task.done():
+                # Two pollers on one token is not a redundancy, it is a
+                # permanent outage: Telegram answers the second one with
+                # `Conflict: terminated by other getUpdates request` and it
+                # retries forever. Refuse rather than discover that at runtime.
+                logger.warning("Telegram polling is already running; not starting a second session")
+                return
             logger.info("Starting Telegram Bot in Long Polling mode...")
             self.polling_task = asyncio.create_task(self.dp.start_polling(self.bot))
         elif self.config.TELEGRAM_MODE == "webhook":
@@ -453,19 +466,53 @@ class TelegramBotService:
                 logger.error(f"Failed to register Telegram webhook at {url}: {e}")
 
     async def stop(self) -> None:
-        """Stop Telegram bot and release any registered webhook."""
+        """Stop Telegram bot and release any registered webhook.
+
+        The polling session has to be *closed*, not merely cancelled. Cancelling
+        the task that runs `dp.start_polling(bot)` does not tear down the HTTPS
+        session underneath it, and `reconfigure()` then replaces `self.bot` with
+        a fresh object - so the only reference to the old session is dropped and
+        nothing ever closes it. Telegram keeps that session's `getUpdates` slot
+        open, and the replacement poller answers every retry with
+        `Conflict: terminated by other getUpdates request`, once a second,
+        forever. Reproduced on a live device by the ordinary act of pressing
+        Save in Settings, which routes through `reconfigure()`.
+        """
         if self.bot and self.webhook_secret:
             try:
                 await self.bot.delete_webhook(drop_pending_updates=False)
             except Exception as e:
                 logger.debug(f"Could not delete Telegram webhook on shutdown: {e}")
             self.webhook_secret = None
-        if self.polling_task:
-            self.polling_task.cancel()
+
+        dp, bot, task = self.dp, self.bot, self.polling_task
+        self.polling_task = None
+
+        if dp is not None:
             try:
-                await self.polling_task
+                # Bounded: this waits for the polling loop to acknowledge, and a
+                # container gets ~10 s before RouterOS sends SIGKILL.
+                await asyncio.wait_for(dp.stop_polling(), timeout=POLLING_STOP_TIMEOUT_SECONDS)
+            except Exception as e:
+                # Raises RuntimeError("Polling is not started") for a webhook-mode
+                # bot or a second stop, which is normal, not a fault.
+                logger.debug(f"Telegram stop_polling: {e}")
+
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
             except asyncio.CancelledError:
                 pass
+            except Exception as e:
+                logger.debug(f"Telegram polling task ended with: {e}")
+
+        if bot is not None:
+            try:
+                await bot.close()
+            except Exception as e:
+                logger.debug(f"Could not close the Telegram bot session: {e}")
+
     async def reconfigure(
         self,
         token: Optional[str] = None,
