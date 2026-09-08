@@ -89,11 +89,20 @@ class ContainersMixin:
 
         ``payload`` is passed through to RouterOS - typically
         ``{"remote-image": "repo/name:tag", "interface": "veth1", ...}``.
+
+        Raises RouterOSCommandError rather than calling ``raise_for_status``:
+        the setup walk has to record *which* step the router refused and why, and
+        a bare HTTPStatusError escaping the endpoint turned a precise
+        "unknown parameter mounts" into an anonymous HTTP 500.
         """
         async with self._get_client() as client:
             resp = await client.post("/container/add", json=payload)
-            resp.raise_for_status()
-            body = resp.json() if resp.content else {}
+            if resp.status_code not in (200, 201, 204):
+                raise RouterOSCommandError("/container/add", resp.status_code, _detail(resp))
+            try:
+                body = resp.json()
+            except Exception:
+                return {}
             return body if isinstance(body, dict) else {"result": body}
 
     # --- Writes the setup needs -----------------------------------------------

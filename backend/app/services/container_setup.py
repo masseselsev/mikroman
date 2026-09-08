@@ -338,20 +338,28 @@ class ContainerSetupService:
         #     to land in the mount first, or the app boots against an empty
         #     database and writes a fresh one over the path we are about to use.
         if request.create_container:
-            existing = _first(state["containers"], lambda k: (k.get("name") or k.get("tag") or "") == request.container_name
-                              or request.image in str(k.get("tag") or ""))
+            # RouterOS names the row after the image (`mikroman:latest`), not
+            # after anything the operator chose, so matching on the requested
+            # name never finds the container this step made and a second run adds
+            # a twin. The comment is ours and is the only stable identifier.
+            existing = _first(
+                state["containers"],
+                lambda k: str(k.get("comment") or "").startswith(f"{OWNED}container"),
+            )
             if existing is None:
                 payload = {
                     "remote-image": request.image,
                     "interface": request.veth_name,
-                    "mounts": request.mount_name,
+                    # `mounts=` is refused by the device; the binding is by list
+                    # name under `mountlists`.
+                    "mountlists": request.mount_name,
                     "start-on-boot": "yes",
                     "logging": "yes",
                     "hostname": request.container_name,
                     "comment": f"{OWNED}container",
                 }
                 if wanted:
-                    payload["envlist"] = f"{request.container_name}_envs"
+                    payload["envlists"] = env_list
                 if not await step("container", "create", f"{request.image} (created, not started)",
                                   run=lambda: self.client.add_container(payload)):
                     return plan

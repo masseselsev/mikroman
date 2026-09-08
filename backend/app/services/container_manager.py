@@ -88,8 +88,11 @@ class ContainerManager:
             arch=raw.get("arch"),
             interface=raw.get("interface"),
             root_dir=raw.get("root-dir"),
-            mounts=raw.get("mounts"),
-            envlist=raw.get("envlist"),
+            # RouterOS binds mount and env rows through `mountlists` /
+            # `envlists`; reading `mounts` returned nothing, so a container that
+            # was mounted correctly looked unmounted in the table.
+            mounts=raw.get("mountlists") or raw.get("mounts"),
+            envlist=raw.get("envlists") or raw.get("envlist"),
             cmd=raw.get("cmd"),
             entrypoint=raw.get("entrypoint"),
             hostname=raw.get("hostname"),
@@ -168,8 +171,10 @@ class ContainerManager:
             ("hostname", "hostname"),
             ("cmd", "cmd"),
             ("entrypoint", "entrypoint"),
-            ("mounts", "mounts"),
-            ("envlist", "envlist"),
+            # `mounts=` is not a parameter of /container/add - the device answers
+            # "unknown parameter mounts" - the binding is done by list name.
+            ("mounts", "mountlists"),
+            ("envlist", "envlists"),
             ("comment", "comment"),
         ):
             value = payload.get(src)
