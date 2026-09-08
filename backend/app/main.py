@@ -425,6 +425,31 @@ DESTINATION_PRUNE_EVERY_TICKS = 360
 DEVICE_HISTORY_RETENTION_DAYS = 90
 
 
+async def _trim_device_history_once():
+    """Reclaim the device event log once, at start-up.
+
+    The periodic pass is gated on a tick count, which on this loop works out at
+    roughly eight hours — too late to matter to the operator watching memory climb
+    now, and the churn rows are days old, so the 90-day age rule would not touch
+    them at all. Same reasoning as the rollup backfill: a fix that only lands
+    after the next restart-on-tick is not a fix for the machine that is already
+    loaded.
+
+    Runs after `init_db`, before the first telemetry tick, and never fails the
+    start-up: a trim that cannot run just leaves the table as it was.
+    """
+    try:
+        from backend.app.services.device_manager import cap_device_history, prune_device_history
+
+        async with AsyncSessionLocal() as session:
+            removed = await prune_device_history(session)
+            removed += await cap_device_history(session)
+            if removed:
+                logger.info(f"Trimmed {removed} device history row(s) at start-up")
+    except Exception as e:
+        logger.warning(f"Device history trim skipped: {e}")
+
+
 async def log_scrape_worker():
     """Pull each active router's log into SQLite, then prune what aged out.
 
@@ -566,6 +591,9 @@ async def lifespan(app: FastAPI):
     # Router credentials are encrypted at rest; anything written by an older
     # build is still plain text on disk until it is rewritten once.
     await encrypt_legacy_secrets()
+    # Reclaim the device event log before any worker loads it. The periodic pass
+    # is hours away; the rows it targets are already there.
+    await _trim_device_history_once()
 
     telegram_service = TelegramBotService(
         router_manager=router_manager,
