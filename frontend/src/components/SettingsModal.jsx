@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useI18n } from '../context/I18nContext';
 import { api } from '../api/client';
+import { SECRET_PLACEHOLDER } from '../api/secrets';
 import { templateErrorKey } from '../utils/ipLookup';
 import { RouterConnectionForm } from './RouterConnectionForm';
 import { RouterDeleteDialog, ChangeRouterModal, ArchivedRoutersSection } from './RouterLifecycle';
@@ -402,6 +403,9 @@ export function SettingsModal({
                   onChange={e => setSettings({ ...settings, telegram_bot_token: e.target.value })}
                   placeholder="123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
                 />
+                {settings.telegram_bot_token === SECRET_PLACEHOLDER && (
+                  <div className="form-hint">{t('telegram_token_masked')}</div>
+                )}
               </div>
 
                 <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 10, marginBottom: 10 }}>

@@ -3,6 +3,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { renderWithProviders, screen, waitFor } from '../test/render';
 import { SettingsModal } from './SettingsModal';
 import { TrafficHistoryModal } from './TrafficHistoryModal';
+import { api } from '../api/client';
+import { SECRET_PLACEHOLDER } from '../api/secrets';
 
 /**
  * Three modals went to a blank screen after the multi-router refactor. The
@@ -16,6 +18,9 @@ vi.mock('../api/client', () => ({
     // SettingsModal fans out to these on open.
     getSettings: vi.fn().mockResolvedValue({ data: {} }),
     getRouters: vi.fn().mockResolvedValue({ data: [] }),
+    // Part of the same Promise.all: without it the call throws before
+    // `setSettings`, and a test that seeds settings silently keeps defaults.
+    getArchivedRouters: vi.fn().mockResolvedValue({ data: [] }),
     getQuota: vi.fn().mockResolvedValue({ data: { enabled: false } }),
     getIpLookup: vi.fn().mockResolvedValue({ data: { services: [], enabled_ids: [], default_id: null } }),
     // TrafficHistoryModal fetches history for its target.
@@ -75,5 +80,45 @@ describe('TrafficHistoryModal', () => {
     await waitFor(() =>
       expect(screen.getByText('Alice')).toBeInTheDocument()
     );
+  });
+});
+
+describe('SettingsModal secret field', () => {
+  // The shared setup calls `vi.restoreAllMocks()` after every test, which strips
+  // the implementations handed to these by the `vi.mock` factory above. So a
+  // test here has to re-establish the *whole* fan-out the modal performs on
+  // open: setting only the settings response leaves `getRouters()` returning
+  // undefined, `Promise.all` throws inside the effect, and the modal silently
+  // keeps its defaults — which looks like a broken component, not a broken mock.
+  const withSettings = (data) => {
+    api.getSettings.mockResolvedValue({ data });
+    api.getRouters.mockResolvedValue({ data: [] });
+    api.getArchivedRouters.mockResolvedValue({ data: [] });
+    api.getQuota.mockResolvedValue({ data: { enabled: false } });
+    api.getIpLookup.mockResolvedValue({
+      data: { services: [], enabled_ids: [], default_id: null },
+    });
+  };
+
+  it('labels a masked token as hidden instead of as filled in', async () => {
+    // The API never returns the stored token; the field receives the placeholder
+    // the server sends. Rendered bare, eight bullets in a password field reads
+    // exactly like a real credential, so the hint is the only signal.
+    withSettings({ telegram_bot_token: SECRET_PLACEHOLDER });
+    renderWithProviders(
+      <SettingsModal isOpen onClose={() => {}} onReboot={() => {}} onRoutersChanged={() => {}} />
+    );
+    expect(await screen.findByText('The stored token is hidden. Type a new one to replace it.'))
+      .toBeInTheDocument();
+  });
+
+  it('stays quiet when no token is configured', async () => {
+    withSettings({});
+    renderWithProviders(
+      <SettingsModal isOpen onClose={() => {}} onReboot={() => {}} onRoutersChanged={() => {}} />
+    );
+    await screen.findByText('General & Bot');
+    expect(screen.queryByText('The stored token is hidden. Type a new one to replace it.'))
+      .not.toBeInTheDocument();
   });
 });
