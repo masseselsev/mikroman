@@ -12,13 +12,15 @@ The cost was not storage. `Device.history` is eager by relationship, so every
 device load materialised all of it — the reason an analytics request spent ~485 ms
 loading a log no reader on that path consults.
 """
+import inspect
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import event, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from backend.app.db.models import Base, Device, DeviceHistory, Router
+import backend.app.main as main_module
+from backend.app.db.models import Base, Device, DeviceHistory, Router, User
 from backend.app.schemas.routeros import DHCPLeaseDTO
 from backend.app.services.device_manager import DeviceManager, prune_device_history
 
@@ -221,4 +223,84 @@ async def test_the_per_device_cap_reclaims_rows_a_get_only_would_miss():
     assert kept_noisy == 200, "the newest window is kept"
     assert kept_quiet == 3, "a device under the cap is not trimmed"
     assert newest == "c899", "what is kept must be the newest rows, not any 200"
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_merge_suggestions_never_touch_the_event_log():
+    """The suggestion rules read hostname, vendor, is_active and the MAC.
+
+    They used to `selectinload(Device.history)`, which made every "anything to
+    merge?" pass — once a minute — pull the entire event log of every device.
+    That is the same 50 MB-per-minute churn the discovery query had, so it is
+    worth a guard rather than a review comment: the assertion is on the SQL that
+    runs, not on the objects, because an eager relationship shows up as a query
+    whether or not the code reads the attribute.
+    """
+    from backend.app.services.device_manager import DeviceManager
+
+    engine, factory = await _db()
+    seen = []
+
+    @event.listens_for(engine.sync_engine, "before_cursor_execute")
+    def _capture(conn, cursor, statement, parameters, context, executemany):
+        seen.append(statement)
+
+    async with factory() as session:
+        router = Router(name="R", host="127.0.0.1", is_active=True, is_default=True)
+        session.add(router)
+        await session.flush()
+        user = User(name="Owner", router_id=router.id)
+        session.add(user)
+        await session.flush()
+        session.add_all([
+            Device(mac_address=OTHER, user_id=user.id, router_id=router.id,
+                   hostname="Same-Host", vendor="Apple", is_active=False),
+            Device(mac_address=TWO_HOSTS_ONE_MAC, user_id=None, router_id=router.id,
+                   hostname="Same-Host", vendor="Apple", is_active=True),
+        ])
+        await session.commit()
+
+        suggestions = await DeviceManager(router_client=None, router_id=router.id) \
+            .find_merge_suggestions(session)
+
+    sql = "\n".join(seen)
+    assert "device_history" not in sql, "the suggestion pass loaded the event log again"
+    # The rules themselves still work — the guard must not be paid for with a
+    # suggestion that silently stops being offered.
+    assert len(suggestions) >= 1, f"expected the same-hostname pair to be suggested; got {suggestions}"
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_history_is_reclaimed_at_startup_not_only_eight_hours_later():
+    """The periodic pass is gated on a tick count; that is too late to matter.
+
+    Someone watching the container's memory climb today needs the reclaim to run
+    on this start-up, not after ~8 hours of scrape ticks — and the churn rows are
+    days old, so the 90-day age rule alone would never have removed them.
+    """
+    engine, factory = await _db()
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    async with factory() as session:
+        device = Device(mac_address=TWO_HOSTS_ONE_MAC, router_id=None, is_active=True)
+        session.add(device)
+        await session.flush()
+        session.add_all([
+            DeviceHistory(device_id=device.id, mac_address=TWO_HOSTS_ONE_MAC,
+                          event_type="ip_changed", details=str(i), created_at=now)
+            for i in range(500)
+        ])
+        await session.commit()
+
+    # The start-up helper runs the same two passes the tick does.
+    from backend.app.services.device_manager import cap_device_history, prune_device_history
+
+    async with factory() as session:
+        removed = await prune_device_history(session) + await cap_device_history(session)
+        left = (await session.execute(select(func.count(DeviceHistory.id)))).scalar()
+    assert removed == 300 and left == 200
+
+    assert "await _trim_device_history_once()" in inspect.getsource(main_module.lifespan), \
+        "the reclaim is defined but nothing calls it at start-up"
     await engine.dispose()

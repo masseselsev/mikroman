@@ -29,7 +29,7 @@ from typing import List, Optional
 
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import noload, selectinload
 
 from backend.app.db.models import (
     AlertLog,
@@ -78,15 +78,30 @@ class DeviceConsolidationMixin:
                 )
             return stmt
 
-        # Get unassigned devices
+        # Get unassigned devices.
+        #
+        # No `Device.history` here: the rules below read hostname, vendor,
+        # is_active and the MAC itself — never the event log — and `history` is
+        # eager by relationship, so asking for it loaded every event of every
+        # device on every pass. On the live database that was 35 123 rows once a
+        # minute, ~50 MB of ORM objects built and thrown away, and the reason the
+        # container's resident set kept climbing after the discovery query was
+        # fixed. `_absorb_device`, which does need the collections, refreshes
+        # them explicitly.
         unassigned_res = await session.execute(
-            _scope(select(Device).where(Device.user_id == None)).options(selectinload(Device.history))  # noqa: E711
+            _scope(select(Device).where(Device.user_id == None)).options(noload(Device.history))  # noqa: E711
         )
         unassigned_devs = unassigned_res.scalars().all()
 
-        # Get assigned devices with their parent users
+        # Get assigned devices with their parent users (same reasoning: users are
+        # read for the suggestion label, history is not).
+        # `noload`, not merely "no option": the relationship is eager by
+        # default, so leaving the selectinload out changed nothing — the whole
+        # event log still arrived with every device. The guard test caught it.
         assigned_res = await session.execute(
-            _scope(select(Device).where(Device.user_id != None)).options(selectinload(Device.user), selectinload(Device.history))  # noqa: E711
+            _scope(
+                select(Device).where(Device.user_id != None)  # noqa: E711
+            ).options(selectinload(Device.user), noload(Device.history))
         )
         assigned_devs = assigned_res.scalars().all()
 
