@@ -72,15 +72,24 @@ async def delete_older_than(
     session: AsyncSession,
     table: Table,
     cutoff,
+    *,
+    column: str = "timestamp",
     batch: int = 500,
     max_batches: int = 20,
 ) -> int:
-    """Drop rows whose ``timestamp`` predates ``cutoff``, oldest first, in batches."""
+    """Drop rows whose time column predates ``cutoff``, oldest first, in batches.
+
+    `column` exists because the tables are not unanimous: the metric samples use
+    ``timestamp``, the device event log uses ``created_at``, and reaching for a
+    name the table does not have fails with a `KeyError` inside a background
+    prune where nobody is looking.
+    """
+    time_column = table.columns[column]
     return await delete_matching_batches(
         session,
         table,
-        table.columns["timestamp"] < cutoff,
-        table.columns["timestamp"].asc(),
+        time_column < cutoff,
+        time_column.asc(),
         batch=batch,
         max_batches=max_batches,
     )

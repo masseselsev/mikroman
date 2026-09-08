@@ -418,6 +418,11 @@ async def background_sync_worker():
 LOG_SCRAPE_INTERVAL_SECONDS = 60.0
 # ~6 hours at the interval above.
 DESTINATION_PRUNE_EVERY_TICKS = 360
+# How long per-device event rows are kept. They used to be kept forever, and
+# this is the one table that can grow with nobody touching it: two hosts sharing
+# one MAC made discovery "change" the IP and hostname on every sweep, 35 123
+# rows in six days on a single device — all of which every device read paid for.
+DEVICE_HISTORY_RETENTION_DAYS = 90
 
 
 async def log_scrape_worker():
@@ -485,6 +490,23 @@ async def log_scrape_worker():
                         await destination_collector.prune(session)
                     except Exception as e:
                         logger.debug(f"Destination prune failed: {e}")
+                    # Device history had no retention at all. The duplicated-MAC
+                    # churn has a source-side fix now, but the rows already
+                    # recorded on installed systems stay, and they are the rows
+                    # every device page and analytics read pays for.
+                    try:
+                        from backend.app.services.device_manager import prune_device_history
+
+                        removed = await prune_device_history(
+                            session, retention_days=DEVICE_HISTORY_RETENTION_DAYS
+                        )
+                        if removed:
+                            logger.info(
+                                f"Pruned {removed} device history row(s) older than "
+                                f"{DEVICE_HISTORY_RETENTION_DAYS} days"
+                            )
+                    except Exception as e:
+                        logger.debug(f"Device history prune failed: {e}")
         except asyncio.CancelledError:
             raise
         except Exception as e:

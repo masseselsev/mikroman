@@ -1,6 +1,6 @@
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Tuple
 
 from sqlalchemy import select
@@ -38,6 +38,41 @@ GENERIC_VENDOR_LABELS = {
     "Private MAC (Randomized)",
     "Randomized MAC",
 }
+
+
+def _lease_rank(lease: DHCPLeaseDTO) -> tuple:
+    """Sort key for picking one lease per MAC: bound first, then address.
+
+    Ascending address rather than expiry or last-seen because those move: a
+    preference that changes between sweeps re-creates the flip-flop this is here
+    to stop, just at half the rate.
+    """
+    status = (lease.status or "").lower()
+    return (0 if status == "bound" else 1, str(lease.address or ""))
+
+
+async def prune_device_history(session: AsyncSession, retention_days: int = 90) -> int:
+    """Drop device event rows older than the retention window, in batches.
+
+    Device history was the one table with no retention anywhere: it is only
+    deleted when a router is purged. That is invisible while discovery writes a
+    few rows a week and unbounded when something makes it write a few thousand a
+    day, and every row is paid for again on each read that eager-loads the
+    collection.
+
+    Batched for the same reason the metrics prune is: SQLite has one writer, and
+    a single delete over tens of thousands of rows holds that lock past the 5
+    second `busy_timeout` every other worker is waiting on.
+    """
+    from backend.app.db.prune import delete_older_than
+
+    # Naive UTC to match the column: `created_at` defaults to `func.now()`, which
+    # SQLite resolves to CURRENT_TIMESTAMP in UTC, so a local-time cutoff would
+    # silently keep or drop a window equal to the host's offset from UTC.
+    cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=retention_days)
+    return await delete_older_than(
+        session, DeviceHistory.__table__, cutoff, column="created_at"
+    )
 
 
 def lookup_vendor(mac: str) -> str:
@@ -126,6 +161,56 @@ class DeviceManager(DeviceConsolidationMixin):
     def __init__(self, router_client: RouterOSClient, router_id: Optional[int] = None):
         self.router_client = router_client
         self.router_id = router_id
+        # MACs whose duplicate-lease warning has already been raised. An instance
+        # attribute, because a discovery run is a loop over sweeps and a per-sweep
+        # warning on a permanently duplicated MAC is 1440 lines a day about the
+        # same two machines.
+        self._duplicate_mac_warned: set = set()
+
+    def _one_lease_per_mac(self, leases: List[DHCPLeaseDTO]) -> List[DHCPLeaseDTO]:
+        """Keep a single lease per MAC, chosen the same way every sweep.
+
+        Two hosts can answer with one MAC — two Hyper-V/WSL adapter gateways on
+        different subnets did exactly this on a live network (172.16.141.254
+        `WIN-R1I13RGSAUB` and 172.16.142.254 `WIN-41JDL2PAM9Q` behind the same
+        address). The discovery loop then visited the same MAC twice per sweep,
+        each visit "changing" the IP and the hostname away from what the other
+        had just written: four `device_history` rows every sweep, 35 123 of them
+        on one row in six days, ~10 800 a day, never pruned — and the eager
+        history load made that the most expensive part of the analytics request.
+
+        The pick is deterministic on purpose. Choosing "the newest lease" would
+        let the winner itself alternate between two hosts that are both always
+        present, which is the failure being fixed. `bound` beats anything else,
+        then the address ascending, so one host's pair is the stable record and
+        the other's is invisible until the first disappears.
+        """
+        best: Dict[str, DHCPLeaseDTO] = {}
+        seen: Dict[str, int] = {}
+        for lease in leases or []:
+            mac = (lease.mac_address or "").upper()
+            if not mac:
+                continue
+            seen[mac] = seen.get(mac, 0) + 1
+            current = best.get(mac)
+            if current is None:
+                best[mac] = lease
+                continue
+            if _lease_rank(lease) < _lease_rank(current):
+                best[mac] = lease
+
+        for mac, count in seen.items():
+            if count > 1 and mac not in self._duplicate_mac_warned:
+                self._duplicate_mac_warned.add(mac)
+                logger.warning(
+                    f"{count} DHCP leases share MAC {mac} "
+                    f"(addresses: {', '.join(sorted(
+                        lease.address for lease in (leases or [])
+                        if (lease.mac_address or '').upper() == mac))}); "
+                    f"tracking the first as one device — two hosts answering with one MAC, "
+                    f"not one device with two leases."
+                )
+        return list(best.values())
 
     async def _get_wan_interfaces(self, session: AsyncSession) -> set:
         """Interface names treated as uplinks rather than LAN ports.
@@ -271,6 +356,8 @@ class DeviceManager(DeviceConsolidationMixin):
         except Exception as e:
             logger.error(f"Failed to query network discovery endpoints: {e}")
             return [], []
+
+        leases = self._one_lease_per_mac(leases)
 
         # Drop uplink-side ARP entries before they are treated as LAN clients, and
         # unresolved ones, which RouterOS keeps after a host has left the network
