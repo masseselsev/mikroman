@@ -284,7 +284,7 @@ class AnalyticsEngine:
         # a row of zeros each.
         #
         # `Device.history` is eager by relationship, which means every device
-        # load also materialises its whole event log. That is 35 123 rows for a
+        # load also materialises its whole event log. That is tens of thousands of rows for a
         # single flapping device on the live database, and none of it is read
         # here: this function wants names, owners and rollup sums. Loading it
         # cost 333 ms of the 356 ms this endpoint took on a desktop - several

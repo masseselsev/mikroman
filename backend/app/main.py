@@ -449,7 +449,7 @@ DESTINATION_SAMPLE_EVERY_TICKS = 3
 SECURITY_AUDIT_EVERY_TICKS = 5
 # How long per-device event rows are kept. They used to be kept forever, and
 # this is the one table that can grow with nobody touching it: two hosts sharing
-# one MAC made discovery "change" the IP and hostname on every sweep, 35 123
+# one MAC made discovery "change" the IP and hostname on every sweep, tens of thousands
 # rows in six days on a single device — all of which every device read paid for.
 DEVICE_HISTORY_RETENTION_DAYS = 90
 

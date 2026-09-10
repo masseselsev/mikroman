@@ -1,7 +1,7 @@
 """Tests for the duplicated-MAC churn: one lease per MAC, and history retention.
 
 The failure was found in a copy of the live database, not guessed: one device row
-carried **35 123** `device_history` rows after six days — 17 561 `ip_changed` and
+carried **tens of thousands** `device_history` rows after six days — 17 561 `ip_changed` and
 17 561 `hostname_changed`, exactly 8 781 of each of four (address, hostname)
 pairs. Two hosts answered with the same MAC from two subnets
 (192.0.2.11 `WIN-HOST-A`, 192.0.2.12 `WIN-HOST-B`), so every
@@ -177,7 +177,7 @@ async def test_the_prune_is_bounded_per_transaction():
 async def test_the_per_device_cap_reclaims_rows_a_get_only_would_miss():
     """Age retention cannot fix this table: the churn rows are six days old.
 
-    A 90-day rule leaves 35 123 rows in place until March, still loaded by every
+    A 90-day rule leaves tens of thousands of rows in place until March, still loaded by every
     path that consults history. The cap is the pass that actually shrinks an
     installed database, so it keeps the newest events per device and drops the
     rest — without touching a second device's timeline.

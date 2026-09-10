@@ -4,13 +4,16 @@ Adds composite indexes matching the shapes the aggregators actually issue, and
 runs ANALYZE so the planner knows the single-column indexes are not the cheapest
 route.
 
-Measured on a copy of the live database (691 142 interface_metrics rows,
-35 186 device_history rows, one device holding 35 123 of them):
+Measured on a copy of a live deployment's database - hundreds of thousands of
+metric rows, and one device holding tens of thousands of history rows. Absolute
+timings are omitted deliberately: they describe one machine, and only the ratios
+transfer. Before -> after adding these indexes and running ANALYZE:
 
-    metrics interfaces, 1 h window   51.6 ms ->  1.4 ms
-    metrics interfaces, 6 h window   48.7 ms ->  1.1 ms
-    recompute_recent (background)   190.9 ms -> 91.1 ms
-    EXPLAIN on the 1 h window: 296 403 index entries visited -> 6 778
+    interface metrics, 1 h window    ~40x faster
+    interface metrics, 6 h window    ~45x faster
+    background rollup recompute      ~2x faster
+    EXPLAIN on the 1 h window: a walk of the router's whole index became a
+    range scan over the window itself
 
 The single-column indexes were already there; the planner used the wrong one and
 then sorted in a temporary B-tree. ``ANALYZE`` alone fixes the choice, but the

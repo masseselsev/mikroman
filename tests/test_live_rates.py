@@ -2,7 +2,7 @@
 
 The user cards read their live speedometers from the ``rate`` field of each
 managed Simple Queue. On RouterOS 7.x that field can freeze permanently: one
-user showed a constant 488 Kbps / 2.4 Mbps for hours while the entire WAN was
+user showed a constant a constant non-zero value for hours while the entire WAN was
 doing 10 Kbps, and every other user showed a flat 0 bps despite real traffic.
 Rates are now derived by differentiating the per-device mangle byte counters.
 """

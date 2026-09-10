@@ -1,13 +1,16 @@
 """Tests for the query-performance work: indexes, planner stats, eager-load caps.
 
 Every number quoted here was measured against a copy of the live router
-database (691 142 ``interface_metrics`` rows, 35 186 ``device_history`` rows of
-which one device holds 35 123), not estimated:
+database (hundreds of thousands of ``interface_metrics`` rows, and ``device_history`` rows of
+which one device holds tens of thousands), not estimated:
 
-    metrics interfaces, 1 h window   51.6 ms ->  1.4 ms   (composite index + ANALYZE)
-    metrics interfaces, 6 h window   48.7 ms ->  1.1 ms
-    recompute_recent (background)   190.9 ms -> 91.1 ms
-    select(Device) + history        484.6 ms ->  3.9 ms   (noload in the analytics path)
+    interface metrics, 1 h window    ~40x faster   (composite index + ANALYZE)
+    interface metrics, 6 h window    ~45x faster
+    background rollup recompute      ~2x faster
+    select(Device) with history      ~100x faster   (noload in the analytics path)
+
+Absolute milliseconds are left out: they belong to one machine and one
+database, and quoting them here would invite reading them as a product spec.
 """
 import inspect
 from datetime import date, datetime, timedelta, timezone
@@ -85,7 +88,7 @@ async def test_a_router_id_and_time_filter_prefers_the_composite_index():
     """The planner must use (router_id, timestamp), not router_id alone.
 
     Without statistics it chose `ix_interface_metrics_router_id` and walked
-    296 403 index entries to answer a one-hour question. The plan text is the
+    hundreds of thousands of index entries to answer a one-hour question. The plan text is the
     assertion, because the row count is the thing that changed.
     """
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
@@ -173,7 +176,7 @@ def test_init_db_runs_the_index_pass():
 
     Nothing else would notice `_ensure_query_indexes` being orphaned - the
     indexes would simply never appear on a deployed database, and the queries
-    would stay at 296 403 visited rows instead of 6 778 with every test still
+    would stay at a whole-index walk with every test still
     passing, because each test builds its own engine.
     """
     source = inspect.getsource(db_session.init_db)

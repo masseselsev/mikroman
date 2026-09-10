@@ -83,7 +83,7 @@ class DeviceConsolidationMixin:
         # No `Device.history` here: the rules below read hostname, vendor,
         # is_active and the MAC itself — never the event log — and `history` is
         # eager by relationship, so asking for it loaded every event of every
-        # device on every pass. On the live database that was 35 123 rows once a
+        # device on every pass. On the live database that was tens of thousands of rows once a
         # minute, ~50 MB of ORM objects built and thrown away, and the reason the
         # container's resident set kept climbing after the discovery query was
         # fixed. `_absorb_device`, which does need the collections, refreshes

@@ -154,14 +154,14 @@ async def init_db() -> None:
             # return early. `create_all` will not add an index to a table that
             # already exists, and nothing in the runtime path runs Alembic, so
             # this is how a database that has been growing for months - the
-            # 691 142-row interface_metrics table on the router, for one - gets
+            # interface_metrics table, hundreds of thousands of rows on the router, for one - gets
             # the composite index its queries have been wanting.
             created = await _ensure_query_indexes(conn)
             if created:
                 # Statistics are what make the planner choose the new index at
                 # all: without sqlite_stat1 it kept walking a router_id index
-                # over 296 403 entries for a one-hour question. A full ANALYZE
-                # costs ~1 s on a desktop (measured, 691 142 rows) and several
+                # over hundreds of thousands of entries for a one-hour question. A full ANALYZE
+                # costs ~1 s on a desktop (measured, hundreds of thousands of rows) and several
                 # times that on the ARM board, so it runs exactly once per
                 # database - here, when the plan actually changed - and
                 # `PRAGMA optimize` (free) keeps it from being stale later.
