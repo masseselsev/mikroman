@@ -4,6 +4,7 @@ from typing import AsyncGenerator
 
 from sqlalchemy import event, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
 
 from backend.app.core.config import settings
 from backend.app.db.models import Base
@@ -28,10 +29,9 @@ engine_kwargs = {
 if "sqlite" in settings.DATABASE_URL:
     engine_kwargs["connect_args"] = {"check_same_thread": False}
     if ":memory:" not in settings.DATABASE_URL:
-        # Bounded connection pool for persistent storage to stop worker connection sprawl
-        engine_kwargs["pool_size"] = 5
-        engine_kwargs["max_overflow"] = 5
-        engine_kwargs["pool_recycle"] = 300
+        # Use NullPool for persistent SQLite with aiosqlite to prevent background
+        # worker thread sprawl and futex spin locks on embedded CPU cores.
+        engine_kwargs["poolclass"] = NullPool
 
 engine = create_async_engine(
     settings.DATABASE_URL,
