@@ -4,7 +4,7 @@ The failure was found in a copy of the live database, not guessed: one device ro
 carried **35 123** `device_history` rows after six days — 17 561 `ip_changed` and
 17 561 `hostname_changed`, exactly 8 781 of each of four (address, hostname)
 pairs. Two hosts answered with the same MAC from two subnets
-(172.16.141.254 `WIN-R1I13RGSAUB`, 172.16.142.254 `WIN-41JDL2PAM9Q`), so every
+(192.0.2.11 `WIN-HOST-A`, 192.0.2.12 `WIN-HOST-B`), so every
 sweep visited that MAC twice and each visit overwrote what the other had just
 written, recording two "changes" per sweep, forever.
 
@@ -45,8 +45,8 @@ def test_two_leases_on_one_mac_collapse_to_one_device_read():
     orders and demands the same winner, because the sweep order comes from the
     router and a winner that follows it is the flip-flop being removed.
     """
-    first = _lease("172.16.141.254", TWO_HOSTS_ONE_MAC, "WIN-R1I13RGSAUB")
-    second = _lease("172.16.142.254", TWO_HOSTS_ONE_MAC, "WIN-41JDL2PAM9Q")
+    first = _lease("192.0.2.11", TWO_HOSTS_ONE_MAC, "WIN-HOST-A")
+    second = _lease("192.0.2.12", TWO_HOSTS_ONE_MAC, "WIN-HOST-B")
 
     unrelated = _lease("10.0.0.1", OTHER, "someone-else")
     forward = _manager()._one_lease_per_mac([first, second, unrelated])
@@ -55,7 +55,7 @@ def test_two_leases_on_one_mac_collapse_to_one_device_read():
     assert len(forward) == 2, "three leases, two MACs -> two device records"
     kept = [lease for lease in forward if lease.mac_address == TWO_HOSTS_ONE_MAC]
     assert len(kept) == 1
-    assert kept[0].address == "172.16.141.254", "the lower address is the stable pick"
+    assert kept[0].address == "192.0.2.11", "the lower address is the stable pick"
     assert [lease.address for lease in backward
                 if lease.mac_address == TWO_HOSTS_ONE_MAC] == [kept[0].address], "the pick must not depend on the order the router returned"
 
@@ -82,8 +82,8 @@ def test_the_duplicate_is_reported_once_not_every_sweep(caplog):
     pattern this round removed from the router's log ring. The condition is still
     worth saying out loud once: it means two hosts answer as one device.
     """
-    leases = [_lease("172.16.141.254", TWO_HOSTS_ONE_MAC, "A"),
-              _lease("172.16.142.254", TWO_HOSTS_ONE_MAC, "B")]
+    leases = [_lease("192.0.2.11", TWO_HOSTS_ONE_MAC, "A"),
+              _lease("192.0.2.12", TWO_HOSTS_ONE_MAC, "B")]
     manager = _manager()
     with caplog.at_level("WARNING"):
         for _ in range(5):

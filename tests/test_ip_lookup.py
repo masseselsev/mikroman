@@ -104,7 +104,7 @@ class TestTemplateValidationAcceptsRealTemplates:
 
 class TestBuildLookupUrl:
     def test_substitutes_the_address(self):
-        assert build_lookup_url("https://2ip.io/ip/{ip}/", "188.113.204.70") == "https://2ip.io/ip/188.113.204.70/"
+        assert build_lookup_url("https://2ip.io/ip/{ip}/", "203.0.113.77") == "https://2ip.io/ip/203.0.113.77/"
 
     def test_the_2ip_builtin_points_at_the_path_that_actually_resolves(self):
         # The first release shipped https://2ip.io/{ip}/, which 404s. The site

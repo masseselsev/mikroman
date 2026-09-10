@@ -49,8 +49,8 @@ describe('RouterSelector status dot', () => {
       <RouterSelector
         {...base}
         telemetryLive
-        routers={[{ id: 1, name: 'Polet-Grad', is_default: true, is_online: false }]}
-        activeRouter={{ id: 1, name: 'Polet-Grad', is_default: true, is_online: false }}
+        routers={[{ id: 1, name: 'Branch Office', is_default: true, is_online: false }]}
+        activeRouter={{ id: 1, name: 'Branch Office', is_default: true, is_online: false }}
       />
     );
     const dot = container.querySelector('.router-selector > button .status-dot');

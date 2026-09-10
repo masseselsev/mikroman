@@ -229,8 +229,8 @@ class DeviceManager(DeviceConsolidationMixin):
         """Keep a single lease per MAC, chosen the same way every sweep.
 
         Two hosts can answer with one MAC — two Hyper-V/WSL adapter gateways on
-        different subnets did exactly this on a live network (172.16.141.254
-        `WIN-R1I13RGSAUB` and 172.16.142.254 `WIN-41JDL2PAM9Q` behind the same
+        different subnets did exactly this on a live network (two hosts named
+        here WIN-HOST-A and WIN-HOST-B, on 192.0.2.11 and 192.0.2.12, behind the same
         address). The discovery loop then visited the same MAC twice per sweep,
         each visit "changing" the IP and the hostname away from what the other
         had just written: four `device_history` rows every sweep, 35 123 of them
