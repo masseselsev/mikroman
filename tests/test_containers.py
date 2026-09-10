@@ -287,7 +287,7 @@ class SetupFake:
              "use": "43", "mount-read-only": "false", "formatting": "false"},
         ])
         self.addresses = state.get("addresses", [
-            {"address": "192.168.123.1/24", "interface": "br.lan"},
+            {"address": "192.168.88.1/24", "interface": "br.lan"},
             {"address": "10.75.16.78/30", "interface": "ether1"},
         ])
         self.bridges = state.get("bridges", [{"name": "br.lan", "comment": ""}])

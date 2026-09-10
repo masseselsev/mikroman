@@ -84,7 +84,7 @@ beforeEach(() => {
 
 function open(props = {}) {
   return render(
-    <RouterLogsModal isOpen onClose={vi.fn()} routerId={1} routerName="Marusyan" {...props} />
+    <RouterLogsModal isOpen onClose={vi.fn()} routerId={1} routerName="Remote CCR" {...props} />
   );
 }
 

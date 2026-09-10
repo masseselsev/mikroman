@@ -76,9 +76,9 @@ def _resolver(*, echo_ip=None, identity=(None, None)):
 
 class TestSplitOrgField:
     def test_splits_asn_from_organisation_name(self):
-        asn, name = split_org_field("AS49273 COSCOM Liability Limited Company")
-        assert asn == "AS49273"
-        assert name == "COSCOM Liability Limited Company"
+        asn, name = split_org_field("AS65551 Acme Holdings Limited")
+        assert asn == "AS65551"
+        assert name == "Acme Holdings Limited"
 
     def test_bare_name_without_asn_prefix_is_kept(self):
         asn, name = split_org_field("Deutsche Telekom AG")
@@ -105,7 +105,7 @@ class TestSplitOrgField:
 class TestPublicIpOrNone:
     @pytest.mark.parametrize("value, expected", [
         ("8.8.8.8", "8.8.8.8"),
-        ("109.206.139.141", "109.206.139.141"),
+        ("9.9.9.9", "9.9.9.9"),
         ("0.0.0.0", None),          # /ip/cloud before DDNS ever succeeded
         ("192.168.1.1", None),      # RFC1918
         ("10.5.5.5", None),
@@ -122,13 +122,13 @@ class TestPublicIpOrNone:
 class TestPerRouterResolution:
     @pytest.mark.asyncio
     async def test_router_hint_ip_is_used_directly_and_operator_looked_up_for_it(self):
-        resolver, calls = _resolver(identity=("Ucell", "AS49273"))
+        resolver, calls = _resolver(identity=("Acme", "AS65551"))
 
-        got = await resolver.resolve(router_id=2, hint_ip="109.206.139.141")
+        got = await resolver.resolve(router_id=2, hint_ip="9.9.9.9")
 
-        assert got.ip == "109.206.139.141"
-        assert got.isp == "Ucell"
-        assert got.asn == "AS49273"
+        assert got.ip == "9.9.9.9"
+        assert got.isp == "Acme"
+        assert got.asn == "AS65551"
         assert calls["echo"] == 0, "the router told us its IP; no need to echo"
         assert calls["identity"] == 1
 
@@ -214,14 +214,14 @@ class TestIdentityForIp:
         http = _RoutedHttp({
             _IPWHOIS_URL: _Resp({
                 "success": True,
-                "connection": {"asn": 49273, "domain": "ucell.uz",
-                               "org": "Ucell Net 1",
-                               "isp": "COSCOM Liability Limited Company"},
+                "connection": {"asn": 65551, "domain": "acme.net",
+                               "org": "Acme Net 1",
+                               "isp": "Acme Holdings Limited"},
             }),
         })
-        brand, asn = await resolver._identity_for_ip(http, "188.113.222.163")
-        assert brand == "Ucell"
-        assert asn == "AS49273"
+        brand, asn = await resolver._identity_for_ip(http, "203.0.113.77")
+        assert brand == "Acme"
+        assert asn == "AS65551"
 
     @pytest.mark.asyncio
     async def test_falls_back_to_ip_api_for_the_address(self):
@@ -255,8 +255,8 @@ class TestIdentityForIp:
 
 class TestBrandFromDomain:
     @pytest.mark.parametrize("domain, expected", [
-        ("ucell.uz", "Ucell"),
-        ("UCELL.UZ", "Ucell"),
+        ("acme.net", "Acme"),
+        ("ACME.NET", "Acme"),
         ("bt.co.uk", "Bt"),
         ("t-mobile.com", "T-Mobile"),
         ("mts.com.ua", "Mts"),
@@ -276,8 +276,8 @@ class TestBrandFromDomain:
 
 class TestCleanTradingName:
     @pytest.mark.parametrize("raw, expected", [
-        ("Ucell Net 1", "Ucell"),
-        ("Ucell Network", "Ucell"),
+        ("Acme Net 1", "Acme"),
+        ("Acme Network", "Acme"),
         ("Deutsche Telekom", "Deutsche Telekom"),
         ("Orange 42", "Orange"),
     ])
@@ -285,7 +285,7 @@ class TestCleanTradingName:
         assert clean_trading_name(raw) == expected
 
     @pytest.mark.parametrize("legal", [
-        "COSCOM Liability Limited Company",
+        "Acme Holdings Limited",
         "Example Telecom LLC",
         "Foo Bar Ltd",
         "Bar Inc.",

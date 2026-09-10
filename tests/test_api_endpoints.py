@@ -88,7 +88,7 @@ async def test_create_user_survives_an_unreachable_router(api_client: AsyncClien
     session = await gen.__anext__()
     try:
         session.add(Router(
-            id=1, name="Marusyan", host="192.0.2.77", port=80, use_ssl=False,
+            id=1, name="Remote CCR", host="192.0.2.77", port=80, use_ssl=False,
             username="admin", password="x", is_default=True,
         ))
         await session.commit()

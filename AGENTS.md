@@ -48,6 +48,34 @@ When I ask a question, answer it directly. Do not preemptively execute git pushe
 
 **Git & Documentation**
 
+* ⛔ **NO REAL OPERATIONAL DATA IN THE REPOSITORY — the project's hardest rule.**
+  The repository is **public**. Nothing that identifies our actual work may be
+  committed to it: not code, not comments or docstrings, not `README.md`, `docs/`
+  (including `LESSONS.md`), the wiki, plans, specs, test fixtures, commit messages
+  or release notes. Write the *mechanism* of a lesson, never the *instance* we lived.
+  Forbidden, specifically:
+  * Real IP addresses (WAN or LAN), MAC addresses, serial numbers, hostnames of real
+    machines, names of our routers or of a customer's site.
+  * Credentials and anything that resolves to one — tokens, passwords, chat IDs — and
+    also *descriptions of where a credential can be recovered from* (a path to a
+    database copy, a key file, a login name). Those are a disclosure of the security
+    model, not harmless trivia.
+  * Quantities only we could know: live row counts, byte sizes of our image or data
+    directory, per-device traffic we measured, our own timings or uptime as product
+    "facts".
+  * Use substitutes and mark them as substitutes: RFC 5737 ranges
+    (`192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`) for addresses, `WIN-HOST-A`,
+    `Remote CCR`, `Branch Office` for names, round synthetic numbers for sizes. Keep
+    the relationship a test depends on (which address sorts lower, which row is
+    newer); never keep the real value to get it.
+  * Before any commit, push or `gh release create`, run the sweep and require it to be
+    empty, then re-read the release notes as an adversary rather than as their author:
+    `git grep -nI -E '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b' -- docs wiki README.md backend tests frontend/src scripts`
+    plus a pass for known hostnames, router names and identifiers.
+  * Local memory and scratch notes may hold specifics to get the work done; the
+    repository may not. If a detail is only useful because it is ours, it is not
+    documentation.
+
 * ⚠️ Never make commits on your own! Except for your internal documentation such as plans and specs
 * Never mention claude or any other AI inside commits or comments.
 * Keep git-comments less AI-like.

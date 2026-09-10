@@ -52,8 +52,8 @@ describe('buildLookupUrl - unusable templates', () => {
 
 describe('buildLookupUrl - valid templates', () => {
   it('substitutes the address', () => {
-    expect(buildLookupUrl('https://2ip.io/{ip}/', '188.113.204.70'))
-      .toBe('https://2ip.io/188.113.204.70/');
+    expect(buildLookupUrl('https://2ip.io/{ip}/', '203.0.113.77'))
+      .toBe('https://2ip.io/203.0.113.77/');
   });
 
   it('allows plain http for an internal tool', () => {

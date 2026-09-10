@@ -67,7 +67,7 @@ BUILTIN_SERVICES: List[IpLookupService] = [
     # cannot be verified belongs in a custom entry, not in this list.
     #
     # 2ip.io serves 503 to requests from outside a browser, so its path was
-    # confirmed by loading it in one: https://2ip.io/ip/188.113.204.70/ resolves,
+    # confirmed by loading it in one: https://2ip.io/ip/203.0.113.77/ resolves,
     # while the /{ip}/ form that shipped first returned 404. Re-check by hand,
     # not with curl, if it ever stops working.
     IpLookupService(id="2ip", name="2ip.io", url_template="https://2ip.io/ip/{ip}/", builtin=True),

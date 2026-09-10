@@ -52,13 +52,13 @@ _MAX_NAME_LENGTH = 64
 _IPINFO_URL = "https://ipinfo.io/json"
 _IPIFY_URL = "https://api.ipify.org"
 
-# Registry data names the legal entity - "COSCOM Liability Limited Company" -
-# while the operator everyone actually knows is "Ucell". The WAN tile should
+# Registry data names the legal entity - "Acme Holdings Limited" -
+# while the operator everyone actually knows is "Acme". The WAN tile should
 # carry the recognisable brand, so two sources are tried for it, in order:
 #
 #  1. ipwho.is (HTTPS). Its `connection` block carries the operator's own
-#     domain ("ucell.uz") and a consumer-facing org string ("Ucell Net 1").
-#     The domain's registrable label - "ucell" -> "Ucell" - is the brand the
+#     domain ("acme.net") and a consumer-facing org string ("Acme Net 1").
+#     The domain's registrable label - "acme" -> "Acme" - is the brand the
 #     public lookup sites (2ip.io and friends) display, and the legal entity
 #     name never is.
 #  2. ip-api.com (plaintext HTTP). Fallback only. Its free tier is HTTP, which
@@ -76,7 +76,7 @@ _IP_API_FOR = "http://ip-api.com/json/{ip}?fields=status,isp,as"
 
 # Two-label public suffixes common enough to matter; anything not listed is
 # treated as a single-label TLD. Used to pull the brand out of an operator's
-# own domain ("bt.co.uk" -> "bt", "ucell.uz" -> "ucell").
+# own domain ("bt.co.uk" -> "bt", "acme.net" -> "acme").
 _TWO_LABEL_TLDS = frozenset({
     "co.uk", "org.uk", "gov.uk", "ac.uk", "co.jp", "or.jp", "ne.jp",
     "com.au", "net.au", "org.au", "com.br", "com.tr", "com.ua", "net.ua",
@@ -109,8 +109,8 @@ class PublicNetwork(BaseModel):
 def split_org_field(raw: Optional[str]) -> tuple[Optional[str], Optional[str]]:
     """Split a registry org string into its AS number and organisation name.
 
-    ``"AS49273 COSCOM Liability Limited Company"`` becomes
-    ``("AS49273", "COSCOM Liability Limited Company")``. A value without the
+    ``"AS65551 Acme Holdings Limited"`` becomes
+    ``("AS65551", "Acme Holdings Limited")``. A value without the
     conventional prefix is returned as a name with no AS number, because some
     registries publish a bare organisation string.
     """
@@ -136,7 +136,7 @@ def split_org_field(raw: Optional[str]) -> tuple[Optional[str], Optional[str]]:
 def brand_from_domain(domain: Optional[str]) -> Optional[str]:
     """The recognisable brand carried by an operator's own domain.
 
-    ``"ucell.uz"`` -> ``"Ucell"``, ``"bt.co.uk"`` -> ``"Bt"``,
+    ``"acme.net"`` -> ``"Acme"``, ``"bt.co.uk"`` -> ``"Bt"``,
     ``"t-mobile.com"`` -> ``"T-Mobile"``. The registrable label (the one in
     front of the public suffix) is, for an ISP's own domain, almost always its
     trading name - which the registry's legal entity string never is.
@@ -167,8 +167,8 @@ def brand_from_domain(domain: Optional[str]) -> Optional[str]:
 def clean_trading_name(raw: Optional[str]) -> Optional[str]:
     """A consumer-facing org string with trailing clutter removed, or ``None``.
 
-    ``"Ucell Net 1"`` -> ``"Ucell"``. A string that still reads as a legal
-    registration (``"COSCOM Liability Limited Company"``) is rejected outright -
+    ``"Acme Net 1"`` -> ``"Acme"``. A string that still reads as a legal
+    registration (``"Acme Holdings Limited"``) is rejected outright -
     the caller has a domain-derived brand or the registry name to fall back on.
     """
     if not raw:
