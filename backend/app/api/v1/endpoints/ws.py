@@ -7,6 +7,7 @@ from typing import Optional, Set
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 
 from backend.app.core.config import settings
+from backend.app.core.diagnostics import record
 from backend.app.db.models import AppSetting, Router
 from backend.app.db.session import AsyncSessionLocal
 from backend.app.services.hardware import resolve_cpu_identity
@@ -155,6 +156,12 @@ async def websocket_telemetry_endpoint(
 
     try:
         while True:
+            # Timed because this path was invisible to diagnostics: the three
+            # recorded background passes summed to ~52 % of the loop and the
+            # monitoring page still doubled the router's own CPU, so the missing
+            # cost had no name. One entry per connected browser, so two open tabs
+            # show up as twice the count rather than as mystery load.
+            tick_started = time.monotonic()
             try:
                 async with AsyncSessionLocal() as session:
                     client = await router_manager.get_client(router_id, session=session)
@@ -290,6 +297,7 @@ async def websocket_telemetry_endpoint(
                     "users": users_stats
                 }
                 await websocket.send_json(payload)
+                record("ws.telemetry_tick", time.monotonic() - tick_started)
             except Exception as e:
                 logger.debug(f"Telemetry stream tick error: {e}")
                 await websocket.send_json({"type": "telemetry_error", "error": str(e), "timestamp": time.time()})

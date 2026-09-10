@@ -3,6 +3,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import noload
 
 from backend.app.db.models import AppSetting, Device, User
 from backend.app.schemas.traffic import SimpleQueueItem
@@ -20,6 +21,12 @@ from backend.app.services.queue_identity import (
 from backend.app.services.routeros import RouterOSClient
 
 logger = logging.getLogger("mikroman.traffic_controller")
+
+#: The only `/ip/firewall/mangle` attributes the live-rate path reads: the tracker
+#: differentiates ``bytes`` per rule and resolves the device from the rule comment.
+#: Asking the router for the whole rule object once a second bought nothing but
+#: work on the device - see ``get_mangle_rules``.
+MANGLE_RATE_FIELDS = (".id", "comment", "bytes")
 
 
 def parse_bandwidth_string(limit_str: str) -> str:
@@ -846,7 +853,7 @@ class TrafficController:
         """Live per-user throughput and today's volume, measured from firewall counters.
 
         Simple Queue ``rate``/``bytes`` are deliberately NOT used: on RouterOS 7.x
-        they were observed frozen (one user pinned at 488 Kbps / 2.4 Mbps for
+        they were observed frozen (one user pinned at a constant non-zero value for
         hours while the WAN was idle, everyone else stuck at 0 bps). Rates are
         come from the same rollups the analytics view uses, so the dashboard and
         the reports can never disagree.
@@ -859,7 +866,12 @@ class TrafficController:
         eff_router_id = router_id if router_id is not None else self.router_id
 
         try:
-            rules = await self.router_client.get_mangle_rules()
+            # Only the attributes the rate tracker differentiates. This runs once a
+            # second for every browser watching the monitoring page, and both halves
+            # of that mattered: an unqualified `/ip/firewall/mangle` print makes the
+            # router render every attribute of every accounting rule, and the full
+            # object load below re-materialises the event log.
+            rules = await self.router_client.get_mangle_rules(fields=MANGLE_RATE_FIELDS)
         except Exception as e:
             logger.warning(f"Could not read mangle rules for real-time stats: {e}")
             rules = []
@@ -869,8 +881,19 @@ class TrafficController:
         user_volume = await self._todays_user_volume(session, eff_router_id)
         device_volume = await self._todays_device_volume(session, eff_router_id)
 
-        user_stmt = select(User)
-        dev_stmt = select(Device)
+        # A frame carries scalar columns only: id, name, avatar, limit, paused.
+        # Every relationship on these two models is `lazy="selectin"`, so without an
+        # explicit `noload` each frame loaded every user's devices and rollups and,
+        # through them, each device's history — the cost the analytics endpoint was
+        # fixed for, on the one path that repeats it a thousand times a day per open
+        # tab.
+        user_stmt = select(User).options(noload(User.devices), noload(User.traffic_rollups))
+        dev_stmt = select(Device).options(
+            noload(Device.history),
+            noload(Device.traffic_rollups),
+            noload(Device.linked_adapters),
+            noload(Device.primary_device),
+        )
         if eff_router_id is not None:
             user_stmt = user_stmt.where((User.router_id == eff_router_id) | (User.router_id.is_(None)))
             dev_stmt = dev_stmt.where((Device.router_id == eff_router_id) | (Device.router_id.is_(None)))
