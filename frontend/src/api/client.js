@@ -79,6 +79,7 @@ export const api = {
   createRouter: (data) => request('/routers', { method: 'POST', body: JSON.stringify(data) }),
   testRouterConnection: (data) => request('/routers/test', { method: 'POST', body: JSON.stringify(data) }),
   provisionRouterSsl: (id, data = {}) => request(`/routers/${id}/provision-ssl`, { method: 'POST', body: JSON.stringify(data) }),
+  switchRouterProtocol: (id, useSsl) => request(`/routers/${id}/protocol`, { method: 'POST', body: JSON.stringify({ use_ssl: useSsl }) }),
   autoProvisionSslDirect: (data) => request('/routers/test-provision-ssl', { method: 'POST', body: JSON.stringify(data) }),
   getRouterCertificates: (id) => request(`/routers/${id}/certificates`),
   testListCertificates: (conn) => request('/routers/test-certificates', { method: 'POST', body: JSON.stringify(conn) }),

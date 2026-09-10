@@ -239,11 +239,22 @@ class LiveRateTracker:
 
 async def aggregate_user_rates(
     session: AsyncSession,
-    per_device: Dict[int, Dict[str, float]]
+    per_device: Dict[int, Dict[str, float]],
+    device_to_user: Optional[Dict[int, int]] = None
 ) -> Dict[int, Dict[str, float]]:
     """Sum measured per-device rates onto their owning user profiles."""
     totals: Dict[int, Dict[str, float]] = {}
     if not per_device:
+        return totals
+
+    if device_to_user is not None:
+        for device_id, rate in per_device.items():
+            user_id = device_to_user.get(device_id)
+            if not user_id:
+                continue
+            bucket = totals.setdefault(user_id, {"rx_bps": 0.0, "tx_bps": 0.0})
+            bucket["rx_bps"] += rate.get("rx_bps", 0.0)
+            bucket["tx_bps"] += rate.get("tx_bps", 0.0)
         return totals
 
     result = await session.execute(

@@ -56,6 +56,7 @@ export function SettingsModal({
   const [archivedRouters, setArchivedRouters] = useState([]);
   const [lifecycleBusy, setLifecycleBusy] = useState(false);
   const [archivedBusyId, setArchivedBusyId] = useState(null);
+  const [switchingProtocolId, setSwitchingProtocolId] = useState(null);
 
   const loadSettingsAndRouters = async (routerId = selectedRouterId) => {
     try {
@@ -374,6 +375,20 @@ export function SettingsModal({
       if (onRoutersChanged) onRoutersChanged();
     } catch (err) {
       alert('Failed to configure SSL: ' + err.message);
+    }
+  };
+
+  const handleToggleProtocol = async (routerId, targetUseSsl) => {
+    setSwitchingProtocolId(routerId);
+    try {
+      const res = await api.switchRouterProtocol(routerId, targetUseSsl);
+      if (res?.message) setStatusMsg(res.message);
+      await loadSettingsAndRouters();
+      if (onRoutersChanged) onRoutersChanged();
+    } catch (err) {
+      alert(err.message || 'Failed to switch protocol');
+    } finally {
+      setSwitchingProtocolId(null);
     }
   };
 
@@ -1201,15 +1216,30 @@ export function SettingsModal({
                   </div>
 
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0, marginLeft: 12 }}>
-                    {!r.use_ssl && r.is_online && (
+                    {r.is_online && (
                       <button
                         type="button"
                         className="btn btn-secondary btn-sm"
-                        onClick={() => handleUpgradeSsl(r.id)}
-                        style={{ fontSize: 'var(--fs-xs)', padding: '3px 8px', color: 'var(--color-success)', borderColor: 'rgba(16, 185, 129, 0.3)' }}
-                        title={t('auto_ssl_hint')}
+                        onClick={() => handleToggleProtocol(r.id, !r.use_ssl)}
+                        disabled={switchingProtocolId === r.id}
+                        style={{
+                          fontSize: 'var(--fs-xs)',
+                          padding: '3px 8px',
+                          color: r.use_ssl ? 'var(--text-main)' : 'var(--color-success)',
+                          borderColor: r.use_ssl ? 'var(--border-color)' : 'rgba(16, 185, 129, 0.3)'
+                        }}
+                        title={r.use_ssl ? t('switch_to_http_hint') : t('switch_to_https_hint')}
                       >
-                        🔒 {t('provision_ssl_title')}
+                        {switchingProtocolId === r.id ? (
+                          <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                            <Loader2 size={12} className="spin" />
+                            {t('protocol_switching')}
+                          </span>
+                        ) : r.use_ssl ? (
+                          <>🔓 {t('switch_to_http')}</>
+                        ) : (
+                          <>🔒 {t('switch_to_https')}</>
+                        )}
                       </button>
                     )}
                     {!r.is_default && (

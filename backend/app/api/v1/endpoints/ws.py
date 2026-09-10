@@ -26,20 +26,57 @@ _WAN_IP_TTL_SECONDS = 60
 _wan_ip_cache: dict = {}
 
 
+_INTERVAL_TTL_SECONDS = 10.0
+_interval_cache: dict = {}
+
+
 async def _telemetry_interval(session) -> float:
-    """Seconds between telemetry frames, configurable at runtime.
+    """Seconds between telemetry frames, configurable at runtime. Cached for 10s.
 
     Each frame costs several RouterOS REST calls, and on modest hardware that
     polling measurably raises router CPU, so the rate is a setting rather than a
     constant. Bounded to keep a mistyped value from hammering the router.
     """
-    setting = await session.get(AppSetting, "telemetry_interval_seconds")
-    if setting and setting.value:
-        try:
-            return max(1.0, min(float(setting.value), 60.0))
-        except ValueError:
-            pass
-    return settings.TELEMETRY_STREAM_INTERVAL_SECONDS
+    now = time.monotonic()
+    cached = _interval_cache.get("val")
+    if cached and (now - cached[1]) < _INTERVAL_TTL_SECONDS:
+        return cached[0]
+
+    val = settings.TELEMETRY_STREAM_INTERVAL_SECONDS
+    try:
+        setting = await session.get(AppSetting, "telemetry_interval_seconds")
+        if setting and setting.value:
+            try:
+                val = max(1.0, min(float(setting.value), 60.0))
+            except ValueError:
+                pass
+    except Exception:
+        pass
+    _interval_cache["val"] = (val, now)
+    return val
+
+
+_IFACES_TTL_SECONDS = 10.0
+_monitored_ifaces_cache: dict = {}
+
+
+async def _get_monitored_interfaces(session, eff_router_id: Optional[int]) -> list:
+    """Read configured monitored interfaces for this router, cached for 10s."""
+    key = str(eff_router_id)
+    now = time.monotonic()
+    cached = _monitored_ifaces_cache.get(key)
+    if cached and (now - cached[1]) < _IFACES_TTL_SECONDS:
+        return cached[0]
+    setting_key = f"monitored_interfaces_{eff_router_id}" if eff_router_id else "monitored_interfaces_default"
+    ifaces = []
+    try:
+        setting = await session.get(AppSetting, setting_key)
+        if setting and setting.value:
+            ifaces = json.loads(setting.value)
+    except Exception:
+        ifaces = []
+    _monitored_ifaces_cache[key] = (ifaces, now)
+    return ifaces
 
 
 _CLOCK_TTL_SECONDS = 60
@@ -264,15 +301,8 @@ async def websocket_telemetry_endpoint(
                         session, router_id=eff_router_id
                     )
 
-                    # Read configured monitored interfaces for this router
-                    setting_key = f"monitored_interfaces_{eff_router_id}" if eff_router_id else "monitored_interfaces_default"
-                    setting = await session.get(AppSetting, setting_key)
-                    monitored_ifaces = []
-                    if setting and setting.value:
-                        try:
-                            monitored_ifaces = json.loads(setting.value)
-                        except Exception:
-                            monitored_ifaces = []
+                    # Read configured monitored interfaces for this router (cached 10s)
+                    monitored_ifaces = await _get_monitored_interfaces(session, eff_router_id)
 
                     # The monitored set is exactly what the admin ticked in the
                     # WAN selector - never guessed. With nothing selected there

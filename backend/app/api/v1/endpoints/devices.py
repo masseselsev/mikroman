@@ -42,7 +42,11 @@ from backend.app.services.guards import WriteGuardViolation
 from backend.app.services.mac_rotation import canonical_pair, normalise_hostname
 from backend.app.services.router_manager import router_manager
 from backend.app.services.router_time import router_local_now
-from backend.app.services.traffic_controller import TrafficController, resolve_unassigned_limit
+from backend.app.services.traffic_controller import (
+    TrafficController,
+    invalidate_user_metadata_cache,
+    resolve_unassigned_limit,
+)
 from backend.app.services.vendor_lookup import vendor_service
 
 logger = logging.getLogger("mikroman.devices")
@@ -346,6 +350,7 @@ async def update_device(
                 )
 
         await db.commit()
+        invalidate_user_metadata_cache(device.router_id)
         await db.refresh(device)
 
         # Sync device queue and parent user queues
@@ -456,6 +461,7 @@ async def delete_device(
     device.ip_address = None
     device.linked_to_device_id = None
     await db.commit()
+    invalidate_user_metadata_cache(device.router_id)
 
     if owner_id:
         user = await db.get(User, owner_id)
@@ -559,6 +565,7 @@ async def split_device(
     ))
 
     await db.commit()
+    invalidate_user_metadata_cache(device.router_id)
     await db.refresh(new_device)
     return APIResponse(data=DeviceDTO.model_validate(new_device), message="Device split")
 

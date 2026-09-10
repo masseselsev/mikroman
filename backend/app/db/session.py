@@ -22,10 +22,20 @@ if "sqlite" in settings.DATABASE_URL:
                 os.makedirs("./data", exist_ok=True)
                 settings.DATABASE_URL = "sqlite+aiosqlite:///./data/app.db"
 
+engine_kwargs = {
+    "echo": settings.DEBUG,
+}
+if "sqlite" in settings.DATABASE_URL:
+    engine_kwargs["connect_args"] = {"check_same_thread": False}
+    if ":memory:" not in settings.DATABASE_URL:
+        # Bounded connection pool for persistent storage to stop worker connection sprawl
+        engine_kwargs["pool_size"] = 5
+        engine_kwargs["max_overflow"] = 5
+        engine_kwargs["pool_recycle"] = 300
+
 engine = create_async_engine(
     settings.DATABASE_URL,
-    echo=settings.DEBUG,
-    connect_args={"check_same_thread": False} if "sqlite" in settings.DATABASE_URL else {}
+    **engine_kwargs
 )
 
 
@@ -33,7 +43,7 @@ if "sqlite" in settings.DATABASE_URL:
 
     @event.listens_for(engine.sync_engine, "connect")
     def _configure_sqlite_connection(dbapi_connection, _connection_record):
-        """Apply the durability and concurrency PRAGMAs on every new connection.
+        """Apply the durability, concurrency, and memory PRAGMAs on every new connection.
 
         SQLite applies these per connection, not per database, so they have to
         be set on connect rather than once at startup.
@@ -60,12 +70,25 @@ if "sqlite" in settings.DATABASE_URL:
         ``busy_timeout=5000``
             Wait up to five seconds for a lock instead of failing immediately.
             Set explicitly rather than trusting the driver default.
+
+        ``cache_size=-2000``
+            Caps page cache to ~2MB per connection instead of default unbounded growth,
+            reducing container RAM usage on embedded router hardware.
+
+        ``mmap_size=0``
+            Disables memory-mapped file I/O to avoid large virtual allocations.
+
+        ``temp_store=MEMORY``
+            Keeps small temporary tables in RAM without spilling to disk.
         """
         cursor = dbapi_connection.cursor()
         try:
             cursor.execute("PRAGMA journal_mode=WAL")
             cursor.execute("PRAGMA synchronous=NORMAL")
             cursor.execute("PRAGMA busy_timeout=5000")
+            cursor.execute("PRAGMA cache_size = -2000")
+            cursor.execute("PRAGMA mmap_size = 0")
+            cursor.execute("PRAGMA temp_store = MEMORY")
         finally:
             cursor.close()
 

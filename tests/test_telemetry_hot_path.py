@@ -149,3 +149,46 @@ async def test_the_mangle_read_sends_proplist_only_when_fields_are_named():
     assert captured[0] == ("/ip/firewall/mangle", {".proplist": ",".join(MANGLE_RATE_FIELDS)})
     assert captured[1] == ("/ip/firewall/mangle", None), \
         "the reconciler must still receive complete rules"
+
+
+@pytest.mark.asyncio
+async def test_telemetry_frames_reuse_cached_user_metadata():
+    """Consecutive telemetry frames reuse in-memory user/device metadata to save SQLite load."""
+    from backend.app.services.traffic_controller import invalidate_user_metadata_cache
+    engine, factory = await _db()
+    seen_queries = []
+
+    @event.listens_for(engine.sync_engine, "before_cursor_execute")
+    def _capture(conn, cursor, statement, parameters, context, executemany):
+        seen_queries.append(statement)
+
+    client = FakeRouterClient()
+    async with factory() as session:
+        router = Router(name="R", host="192.0.2.1", is_active=True, is_default=True)
+        session.add(router)
+        user = User(name="TestUser", router=router)
+        session.add(user)
+        device = Device(mac_address="AA:BB:CC:DD:EE:01", user=user, router=router)
+        session.add(device)
+        await session.commit()
+
+        controller = TrafficController(client, router_id=router.id)
+        invalidate_user_metadata_cache(router.id)
+
+        # Clear capture log before sampling
+        seen_queries.clear()
+
+        # Frame 1: populates cache
+        res1 = await controller.get_realtime_traffic_stats(session, router_id=router.id)
+        assert len(res1) == 1
+        assert any("FROM users" in q for q in seen_queries)
+
+        # Frame 2: within TTL, should reuse metadata cache without re-querying users or devices
+        seen_queries.clear()
+        res2 = await controller.get_realtime_traffic_stats(session, router_id=router.id)
+        assert len(res2) == 1
+        user_queries = [q for q in seen_queries if "FROM users" in q]
+        dev_queries = [q for q in seen_queries if "FROM devices" in q]
+        assert len(user_queries) == 0, f"Unexpected users query in frame 2: {user_queries}"
+        assert len(dev_queries) == 0, f"Unexpected devices query in frame 2: {dev_queries}"
+
