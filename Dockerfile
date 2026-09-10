@@ -100,4 +100,4 @@ EXPOSE 1928
 
 VOLUME ["/data"]
 
-CMD ["uvicorn", "backend.app.main:app", "--host", "0.0.0.0", "--port", "1928"]
+CMD ["uvicorn", "backend.app.main:app", "--host", "0.0.0.0", "--port", "1928", "--loop", "asyncio"]
