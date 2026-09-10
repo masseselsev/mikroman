@@ -100,12 +100,14 @@ export function TrafficHistoryModal({ isOpen, target, onClose, onSelectTarget })
   if (!isOpen || !target) return null;
 
   // Three timeline shapes, from `data.resolution`:
-  //  - half_hour (24H): each point carries an HH:MM `label`; `record_date` is
+  //  - quarter_hour / half_hour (24H): each point carries an HH:MM `label`; `record_date` is
   //    the point's calendar day (the window spans two dates).
   //  - week (1Y / All Time): each point is an ISO week, `record_date` is its
   //    Monday and `label` is that Monday as "Sep 01".
   //  - day (everything else): one point per calendar day, no `label`.
+  const isQuarterHour = data?.resolution === 'quarter_hour';
   const isHalfHour = data?.resolution === 'half_hour';
+  const isIntraday = isQuarterHour || isHalfHour;
   const isWeek = data?.resolution === 'week';
   const ptKey = (pt) => pt?.label || pt?.record_date;
 
@@ -237,7 +239,7 @@ export function TrafficHistoryModal({ isOpen, target, onClose, onSelectTarget })
                     {formatBytes(data.total_bytes)}
                   </div>
                   <div style={{ fontSize: 'var(--fs-3xs)', color: 'var(--text-muted)', marginTop: 2 }}>
-                    {isHalfHour
+                    {isIntraday
                       ? t('intervals_count', { count: timeline.length })
                       : isWeek
                         ? t('weeks_count', { count: timeline.length })
@@ -346,8 +348,8 @@ export function TrafficHistoryModal({ isOpen, target, onClose, onSelectTarget })
                     }}
                   >
                     <div style={{ fontWeight: 700 }} className="font-mono">
-                      {isHalfHour ? '🕐' : '📅'}{' '}
-                      {isHalfHour
+                      {isIntraday ? '🕐' : '📅'}{' '}
+                      {isIntraday
                         ? `${activePoint.record_date} ${ptKey(activePoint)}`
                         : isWeek
                           ? t('week_of', { date: activePoint.label || activePoint.record_date })
@@ -542,7 +544,7 @@ export function TrafficHistoryModal({ isOpen, target, onClose, onSelectTarget })
                 <div>
                   <h4 style={{ fontSize: 'var(--fs-sm)', fontWeight: 700, marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
                     <Calendar size={15} style={{ color: 'var(--color-primary)' }} />
-                    <span>{isHalfHour ? t('intraday_breakdown') : isWeek ? t('weekly_breakdown') : t('daily_breakdown')}</span>
+                    <span>{isQuarterHour ? t('quarter_hour_breakdown') : isHalfHour ? t('half_hour_breakdown') : isWeek ? t('weekly_breakdown') : t('daily_breakdown')}</span>
                   </h4>
 
                   <div
@@ -557,7 +559,7 @@ export function TrafficHistoryModal({ isOpen, target, onClose, onSelectTarget })
                     <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 'var(--fs-xs)' }}>
                       <thead>
                         <tr style={{ borderBottom: '1px solid var(--border-color)', background: 'var(--bg-card)', position: 'sticky', top: 0, zIndex: 1 }}>
-                          <th style={{ padding: '8px 12px', textAlign: 'left' }}>{isHalfHour ? t('time_label') : isWeek ? t('week_label') : t('date')}</th>
+                          <th style={{ padding: '8px 12px', textAlign: 'left' }}>{isIntraday ? t('time_label') : isWeek ? t('week_label') : t('date')}</th>
                           <th style={{ padding: '8px 12px', textAlign: 'right', color: 'var(--color-success)' }}>{t('download')}</th>
                           <th style={{ padding: '8px 12px', textAlign: 'right', color: '#3b82f6' }}>{t('upload')}</th>
                           <th style={{ padding: '8px 12px', textAlign: 'right' }}>{t('table_total')}</th>
@@ -573,7 +575,7 @@ export function TrafficHistoryModal({ isOpen, target, onClose, onSelectTarget })
                             }}
                           >
                             <td style={{ padding: '6px 12px', fontWeight: 600 }} className="font-mono">
-                              {isHalfHour || isWeek ? pt.label : pt.record_date}
+                              {isIntraday || isWeek ? pt.label : pt.record_date}
                             </td>
                             <td style={{ padding: '6px 12px', textAlign: 'right', color: 'var(--color-success)' }} className="font-mono">
                               {formatBytes(pt.bytes_in)}

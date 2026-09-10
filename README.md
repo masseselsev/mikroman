@@ -16,13 +16,24 @@
   * Measured via dedicated RouterOS firewall mangle `action=passthrough` counters, bypassing unreliable queue byte counters.
   * Accumulates traffic deltas against persisted baselines, surviving network outages and distinguishing hardware reboots.
   * Configurable monthly ISP billing cycle anchors with optional time-of-day boundary slicing.
+  * Configurable accounting scope (`traffic_accounting_scope`: `wan_only` vs `all_routed`) binding client counters to monitored WAN uplinks and excluding local inter-VLAN, Docker container, or unmonitored overlay transfers from ISP quota.
   * Built-in tools to reconcile historical LAN-to-LAN overcounts.
+  * High-fidelity 15-minute intraday timeline resolution (`quarter_hour`) for 24-hour traffic history graphs with zero additional polling load on RouterOS gateways.
 
 * **🚦 Lockout Prevention & Write Guards**:
   * Pure validation layer (`guards.py`) intercepting all mutations before network packets are constructed.
   * Immune target protection: loopbacks, wildcards, management subnets, and container endpoints can never be throttled, blocked, or dropped.
   * Foreign resource isolation: configuration rules not created by MikroMan (`mikroman:`) are strictly protected from mutation or deletion.
   * Relational queue validation preventing invalid rate parameters and circular parentage.
+
+* **🔐 Application Authentication & Session Security**:
+  * Single administrator password model protecting all REST API endpoints and mutating actions (reboots, queue shaping, backups, firmware changes).
+  * First-run setup screen allows creating the admin password directly in the UI, or operators can pre-seed `MIKROMAN_ADMIN_PASSWORD` via environment variables.
+  * Zero NAND flash wear on RouterOS hardware: session cookies (`mikroman_session`) are stateless, tamper-proof Fernet tokens signed with the router's master key cipher (`secrets.py`) and verified entirely in memory without writing to SQLite per request.
+  * Defense-in-depth: `mikroman_session` is `HttpOnly`, `SameSite=Lax`, protecting against XSS token exfiltration. Mutating HTTP methods (`POST`, `PUT`, `DELETE`, `PATCH`) enforce Double-Submit CSRF verification via `X-CSRF-Token` matching `mikroman_csrf`.
+  * Programmatic automation supported via `Authorization: Bearer <token>` or `X-API-Key: <token>` (or `MIKROMAN_API_KEY`), bypassing CSRF for non-browser API scripts.
+  * Real-time WebSocket telemetry (`/ws/telemetry`) inspects handshake cookies or `?token=` and rejects unauthenticated connections with code 1008 (Policy Violation) before scheduling ticks.
+  * Liveness probes (`/health`, `/api/v1/health`) and the Telegram webhook remain accessible without credentials. Can be toggled off for isolated lab testing via `MIKROMAN_AUTH_ENABLED=false`.
 
 * **🛡️ Multi-Router Management & Isolated Environments**:
   * Complete operational isolation: users, devices, queues, rollups, quotas, and timezone offsets exist strictly per-router.
@@ -49,7 +60,7 @@
   * Real-time `/ip/firewall/connection` tracker with device attribution and safe socket termination.
   * In-memory offline GeoIP engine resolving destination countries without external API dependencies.
   * Centralized terminal log viewer with regex event classification (auth, interface, DHCP, wireless, firewall, system).
-  * The live telemetry stream is built to be cheap on the router, not just on the browser: a frame requests only the firewall counters it differentiates and loads only the columns it renders, the socket closes while the tab is hidden so a backgrounded page stops polling once a second, and a page never holds two connections at once. Each frame is timed in `GET /api/v1/system/diagnostics` as `ws.telemetry_tick`, one entry per connected browser.
+  * The live telemetry stream is built to be cheap on the router, not just on the browser: a frame requests only the firewall counters it differentiates and loads only the columns it renders, the socket closes while the tab is hidden so a backgrounded page stops polling once a second, and a page never holds two connections at once. A short frame cache collapses concurrent open tabs into a single shared REST/SQL evaluation, hardware sensor reads are paced at 5 s, today's rollup lookups are cached for 10 s, and interface lists are throttled to 30 s while collapsed. Each frame and broadcast pass is timed in `GET /api/v1/system/diagnostics` (`ws.telemetry_tick`, `ws.broadcast`).
   * 1-click RouterOS `/system/logging` topic management.
   * The log scraper copies the ring every minute — nothing older survives that long on a busy box — while the work it used to share the tick with runs on its own schedule: destination history every three minutes, management-port audit every five. Each sub-pass is timed separately and shows up in `/api/v1/system/diagnostics`, so the cost of a 17-second tick is attributable instead of guessed.
 
@@ -79,7 +90,7 @@
   * Per-request logging is off at the source (`httpx`, `httpcore`, `uvicorn.access`, `aiogram` sit at WARNING). On the live device those four loggers were 995 of the 1000 lines in the router's log ring — which meant the ring turned over in about five minutes and real device events were evicted before the 60-second scraper could copy them.
   * The background tick is split: hardware/bandwidth samples every `POLL_INTERVAL_SECONDS` (10 s), and device discovery, queue/mangle reconciliation, rollups and quota checks every `HEAVY_SYNC_INTERVAL_SECONDS` (60 s), staggered per router. UI actions apply their changes inline, so nothing waits on the slower clock. Set it to `10` to restore the previous behaviour.
   * Retention pruning is batched and runs hourly, never per tick. SQLite allows one writer; a range delete over a database of that size held that lock past the 5-second `busy_timeout` and every other worker failed with `database is locked`.
-  * `GET /api/v1/system/diagnostics` answers "is this much CPU normal?" without a shell: resident set and peak (the process, not the cgroup's page-cache-inflated figure), RouterOS requests per device, and count/avg/max duration of each background pass. It needs neither a router nor the database.
+  * `GET /api/v1/system/diagnostics` answers "is this much CPU normal?" without a shell: resident set and peak (the process, not the cgroup's page-cache-inflated figure), RouterOS requests per device, and count/avg/max duration of each background pass (`sync.discovery`, `sync.queues`, `sync.rollups`, `sync.quota`, `sync.accounting.collect`, `sync.accounting.rules`, `ws.telemetry_tick`, `ws.broadcast`). It needs neither a router nor the database.
   * History and chart reads are indexed for their actual shape. Composite indexes on `(router_id, timestamp)`, `(device_id, record_date)`, `(device_id, created_at)` and friends are created by migration `024_query_indexes` and, for installs that never run Alembic, at start-up; planner statistics (`ANALYZE`) are refreshed exactly when indexes are added. Measured on a copy of a deployment database with hundreds of thousands of metric rows: a one-hour interface chart stopped walking the whole index for the router, and switching a preset stopped paying hundreds of milliseconds for device event logs it never reads.
   * Tuning knobs live in the UI, not in the environment: background sample interval, housekeeping interval, telemetry stream rate, temperature and CPU alert lines, log retention. The stored value wins and the environment is its default — which matters because a RouterOS container has no `.env` to edit, no shell and no `docker exec`.
   * Device history is bounded at both ends: discovery keeps one DHCP lease per MAC (two hosts answering with the same MAC made it record two "changes" every sweep — tens of thousands of rows in six days on one device, which every device read then paid for) and reports a duplicate MAC once rather than 1 440 times a day. The event log itself is capped at the newest 200 rows per device and pruned after 90 days, and both passes run at start-up as well as on the housekeeping tick — age alone would not shrink an installed database, and the process that pays for the accumulated rows should reclaim them as soon as it exists. No query is allowed to load that history implicitly: the relationship is eager by default, so every device sweep names `noload` explicitly.

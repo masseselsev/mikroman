@@ -1,4 +1,5 @@
 import logging
+import time
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -101,6 +102,10 @@ async def get_system_status(router_client: RouterOSClient = Depends(get_router_c
     )
 
 
+_INTERFACES_CACHE_TTL = 5.0
+_interfaces_cache: Dict[str, Any] = {}
+
+
 @router.get("/interfaces", response_model=APIResponse[List[InterfaceDTO]])
 async def get_interfaces(router_client: RouterOSClient = Depends(get_router_client)):
     """Fetch list of network interfaces and counters.
@@ -109,11 +114,22 @@ async def get_interfaces(router_client: RouterOSClient = Depends(get_router_clie
     500 whenever the router was off the network, which is precisely when the
     operator is most likely to be in Settings trying to fix the connection - and
     a failed request there looks like the app itself is broken.
+    Cached for 5s so concurrent frontend components or multiple tabs do not multiply
+    REST queries to the router.
     """
+    key = f"{router_client.host}:{router_client.port}:{router_client.username}"
+    now = time.monotonic()
+    cached = _interfaces_cache.get(key)
+    if cached and (now - cached["at"]) < _INTERFACES_CACHE_TTL:
+        return APIResponse(data=cached["data"])
+
     try:
         interfaces = await router_client.get_interfaces()
+        _interfaces_cache[key] = {"data": interfaces, "at": now}
     except Exception as e:
         logger.warning(f"Could not read interfaces from the router: {e}")
+        if cached:
+            return APIResponse(data=cached["data"])
         return APIResponse(
             data=[],
             message="Router unreachable - interface list unavailable",
@@ -207,9 +223,7 @@ async def get_settings(
         "temp_warning_threshold",
         "auto_scan_enabled",
         "pause_allowed_networks",
-        "isp_download_speed",
-        "isp_upload_speed",
-        "monitored_wan_interfaces",
+        "traffic_accounting_scope",
     ]
     if eff_router_id is not None:
         for rk in router_specific_keys:
@@ -258,8 +272,8 @@ async def get_settings(
         data["telegram_lang"] = settings.TELEGRAM_DEFAULT_LANG
     if "pause_allowed_networks" not in data:
         data["pause_allowed_networks"] = "192.168.0.0/16, 10.0.0.0/8, 172.16.0.0/12"
-    if "monitored_wan_interfaces" not in data:
-        data["monitored_wan_interfaces"] = ""
+    if "traffic_accounting_scope" not in data:
+        data["traffic_accounting_scope"] = "wan_only"
 
     for key in SECRET_SETTING_KEYS:
         if data.get(key):
@@ -296,9 +310,7 @@ async def save_settings(
         "temp_warning_threshold",
         "auto_scan_enabled",
         "pause_allowed_networks",
-        "isp_download_speed",
-        "isp_upload_speed",
-        "monitored_wan_interfaces",
+        "traffic_accounting_scope",
     ]
 
     for k, v in payload.items():

@@ -675,12 +675,12 @@ async def test_entity_traffic_history_endpoints(api_client):
     assert u_data["devices"][0]["device_id"] == device_id
     assert u_data["devices"][0]["total_bytes"] == 8500
 
-    # 2. The 1D preset returns a 30-minute-bucket timeline (resolution
-    # 'half_hour'), summed from UserTrafficBucket rather than the daily rollup.
+    # 2. The 1D preset returns a 15-minute-bucket timeline (resolution
+    # 'quarter_hour'), summed from UserTrafficBucket rather than the daily rollup.
     res_1d = await api_client.get(f"/api/v1/users/{user_id}/traffic-history?preset=1d")
     assert res_1d.status_code == 200
     u_1d = res_1d.json()["data"]
-    assert u_1d["resolution"] == "half_hour"
+    assert u_1d["resolution"] == "quarter_hour"
     # Points run from 00:00 up to the current window; every one carries an
     # HH:MM label and stays on today's date.
     assert len(u_1d["timeline"]) >= 1
@@ -693,13 +693,13 @@ async def test_entity_traffic_history_endpoints(api_client):
     assert u_1d["timeline"][0]["bytes_in"] == 1500
     assert u_1d["timeline"][0]["bytes_out"] == 600
 
-    # 2b. The 24H preset is a rolling half-hour window ending "now" - it spans
+    # 2b. The 24H preset is a rolling 15-minute window ending "now" - it spans
     # two calendar dates, so the first point sits on yesterday.
     res_24h = await api_client.get(f"/api/v1/users/{user_id}/traffic-history?preset=24h")
     assert res_24h.status_code == 200
     u_24h = res_24h.json()["data"]
-    assert u_24h["resolution"] == "half_hour"
-    assert len(u_24h["timeline"]) >= 40
+    assert u_24h["resolution"] == "quarter_hour"
+    assert len(u_24h["timeline"]) >= 80
     assert u_24h["timeline"][0]["record_date"] == (today - timedelta(days=1)).isoformat()
     assert all(":" in p["label"] for p in u_24h["timeline"])
     assert u_24h["total_bytes"] == 2100  # only the 00:00-today bucket is in range
@@ -733,13 +733,13 @@ async def test_entity_traffic_history_endpoints(api_client):
     assert len(d_data["timeline"]) == 7
 
     # 3b. A device gets the same three timeline shapes the user does: the 24H
-    # preset must be a rolling half-hour window, not a single daily bar. It read
+    # preset must be a rolling 15-minute window, not a single daily bar. It read
     # `day` resolution before device buckets existed.
     d_24h = (await api_client.get(
         f"/api/v1/devices/{device_id}/traffic-history?preset=24h"
     )).json()["data"]
-    assert d_24h["resolution"] == "half_hour"
-    assert len(d_24h["timeline"]) >= 40
+    assert d_24h["resolution"] == "quarter_hour"
+    assert len(d_24h["timeline"]) >= 80
     assert d_24h["timeline"][0]["record_date"] == (today - timedelta(days=1)).isoformat()
     assert all(":" in p["label"] for p in d_24h["timeline"])
     assert d_24h["total_bytes"] == 2100  # the 00:00 bucket, not the 8500 daily total
@@ -747,7 +747,7 @@ async def test_entity_traffic_history_endpoints(api_client):
     d_1d = (await api_client.get(
         f"/api/v1/devices/{device_id}/traffic-history?preset=1d"
     )).json()["data"]
-    assert d_1d["resolution"] == "half_hour"
+    assert d_1d["resolution"] == "quarter_hour"
     assert d_1d["timeline"][0]["label"] == "00:00"
     assert d_1d["peak_label"] == "00:00"
     assert (d_1d["total_bytes_in"], d_1d["total_bytes_out"]) == (1500, 600)

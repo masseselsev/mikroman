@@ -287,8 +287,9 @@ class EntityTrafficHistoryResponse(BaseModel):
     range_preset: str
     start_date: date
     end_date: date
-    # 'day' - one point per calendar day (every preset except 1D).
-    # 'half_hour' - the 1D view, one point per 30-minute window.
+    # 'day' - one point per calendar day (every preset except 1D/24H).
+    # 'quarter_hour' (or legacy 'half_hour') - the 1D/24H view, one point per 15-minute window.
+    # 'week' - 1Y and all_time views, one point per ISO week.
     resolution: str = "day"
     total_bytes_in: int = 0
     total_bytes_out: int = 0

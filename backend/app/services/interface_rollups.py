@@ -211,6 +211,12 @@ async def recompute_recent(session: AsyncSession, router_id: int) -> int:
     """The per-tick call: rebuild only the trailing :data:`RECOMPUTE_TRAILING_DAYS`."""
     offset = await get_router_offset(session, router_id) or 0
     today = (_naive_utc_now() + timedelta(minutes=offset)).date()
-    return await recompute_interface_rollups(
+    count = await recompute_interface_rollups(
         session, router_id, since_date=today - timedelta(days=RECOMPUTE_TRAILING_DAYS - 1)
     )
+    try:
+        from backend.app.services.traffic_controller import invalidate_volume_cache
+        invalidate_volume_cache(router_id)
+    except Exception:
+        pass
+    return count

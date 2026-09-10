@@ -5,6 +5,7 @@ import time
 from typing import Optional, Set
 
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
+from starlette.websockets import WebSocketState
 
 from backend.app.core.config import settings
 from backend.app.core.diagnostics import record
@@ -115,6 +116,36 @@ async def _get_wan_ip(client, router_id: Optional[int], monitored: list) -> Opti
     return resolved
 
 
+_HEALTH_TTL_SECONDS = 5.0
+_health_cache: dict = {}
+
+
+async def _get_router_health(client, router_id: Optional[int]):
+    """Router temperature and voltage, cached for 5s.
+
+    Hardware thermal and voltage sensors do not fluctuate on a 1-second cadence.
+    Caching cuts one of the four per-second REST requests against RouterOS.
+    """
+    key = str(router_id)
+    cached = _health_cache.get(key)
+    now = time.time()
+    if cached and (now - cached["at"]) < _HEALTH_TTL_SECONDS:
+        return cached["health"]
+    try:
+        health = await client.get_system_health()
+    except Exception as e:
+        logger.debug(f"Could not read router health: {e}")
+        from backend.app.schemas.router import RouterHealth
+        return cached["health"] if cached else RouterHealth(temperature=None, voltage=None)
+    _health_cache[key] = {"health": health, "at": now}
+    return health
+
+
+# Frame cache per router so multiple open tabs do not multiply REST & SQL load
+_FRAME_TTL_SECONDS = 0.8
+_frame_cache: dict = {}
+
+
 class ConnectionManager:
     """Manages active browser WebSocket connections."""
 
@@ -131,6 +162,7 @@ class ConnectionManager:
         logger.info(f"WebSocket client disconnected. Total active: {len(self.active_connections)}")
 
     async def broadcast(self, message: dict):
+        t0 = time.monotonic()
         dead_connections = set()
         for connection in list(self.active_connections):
             try:
@@ -139,9 +171,11 @@ class ConnectionManager:
                 dead_connections.add(connection)
         for dead in dead_connections:
             self.active_connections.discard(dead)
+        record("ws.broadcast", time.monotonic() - t0)
 
 
 ws_manager = ConnectionManager()
+manager = ws_manager
 
 
 @router.websocket("/ws/telemetry")
@@ -150,6 +184,14 @@ async def websocket_telemetry_endpoint(
     router_id: Optional[int] = Query(None)
 ):
     """WebSocket endpoint pushing real-time router resource and user bandwidth telemetry every 1s."""
+    if settings.AUTH_ENABLED:
+        from backend.app.core.auth import SESSION_COOKIE_NAME, verify_session_or_api_key
+        token = websocket.cookies.get(SESSION_COOKIE_NAME) or websocket.query_params.get("token")
+        user = verify_session_or_api_key(token)
+        if not user:
+            await websocket.close(code=1008)
+            return
+
     await ws_manager.connect(websocket)
     # Seeded so a failure before the per-tick lookup still paces the retry.
     tick_interval = settings.TELEMETRY_STREAM_INTERVAL_SECONDS
@@ -162,6 +204,23 @@ async def websocket_telemetry_endpoint(
             # cost had no name. One entry per connected browser, so two open tabs
             # show up as twice the count rather than as mystery load.
             tick_started = time.monotonic()
+
+            # If another browser tab or client monitoring this router generated a frame
+            # within _FRAME_TTL_SECONDS, serve it directly. Avoids multiplying REST & SQL load.
+            now = time.time()
+            cache_key = str(router_id) if router_id is not None else "default"
+            cached = _frame_cache.get(cache_key)
+            if cached and (now - cached["at"]) < _FRAME_TTL_SECONDS:
+                try:
+                    await websocket.send_json(cached["payload"])
+                    record("ws.telemetry_tick.cached", time.monotonic() - tick_started)
+                    await asyncio.sleep(tick_interval)
+                    continue
+                except (WebSocketDisconnect, RuntimeError):
+                    break
+                except Exception:
+                    break
+
             try:
                 async with AsyncSessionLocal() as session:
                     client = await router_manager.get_client(router_id, session=session)
@@ -188,7 +247,7 @@ async def websocket_telemetry_endpoint(
 
                     traffic_ctrl = TrafficController(client, router_id=eff_router_id)
                     res = await client.get_system_resource()
-                    health = await client.get_system_health()
+                    health = await _get_router_health(client, eff_router_id)
                     # Cached after the first tick; the SoC name and core count
                     # do not change without a reboot.
                     board = await client.get_routerboard()
@@ -296,11 +355,25 @@ async def websocket_telemetry_endpoint(
                     },
                     "users": users_stats
                 }
+                # Store in frame cache for other concurrent connections
+                _frame_cache[str(eff_router_id)] = {"payload": payload, "at": time.time()}
+                if not router_id or eff_router_id == router_id:
+                    _frame_cache["default"] = {"payload": payload, "at": time.time()}
+
                 await websocket.send_json(payload)
                 record("ws.telemetry_tick", time.monotonic() - tick_started)
+            except (WebSocketDisconnect, RuntimeError):
+                # Socket disconnected or closed mid-frame, exit cleanly without masking errors
+                break
             except Exception as e:
                 logger.debug(f"Telemetry stream tick error: {e}")
-                await websocket.send_json({"type": "telemetry_error", "error": str(e), "timestamp": time.time()})
+                if getattr(websocket, "client_state", None) == WebSocketState.CONNECTED:
+                    try:
+                        await websocket.send_json({"type": "telemetry_error", "error": str(e), "timestamp": time.time()})
+                    except Exception:
+                        break
+                else:
+                    break
 
             await asyncio.sleep(tick_interval)
     except WebSocketDisconnect:

@@ -24,6 +24,31 @@ def isolate_vendor_cache():
     vendor_service._cache.update(snapshot)
 
 
+@pytest.fixture(autouse=True)
+def isolate_service_caches():
+    """Clear in-memory telemetry, interface and volume caches around each test."""
+    from backend.app.api.v1.endpoints.system import _interfaces_cache
+    from backend.app.api.v1.endpoints.ws import _frame_cache, _health_cache
+    from backend.app.services.traffic_controller import invalidate_volume_cache
+
+    invalidate_volume_cache()
+    _interfaces_cache.clear()
+    _health_cache.clear()
+    _frame_cache.clear()
+    yield
+    invalidate_volume_cache()
+    _interfaces_cache.clear()
+    _health_cache.clear()
+    _frame_cache.clear()
+
+
+@pytest.fixture(autouse=True)
+def isolate_auth_settings(monkeypatch):
+    """By default in unit tests, keep application auth disabled unless explicitly tested."""
+    from backend.app.core.config import settings
+    monkeypatch.setattr(settings, "AUTH_ENABLED", False)
+
+
 class OutboundNetworkBlocked(RuntimeError):
     """A test tried to open a real connection. See ``no_real_network``."""
 

@@ -181,23 +181,30 @@ async def _reconcile_traffic_state(client, session, router, router_uptime_s) -> 
     # telemetry half just wrote. Deriving them from interface_metrics (rather
     # than a live counter delta) attributes each byte to the day it moved and
     # survives a restart.
+    t_rollups = time.monotonic()
     try:
         from backend.app.services.interface_rollups import recompute_recent
         await recompute_recent(session, router.id)
     except Exception as te:
         logger.warning(f"Interface rollup tick error for router {router.id}: {te}")
+    finally:
+        record("sync.rollups", time.monotonic() - t_rollups)
 
     # Quota thresholds for the ISP billing cycle. Checked here rather than on
     # request so an alert fires even with no browser open.
+    t_quota = time.monotonic()
     try:
         await check_quota_thresholds(session, router.id, telegram_service)
     except Exception as qe:
         logger.warning(f"Quota threshold check error for router {router.id}: {qe}")
+    finally:
+        record("sync.quota", time.monotonic() - t_quota)
 
     # Per-device accounting via firewall mangle counters. Simple Queue byte
     # counters are unreliable on RouterOS 7.x (measured frozen at zero while
     # traffic flowed), so device and user volume is measured in the firewall
     # forward chain.
+    t_acct = time.monotonic()
     try:
         from backend.app.services.traffic_accounting import TrafficAccountingService
 
@@ -205,10 +212,17 @@ async def _reconcile_traffic_state(client, session, router, router_uptime_s) -> 
         # collect() first: it reads the final counter of any device that has just
         # gone inactive before sync_counter_rules() prunes that device's rule, so
         # the last interval of its traffic is not lost.
+        t_acct_collect = time.monotonic()
         await acct.collect(session, router_uptime_seconds=router_uptime_s)
+        record("sync.accounting.collect", time.monotonic() - t_acct_collect)
+
+        t_acct_rules = time.monotonic()
         await acct.sync_counter_rules(session)
+        record("sync.accounting.rules", time.monotonic() - t_acct_rules)
     except Exception as ae:
         logger.warning(f"Traffic accounting tick error for router {router.id}: {ae}")
+    finally:
+        record("sync.accounting", time.monotonic() - t_acct)
 
 
 def _heavy_deadline(started: float, interval: float, index: int, count: int) -> float:
@@ -267,6 +281,7 @@ async def _sync_one_router(r, *, auto_scan_enabled: bool, heavy_due: bool, sync_
             client = await router_manager.get_client(r.id, session=session)
             if client:
                 if heavy_due and auto_scan_enabled:
+                    disc_started = time.monotonic()
                     dev_mgr = DeviceManager(client, router_id=r.id)
                     _, new_devices = await dev_mgr.sync_devices_from_router(session)
 
@@ -278,11 +293,14 @@ async def _sync_one_router(r, *, auto_scan_enabled: bool, heavy_due: bool, sync_
                         await dev_mgr.consolidate_rotated_devices(session)
                     except Exception as ce:
                         logger.debug(f"Rotation consolidation tick error for router {r.id}: {ce}")
+                    record("sync.discovery", time.monotonic() - disc_started)
 
                 if heavy_due:
                     # Maintain RouterOS Simple Queues and FastTrack exemptions
                     # for active users and unassigned devices of this router.
+                    queues_started = time.monotonic()
                     await _reconcile_queues(client, session, r.id)
+                    record("sync.queues", time.monotonic() - queues_started)
 
                 telemetry_started = time.monotonic()
                 # Router uptime, read once for this tick. If it has gone
@@ -645,6 +663,22 @@ async def lifespan(app: FastAPI):
     # is hours away; the rows it targets are already there.
     await _trim_device_history_once()
 
+    # Seed admin password from environment if provided and none set yet
+    if settings.ADMIN_PASSWORD:
+        try:
+            from backend.app.core.auth import (
+                get_stored_admin_hash,
+                hash_password,
+                set_stored_admin_hash,
+            )
+            async with AsyncSessionLocal() as session:
+                stored = await get_stored_admin_hash(session)
+                if not stored:
+                    await set_stored_admin_hash(session, hash_password(settings.ADMIN_PASSWORD))
+                    logger.info("Admin password seeded into database from environment variable.")
+        except Exception as e:
+            logger.warning(f"Could not seed admin password from environment: {e}")
+
     telegram_service = TelegramBotService(
         router_manager=router_manager,
         session_factory=AsyncSessionLocal
@@ -692,6 +726,95 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def auth_and_csrf_middleware(request: Request, call_next):
+    """Enforce authentication and Double-Submit CSRF on protected /api/v1/* routes."""
+    # Exempt CORS preflight
+    if request.method == "OPTIONS":
+        return await call_next(request)
+
+    path = request.url.path
+
+    # Only protect /api/v1/* routes
+    if not path.startswith("/api/v1/"):
+        return await call_next(request)
+
+    # Exempt public /auth endpoints, health probes, and telegram webhook
+    if (
+        path.startswith("/api/v1/auth/")
+        or path in ("/api/v1/health", "/api/v1/system/health")
+        or path == "/api/v1/telegram/webhook"
+    ):
+        return await call_next(request)
+
+    # If auth is disabled, allow all requests
+    if not settings.AUTH_ENABLED:
+        return await call_next(request)
+
+    from backend.app.core.auth import (
+        CSRF_COOKIE_NAME,
+        SESSION_COOKIE_NAME,
+        verify_csrf_token,
+        verify_session_or_api_key,
+        verify_session_token,
+    )
+
+    # 1. Bearer / X-API-Key token
+    auth_header = request.headers.get("Authorization")
+    api_key_header = request.headers.get("X-API-Key")
+    token = None
+    if auth_header and auth_header.lower().startswith("bearer "):
+        token = auth_header[7:].strip()
+    elif api_key_header:
+        token = api_key_header.strip()
+
+    if token:
+        user = verify_session_or_api_key(token)
+        if user:
+            request.state.user = user
+            return await call_next(request)
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Invalid API token"},
+        )
+
+    # 2. Session cookie
+    session_cookie = request.cookies.get(SESSION_COOKIE_NAME)
+    if not session_cookie:
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Authentication required"},
+        )
+
+    user = verify_session_token(session_cookie)
+    if not user:
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Session expired or invalid"},
+        )
+
+    # Double-Submit CSRF check on mutating requests when authenticated via cookie
+    if request.method in ("POST", "PUT", "DELETE", "PATCH"):
+        csrf_header = request.headers.get("X-CSRF-Token")
+        csrf_cookie = request.cookies.get(CSRF_COOKIE_NAME)
+        if not verify_csrf_token(csrf_header, csrf_cookie):
+            return JSONResponse(
+                status_code=403,
+                content={"detail": "CSRF token validation failed"},
+            )
+
+    request.state.user = user
+    return await call_next(request)
+
+
+@app.get("/health")
+@app.get("/api/v1/health")
+async def health_check():
+    """Liveness probe endpoint."""
+    return {"status": "ok", "app": settings.APP_NAME, "version": settings.APP_VERSION}
+
 
 @app.exception_handler(NoRouterConfiguredError)
 async def no_router_configured_handler(request: Request, exc: NoRouterConfiguredError):

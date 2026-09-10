@@ -15,14 +15,42 @@ function qs(params = {}) {
   return out ? `?${out}` : '';
 }
 
+function getCookie(name) {
+  if (typeof document === 'undefined') return null;
+  const match = document.cookie.match(new RegExp('(^|;\\s*)(' + name + ')=([^;]*)'));
+  return match ? decodeURIComponent(match[3]) : null;
+}
+
+let onUnauthorizedHandler = null;
+
+export function setUnauthorizedHandler(handler) {
+  onUnauthorizedHandler = handler;
+}
+
 async function request(endpoint, options = {}) {
   const url = `${API_BASE}${endpoint}`;
+  const method = (options.method || 'GET').toUpperCase();
   const headers = {
     'Content-Type': 'application/json',
     ...(options.headers || {})
   };
 
+  // Attach Double-Submit CSRF token on mutating requests
+  if (['POST', 'PUT', 'DELETE', 'PATCH'].includes(method)) {
+    const csrfToken = getCookie('mikroman_csrf');
+    if (csrfToken) {
+      headers['X-CSRF-Token'] = csrfToken;
+    }
+  }
+
   const response = await fetch(url, { ...options, headers });
+
+  if (response.status === 401 && endpoint !== '/auth/login' && endpoint !== '/auth/status') {
+    if (typeof onUnauthorizedHandler === 'function') {
+      onUnauthorizedHandler();
+    }
+  }
+
   const text = await response.text();
   let json = {};
   try {
@@ -40,6 +68,12 @@ async function request(endpoint, options = {}) {
 }
 
 export const api = {
+  // Auth & Session
+  getAuthStatus: () => request('/auth/status'),
+  setupAdmin: (password) => request('/auth/setup', { method: 'POST', body: JSON.stringify({ password }) }),
+  login: (password) => request('/auth/login', { method: 'POST', body: JSON.stringify({ password }) }),
+  logout: () => request('/auth/logout', { method: 'POST' }),
+
   // Routers
   getRouters: () => request('/routers'),
   createRouter: (data) => request('/routers', { method: 'POST', body: JSON.stringify(data) }),

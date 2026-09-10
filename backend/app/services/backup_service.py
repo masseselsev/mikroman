@@ -9,7 +9,7 @@ from typing import Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.db.models import Router, RouterBackup
+from backend.app.db.models import AppSetting, Router, RouterBackup
 from backend.app.db.session import AsyncSessionLocal
 from backend.app.services.backup_normalizer import compute_fingerprint, normalize_rsc
 from backend.app.services.routeros.backup import generate_backup_password
@@ -203,11 +203,16 @@ async def run_router_backup(
 
 
 async def prune_router_backups(
-    router_id: int, max_count: int = 30, max_days: int = 90, db_session: Optional[AsyncSession] = None
+    router_id: int,
+    max_count: Optional[int] = None,
+    max_days: Optional[int] = None,
+    db_session: Optional[AsyncSession] = None,
 ) -> int:
     """Prune unpinned router backups that exceed max_count or max_days.
 
     Pinned backups (is_pinned=True) are strictly protected and never pruned.
+    If max_count or max_days are None, they are resolved from AppSetting
+    ('backup_max_count' and 'backup_retention_days'), with default fallbacks of 30 and 90.
     """
     should_close = False
     session = db_session
@@ -216,6 +221,28 @@ async def prune_router_backups(
         should_close = True
 
     try:
+        eff_max_count = max_count
+        if eff_max_count is None:
+            setting = await session.get(AppSetting, "backup_max_count")
+            if setting and setting.value:
+                try:
+                    eff_max_count = int(setting.value)
+                except ValueError:
+                    eff_max_count = 30
+            else:
+                eff_max_count = 30
+
+        eff_max_days = max_days
+        if eff_max_days is None:
+            setting = await session.get(AppSetting, "backup_retention_days")
+            if setting and setting.value:
+                try:
+                    eff_max_days = int(setting.value)
+                except ValueError:
+                    eff_max_days = 90
+            else:
+                eff_max_days = 90
+
         q = await session.execute(
             select(RouterBackup)
             .filter(
@@ -227,7 +254,7 @@ async def prune_router_backups(
         )
         unpinned = list(q.scalars().all())
 
-        cutoff_date = datetime.now(timezone.utc) - timedelta(days=max_days)
+        cutoff_date = datetime.now(timezone.utc) - timedelta(days=eff_max_days)
         to_delete = []
 
         for idx, backup in enumerate(unpinned):
@@ -235,7 +262,7 @@ async def prune_router_backups(
             if created.tzinfo is None:
                 created = created.replace(tzinfo=timezone.utc)
 
-            if idx >= max_count or created < cutoff_date:
+            if idx >= eff_max_count or created < cutoff_date:
                 to_delete.append(backup)
 
         for b in to_delete:

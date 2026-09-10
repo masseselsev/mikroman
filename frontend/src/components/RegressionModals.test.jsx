@@ -22,6 +22,8 @@ vi.mock('../api/client', () => ({
     // `setSettings`, and a test that seeds settings silently keeps defaults.
     getArchivedRouters: vi.fn().mockResolvedValue({ data: [] }),
     getQuota: vi.fn().mockResolvedValue({ data: { enabled: false } }),
+    getBillingCycleConfig: vi.fn().mockResolvedValue({ data: { anchor_day: 1, anchor_hour: 0, anchor_minute: 0 } }),
+    saveBillingCycleConfig: vi.fn().mockResolvedValue({ data: { anchor_day: 1, anchor_hour: 0, anchor_minute: 0 } }),
     getIpLookup: vi.fn().mockResolvedValue({ data: { services: [], enabled_ids: [], default_id: null } }),
     // TrafficHistoryModal fetches history for its target.
     getUserTrafficHistory: vi.fn().mockResolvedValue({
@@ -40,6 +42,16 @@ vi.mock('../api/client', () => ({
 }));
 
 describe('SettingsModal', () => {
+  beforeEach(() => {
+    api.getSettings.mockResolvedValue({ data: {} });
+    api.getRouters.mockResolvedValue({ data: [] });
+    api.getArchivedRouters.mockResolvedValue({ data: [] });
+    api.getQuota.mockResolvedValue({ data: { enabled: false } });
+    api.getBillingCycleConfig.mockResolvedValue({ data: { anchor_day: 1, anchor_hour: 0, anchor_minute: 0 } });
+    api.saveBillingCycleConfig.mockResolvedValue({ data: { anchor_day: 1, anchor_hour: 0, anchor_minute: 0 } });
+    api.getIpLookup.mockResolvedValue({ data: { services: [], enabled_ids: [], default_id: null } });
+  });
+
   it('opens without throwing (add-router state must be declared)', async () => {
     // Before the fix the open effect called setShowAddRouter, which did not
     // exist, and the modal unmounted to a blank screen.
@@ -63,6 +75,23 @@ describe('SettingsModal', () => {
     // The RouterConnectionForm host-address field only mounts when
     // showAddRouter is true, so finding it proves the setter worked.
     expect(await screen.findByPlaceholderText('192.168.88.1')).toBeInTheDocument();
+  });
+
+  it('renders billing cycle reset day and time inputs in SettingsModal', async () => {
+    renderWithProviders(
+      <SettingsModal isOpen onClose={() => {}} onReboot={() => {}} onRoutersChanged={() => {}} />
+    );
+    expect(await screen.findByLabelText(/Reset time/i)).toBeInTheDocument();
+    expect(screen.getByText(/Billing Reset Day/i)).toBeInTheDocument();
+  });
+
+  it('renders traffic accounting scope radio toggle in SettingsModal', async () => {
+    renderWithProviders(
+      <SettingsModal isOpen onClose={() => {}} onReboot={() => {}} onRoutersChanged={() => {}} />
+    );
+    expect(await screen.findByText(/Traffic Accounting Scope/i)).toBeInTheDocument();
+    expect(screen.getByText(/Monitored WAN \/ Internet only/i)).toBeInTheDocument();
+    expect(screen.getByText(/All routed traffic/i)).toBeInTheDocument();
   });
 });
 
