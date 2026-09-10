@@ -14,7 +14,7 @@ from backend.app.services.analytics_engine import AnalyticsEngine, get_billing_c
 from backend.app.services.device_manager import detach_device_traffic_from_user
 from backend.app.services.router_manager import router_manager
 from backend.app.services.router_time import router_local_now
-from backend.app.services.traffic_controller import TrafficController
+from backend.app.services.traffic_controller import TrafficController, invalidate_user_metadata_cache
 
 router = APIRouter(prefix="/users", tags=["Users"])
 
@@ -172,6 +172,7 @@ async def create_user(
                     dev.router_id = eff_router_id
         await db.commit()
         await db.refresh(user)
+    invalidate_user_metadata_cache(eff_router_id)
 
     client = await router_manager.get_client(eff_router_id, session=db)
     if client:
@@ -235,6 +236,7 @@ async def update_user(
                 dev.user_id = user.id
 
     await db.commit()
+    invalidate_user_metadata_cache(user.router_id)
     await db.refresh(user)
 
     active_ips = [d.ip_address for d in user.devices if d.is_active and d.ip_address]
@@ -259,6 +261,7 @@ async def delete_user(
 
     await db.delete(user)
     await db.commit()
+    invalidate_user_metadata_cache(user.router_id)
     return APIResponse(data=True, message="User deleted successfully")
 
 
@@ -285,6 +288,7 @@ async def reorder_users(payload: UserReorderRequest, db: AsyncSession = Depends(
         position += 1
 
     await db.commit()
+    invalidate_user_metadata_cache()
     return APIResponse(data=True)
 
 

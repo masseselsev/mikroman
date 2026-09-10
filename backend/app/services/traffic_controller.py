@@ -103,6 +103,19 @@ def invalidate_volume_cache(router_id: Optional[int] = None) -> None:
         _device_volume_cache.pop(key, None)
 
 
+_METADATA_CACHE_TTL_SECONDS = 15.0
+_user_device_metadata_cache: Dict[str, Tuple[float, List[Dict[str, Any]], Dict[int, List[Dict[str, Any]]], Dict[int, int]]] = {}
+
+
+def invalidate_user_metadata_cache(router_id: Optional[int] = None) -> None:
+    """Clear cached user/device metadata when a user or device is edited or assigned."""
+    if router_id is None:
+        _user_device_metadata_cache.clear()
+    else:
+        key = str(router_id)
+        _user_device_metadata_cache.pop(key, None)
+
+
 class TrafficController:
     """Controls per-user traffic shaping (Simple Queues) and firewall pausing."""
 
@@ -293,6 +306,7 @@ class TrafficController:
             raise
 
         await session.commit()
+        invalidate_user_metadata_cache(self.router_id)
         await session.refresh(user)
         return True
 
@@ -440,6 +454,7 @@ class TrafficController:
 
         user.is_paused = True
         await session.commit()
+        invalidate_user_metadata_cache(self.router_id)
         await session.refresh(user)
 
         await self.ensure_pause_firewall_rules(session)
@@ -467,6 +482,7 @@ class TrafficController:
 
         user.is_paused = False
         await session.commit()
+        invalidate_user_metadata_cache(self.router_id)
         await session.refresh(user)
 
         try:
@@ -612,6 +628,7 @@ class TrafficController:
             raise
 
         await session.commit()
+        invalidate_user_metadata_cache(self.router_id)
         await session.refresh(device)
         return True
 
@@ -637,6 +654,7 @@ class TrafficController:
 
         device.is_paused = True
         await session.commit()
+        invalidate_user_metadata_cache(self.router_id)
         await session.refresh(device)
 
         return True
@@ -910,49 +928,74 @@ class TrafficController:
             rules = []
 
         per_device_rates = live_rate_tracker.sample(rules)
-        user_rates = await aggregate_user_rates(session, per_device_rates)
+
+        # User & device metadata changes rarely, but telemetry runs every 3 seconds
+        # per connected browser. Caching scalar metadata in-memory for 15s cuts
+        # ~60-80 redundant SQLite queries/minute down to ~4 queries/minute.
+        cache_key = str(eff_router_id) if eff_router_id is not None else "all"
+        now = time.time()
+        cached_meta = _user_device_metadata_cache.get(cache_key)
+
+        if cached_meta and (now - cached_meta[0]) < _METADATA_CACHE_TTL_SECONDS:
+            _, users_data, devices_by_user, device_to_user = cached_meta
+        else:
+            user_stmt = select(User).options(noload(User.devices), noload(User.traffic_rollups))
+            dev_stmt = select(Device).options(
+                noload(Device.history),
+                noload(Device.traffic_rollups),
+                noload(Device.linked_adapters),
+                noload(Device.primary_device),
+            )
+            if eff_router_id is not None:
+                user_stmt = user_stmt.where((User.router_id == eff_router_id) | (User.router_id.is_(None)))
+                dev_stmt = dev_stmt.where((Device.router_id == eff_router_id) | (Device.router_id.is_(None)))
+
+            db_users = (await session.execute(user_stmt)).scalars().all()
+            db_devices = (await session.execute(dev_stmt)).scalars().all()
+
+            users_data = [
+                {
+                    "id": u.id,
+                    "name": u.name,
+                    "avatar_icon": u.avatar_icon,
+                    "speed_limit": u.speed_limit,
+                    "is_paused": u.is_paused,
+                }
+                for u in db_users
+            ]
+            devices_by_user = {}
+            device_to_user = {}
+            for d in db_devices:
+                if d.user_id:
+                    devices_by_user.setdefault(d.user_id, []).append({
+                        "id": d.id,
+                        "is_active": d.is_active,
+                    })
+                    device_to_user[d.id] = d.user_id
+
+            _user_device_metadata_cache[cache_key] = (now, users_data, devices_by_user, device_to_user)
+
+        user_rates = await aggregate_user_rates(session, per_device_rates, device_to_user=device_to_user)
         user_volume = await self._todays_user_volume(session, eff_router_id)
         device_volume = await self._todays_device_volume(session, eff_router_id)
 
-        # A frame carries scalar columns only: id, name, avatar, limit, paused.
-        # Every relationship on these two models is `lazy="selectin"`, so without an
-        # explicit `noload` each frame loaded every user's devices and rollups and,
-        # through them, each device's history — the cost the analytics endpoint was
-        # fixed for, on the one path that repeats it a thousand times a day per open
-        # tab.
-        user_stmt = select(User).options(noload(User.devices), noload(User.traffic_rollups))
-        dev_stmt = select(Device).options(
-            noload(Device.history),
-            noload(Device.traffic_rollups),
-            noload(Device.linked_adapters),
-            noload(Device.primary_device),
-        )
-        if eff_router_id is not None:
-            user_stmt = user_stmt.where((User.router_id == eff_router_id) | (User.router_id.is_(None)))
-            dev_stmt = dev_stmt.where((Device.router_id == eff_router_id) | (Device.router_id.is_(None)))
-
-        users = (await session.execute(user_stmt)).scalars().all()
-        all_devices = (await session.execute(dev_stmt)).scalars().all()
-        devices_by_user: Dict[int, List[Device]] = {}
-        for device in all_devices:
-            if device.user_id:
-                devices_by_user.setdefault(device.user_id, []).append(device)
-
         user_metrics = []
-        for user in users:
-            rates = user_rates.get(user.id, {})
+        for user in users_data:
+            u_id = user["id"]
+            rates = user_rates.get(u_id, {})
             rate_in = int(rates.get("rx_bps", 0))
             rate_out = int(rates.get("tx_bps", 0))
 
             # Per-device breakdown, so the dashboard can name the device that is
             # actually consuming the bandwidth rather than only its owner.
             # A device with no counter sample reports zero, never a stale value.
-            owned = devices_by_user.get(user.id, [])
+            owned = devices_by_user.get(u_id, [])
             device_metrics: Dict[int, Dict[str, int]] = {}
-            for device in owned:
-                d_rate = per_device_rates.get(device.id, {})
-                d_in, d_out = device_volume.get(device.id, (0, 0))
-                device_metrics[device.id] = {
+            for dev in owned:
+                d_id = dev["id"]
+                d_rate = per_device_rates.get(d_id, {})
+                d_in, d_out = device_volume.get(d_id, (0, 0))
+                device_metrics[d_id] = {
                     "current_rate_in": int(d_rate.get("rx_bps", 0)),
                     "current_rate_out": int(d_rate.get("tx_bps", 0)),
                     "bytes_today_in": d_in,
@@ -966,16 +1009,16 @@ class TrafficController:
                 bytes_in = sum(dm["bytes_today_in"] for dm in device_metrics.values())
                 bytes_out = sum(dm["bytes_today_out"] for dm in device_metrics.values())
             else:
-                bytes_in, bytes_out = user_volume.get(user.id, (0, 0))
+                bytes_in, bytes_out = user_volume.get(u_id, (0, 0))
 
             user_metrics.append({
-                "user_id": user.id,
-                "name": user.name,
-                "avatar_icon": user.avatar_icon,
-                "speed_limit": user.speed_limit,
-                "is_paused": user.is_paused,
+                "user_id": u_id,
+                "name": user["name"],
+                "avatar_icon": user["avatar_icon"],
+                "speed_limit": user["speed_limit"],
+                "is_paused": user["is_paused"],
                 "device_count": len(owned),
-                "active_device_count": len([d for d in owned if d.is_active]),
+                "active_device_count": len([d for d in owned if d["is_active"]]),
                 "current_rate_in": rate_in,    # bps download
                 "current_rate_out": rate_out,  # bps upload
                 "bytes_in": bytes_in,

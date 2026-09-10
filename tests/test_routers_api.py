@@ -339,3 +339,72 @@ async def test_change_router_rejects_an_unreachable_new_router(async_client: Asy
     assert "could not reach" in ch.json()["detail"].lower()
 
 
+@pytest.mark.asyncio
+async def test_switch_router_protocol_seamless(async_client: AsyncClient):
+    r1 = await _add_router(async_client, "ProtoSwitch", "192.0.2.50", "SN-SWITCH")
+    assert r1["use_ssl"] is True
+    assert r1["port"] == 443
+
+    # Switch from HTTPS (443) to HTTP (80)
+    with respx.mock(base_url="https://192.0.2.50:443/rest") as m_https, \
+         respx.mock(base_url="http://192.0.2.50:80/rest") as m_http:
+        # Client queries /ip/service on existing HTTPS
+        m_https.get("/ip/service").mock(side_effect=[
+            httpx.Response(200, json=[
+                {".id": "*www", "name": "www", "disabled": True, "port": 80},
+                {".id": "*www-ssl", "name": "www-ssl", "disabled": False, "port": 443}
+            ]),
+            httpx.Response(200, json=[
+                {".id": "*www", "name": "www", "disabled": False, "port": 80}
+            ])
+        ])
+        m_https.patch("/ip/service/*www").mock(return_value=httpx.Response(200, json={}))
+        # Probe connects via HTTP to test system resource
+        m_http.get("/system/resource").mock(return_value=httpx.Response(200, json={
+            "version": "7.24.1", "board-name": "hAP-be3", "cpu-load": 5
+        }))
+
+        res = await async_client.post(
+            f"/api/v1/routers/{r1['id']}/protocol",
+            json={"use_ssl": False}
+        )
+        assert res.status_code == 200, res.text
+        data = res.json()["data"]
+        assert data["use_ssl"] is False
+        assert data["port"] == 80
+
+    # Verify persisted state in DB
+    check = await async_client.get(f"/api/v1/routers/{r1['id']}")
+    assert check.json()["data"]["use_ssl"] is False
+    assert check.json()["data"]["port"] == 80
+
+    # Switch back from HTTP (80) to HTTPS (443)
+    with respx.mock(base_url="http://192.0.2.50:80/rest") as m_http, \
+         respx.mock(base_url="https://192.0.2.50:443/rest") as m_https:
+        m_http.get("/certificate").mock(return_value=httpx.Response(200, json=[
+            {"name": "mikroman-ssl"}
+        ]))
+        m_http.get("/ip/service").mock(return_value=httpx.Response(200, json=[
+            {".id": "*www-ssl", "name": "www-ssl", "disabled": True, "port": 443}
+        ]))
+        m_http.patch("/ip/service/*www-ssl").mock(return_value=httpx.Response(200, json={}))
+        m_https.get("/system/resource").mock(return_value=httpx.Response(200, json={
+            "version": "7.24.1", "board-name": "hAP-be3", "cpu-load": 7
+        }))
+
+        res2 = await async_client.post(
+            f"/api/v1/routers/{r1['id']}/protocol",
+            json={"use_ssl": True}
+        )
+        assert res2.status_code == 200, res2.text
+        data2 = res2.json()["data"]
+        assert data2["use_ssl"] is True
+        assert data2["port"] == 443
+
+    check2 = await async_client.get(f"/api/v1/routers/{r1['id']}")
+    assert check2.json()["data"]["use_ssl"] is True
+    assert check2.json()["data"]["port"] == 443
+
+
+
+

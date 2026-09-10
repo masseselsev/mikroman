@@ -143,3 +143,7 @@ class RouterConfig(BaseModel):
     use_ssl: bool = False
     ssl_verify: bool = False
 
+
+class RouterProtocolToggleRequest(BaseModel):
+    use_ssl: bool = Field(..., description="Target protocol: True for HTTPS, False for HTTP")
+

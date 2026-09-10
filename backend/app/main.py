@@ -609,6 +609,18 @@ async def log_scrape_worker():
                             )
                     except Exception as e:
                         logger.debug(f"Device history prune failed: {e}")
+
+                # Periodic memory maintenance: every 5 minutes (5 ticks), collect garbage
+                # and return unused heap arenas back to the Linux OS page allocator.
+                if ticks % 5 == 0:
+                    try:
+                        import gc
+                        gc.collect()
+                        import ctypes
+                        libc = ctypes.CDLL("libc.so.6")
+                        libc.malloc_trim(0)
+                    except Exception:
+                        pass
         except asyncio.CancelledError:
             raise
         except Exception as e:

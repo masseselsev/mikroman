@@ -71,6 +71,8 @@ LABEL maintainer="masseselsev" \
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
+    MALLOC_ARENA_MAX=2 \
+    MALLOC_TRIM_THRESHOLD_=131072 \
     DATABASE_URL="sqlite+aiosqlite:////data/app.db"
 
 WORKDIR /app

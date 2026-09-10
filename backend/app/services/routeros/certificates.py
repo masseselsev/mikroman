@@ -46,6 +46,61 @@ class CertificatesMixin:
         except (TypeError, ValueError):
             return 443
 
+    @staticmethod
+    async def _read_www_port(client, fallback: Optional[Dict[str, Any]] = None) -> int:
+        """Return the port the 'www' (HTTP) service is bound to on the router.
+
+        Falls back to 80 if unreadable, and never raises.
+        """
+        entry = None
+        try:
+            resp = await client.get("/ip/service")
+            if resp.status_code == 200:
+                services = resp.json()
+                entry = next(
+                    (s for s in services if isinstance(s, dict) and s.get("name") == "www"),
+                    None,
+                )
+        except Exception as e:
+            logger.debug(f"Could not re-read www port: {e}")
+        entry = entry or fallback or {}
+        try:
+            return int(entry.get("port", 80)) or 80
+        except (TypeError, ValueError):
+            return 80
+
+    async def enable_www_service(self) -> Dict[str, Any]:
+        """Ensure the plain HTTP www service is enabled on RouterOS.
+
+        Used when switching MikroMan to HTTP mode to eliminate TLS CPU overhead.
+        """
+        async with self._get_client() as client:
+            try:
+                services_resp = await client.get("/ip/service")
+                services = services_resp.json() if services_resp.status_code == 200 else []
+                www = next((s for s in services if isinstance(s, dict) and s.get("name") == "www"), None)
+                if not www:
+                    return {"success": False, "message": "Service 'www' not found on RouterOS"}
+
+                if www.get("disabled") in (True, "true", "yes"):
+                    enable_fields = {"disabled": False}
+                    if ".id" in www:
+                        patch_resp = await client.patch(f"/ip/service/{www['.id']}", json=enable_fields)
+                        if patch_resp.status_code not in (200, 201):
+                            await client.post("/ip/service/set", json={"numbers": www[".id"], **enable_fields})
+                    else:
+                        await client.post("/ip/service/set", json={"numbers": "www", **enable_fields})
+
+                active_port = await self._read_www_port(client, fallback=www)
+                return {
+                    "success": True,
+                    "port": active_port,
+                    "message": f"Service 'www' is enabled on port {active_port}"
+                }
+            except Exception as e:
+                logger.error(f"Failed to enable www service on RouterOS: {e}")
+                return {"success": False, "error": str(e), "message": f"Failed to enable www: {e}"}
+
     async def check_ssl_status(self) -> Dict[str, Any]:
         """Check /ip/service for www-ssl and /certificate status."""
         async with self._get_client() as client:

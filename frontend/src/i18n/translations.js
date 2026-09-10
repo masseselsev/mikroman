@@ -481,8 +481,13 @@ export const translations = {
     auto_ssl_btn: "Auto-Configure SSL on Router",
     auto_ssl_hint: "Creates a TLS certificate and enables HTTPS on your MikroTik automatically; its www-ssl port is left as configured",
     auto_ssl_success: "SSL configured on MikroTik! Switched to HTTPS on port {port}.",
-    use_detected_https_port: "Use HTTPS on port {port}",
     provision_ssl_title: "Upgrade to SSL",
+    switch_to_http: "Switch to HTTP",
+    switch_to_http_hint: "Switch to plain HTTP to eliminate TLS overhead and lower router CPU (recommended in container mode)",
+    switch_to_https: "Switch to HTTPS",
+    switch_to_https_hint: "Switch to encrypted HTTPS (REST API)",
+    protocol_switching: "Switching...",
+    protocol_switch_success: "Protocol switched successfully",
 
     // Manual SSL & Certificates
     manual_ssl_toggle: "Manual SSL / Certificate Settings",
@@ -1250,8 +1255,13 @@ export const translations = {
     auto_ssl_btn: "Автонастройка SSL",
     auto_ssl_hint: "Создаст сертификат и включит HTTPS на MikroTik; порт www-ssl сохраняется",
     auto_ssl_success: "SSL настроен! Переключено на HTTPS, порт {port}.",
-    use_detected_https_port: "HTTPS на порту {port}",
     provision_ssl_title: "Перейти на HTTPS",
+    switch_to_http: "Перейти на HTTP",
+    switch_to_http_hint: "Перейти на HTTP для снижения нагрузки TLS на процессор (рекомендуется в контейнере)",
+    switch_to_https: "Перейти на HTTPS",
+    switch_to_https_hint: "Перейти на зашифрованный HTTPS (REST API)",
+    protocol_switching: "Переключение...",
+    protocol_switch_success: "Протокол успешно переключен",
 
     // Manual SSL & Certificates
     manual_ssl_toggle: "Ручная настройка SSL",

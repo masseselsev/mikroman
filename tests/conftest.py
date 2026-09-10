@@ -29,14 +29,19 @@ def isolate_service_caches():
     """Clear in-memory telemetry, interface and volume caches around each test."""
     from backend.app.api.v1.endpoints.system import _interfaces_cache
     from backend.app.api.v1.endpoints.ws import _frame_cache, _health_cache
-    from backend.app.services.traffic_controller import invalidate_volume_cache
+    from backend.app.services.traffic_controller import (
+        invalidate_user_metadata_cache,
+        invalidate_volume_cache,
+    )
 
     invalidate_volume_cache()
+    invalidate_user_metadata_cache()
     _interfaces_cache.clear()
     _health_cache.clear()
     _frame_cache.clear()
     yield
     invalidate_volume_cache()
+    invalidate_user_metadata_cache()
     _interfaces_cache.clear()
     _health_cache.clear()
     _frame_cache.clear()

@@ -1,6 +1,6 @@
 import logging
 from contextlib import asynccontextmanager
-from typing import AsyncIterator, Dict, List, Optional
+from typing import Any, AsyncIterator, Dict, List, Optional
 
 import httpx
 from sqlalchemy import select
@@ -444,6 +444,131 @@ class RouterManager:
             port=active_port,
             message=f"SSL provisioned on MikroTik; MikroMan now connects over HTTPS on port {active_port}."
         )
+
+    async def switch_router_protocol(
+        self,
+        router_id: int,
+        use_ssl: bool,
+        session: AsyncSession
+    ) -> Dict[str, Any]:
+        """
+        Seamlessly switch connection protocol between HTTP and HTTPS for a router.
+
+        When switching to HTTP:
+        1. Enables RouterOS 'www' service via current connection if disabled.
+        2. Detects 'www' port (default 80).
+        3. Verifies HTTP connectivity with a transient probe.
+        4. Updates router model in DB (use_ssl=False, port=target_port).
+        5. Invalidates cached client so background sync & WS immediately use HTTP.
+
+        When switching to HTTPS:
+        1. Enables/provisions SSL via current connection if needed.
+        2. Detects 'www-ssl' port (default 443).
+        3. Verifies HTTPS connectivity with a transient probe.
+        4. Updates router model in DB (use_ssl=True, port=target_port).
+        5. Invalidates cached client.
+        """
+        router = await session.get(Router, router_id)
+        if not router:
+            return {"success": False, "message": "Router not found"}
+
+        if router.use_ssl == use_ssl:
+            proto = "HTTPS" if use_ssl else "HTTP"
+            return {
+                "success": True,
+                "use_ssl": router.use_ssl,
+                "port": router.port,
+                "message": f"Router is already using {proto}",
+            }
+
+        client = await self.get_client(router_id, session=session)
+        if not client:
+            client = self._create_client_from_model(router)
+
+        if not use_ssl:
+            # Switching to plain HTTP (CPU-efficient container mode)
+            enable_res = await client.enable_www_service()
+            if not enable_res.get("success"):
+                return {
+                    "success": False,
+                    "message": f"Could not enable HTTP service on router: {enable_res.get('message')}"
+                }
+            target_port = int(enable_res.get("port", 80))
+
+            probe = RouterOSClient(
+                host=router.host,
+                port=target_port,
+                use_ssl=False,
+                ssl_verify=False,
+                username=router.username,
+                password=router.password,
+                timeout=4.0
+            )
+            try:
+                await probe.get_system_resource()
+            except Exception as e:
+                return {
+                    "success": False,
+                    "message": f"Verified 'www' service on router, but HTTP test connection failed on port {target_port}: {e}"
+                }
+            finally:
+                await probe.aclose()
+
+            router.use_ssl = False
+            router.port = target_port
+            router.ssl_verify = False
+            await session.commit()
+            await session.refresh(router)
+            await self.remove_client(router_id)
+
+            return {
+                "success": True,
+                "use_ssl": False,
+                "port": target_port,
+                "message": f"Switched router '{router.name}' to plain HTTP (port {target_port}) to reduce CPU load."
+            }
+        else:
+            # Switching to HTTPS
+            prov_result = await client.provision_ssl()
+            if not prov_result.get("success"):
+                return {
+                    "success": False,
+                    "message": f"Could not configure SSL on router: {prov_result.get('message')}"
+                }
+            target_port = int(prov_result.get("port", 443))
+
+            probe = RouterOSClient(
+                host=router.host,
+                port=target_port,
+                use_ssl=True,
+                ssl_verify=False,
+                username=router.username,
+                password=router.password,
+                timeout=4.0
+            )
+            try:
+                await probe.get_system_resource()
+            except Exception as e:
+                return {
+                    "success": False,
+                    "message": f"Verified 'www-ssl' service on router, but HTTPS test connection failed on port {target_port}: {e}"
+                }
+            finally:
+                await probe.aclose()
+
+            router.use_ssl = True
+            router.port = target_port
+            router.ssl_verify = False
+            await session.commit()
+            await session.refresh(router)
+            await self.remove_client(router_id)
+
+            return {
+                "success": True,
+                "use_ssl": True,
+                "port": target_port,
+                "message": f"Switched router '{router.name}' to HTTPS (port {target_port})."
+            }
 
     async def aclose(self) -> None:
         """Close all cached client connections."""

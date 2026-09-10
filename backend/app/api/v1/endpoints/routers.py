@@ -15,6 +15,7 @@ from backend.app.schemas.router import (
     RouterChangeRequest,
     RouterCreate,
     RouterDeleteRequest,
+    RouterProtocolToggleRequest,
     RouterProvisionSslRequest,
     RouterProvisionSslResponse,
     RouterResponse,
@@ -410,6 +411,32 @@ async def provision_router_ssl(
             detail=res.message
         )
     return ApiResponse(data=res, message=res.message)
+
+
+@router.post("/{router_id}/protocol", response_model=ApiResponse[RouterResponse])
+async def switch_router_protocol(
+    router_id: int,
+    payload: RouterProtocolToggleRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """Switch router communication protocol between HTTP and HTTPS.
+
+    Enables lower CPU utilization in container mode (HTTP) while providing
+    a 1-click upgrade to HTTPS when required.
+    """
+    res = await router_manager.switch_router_protocol(router_id, payload.use_ssl, session=db)
+    if not res.get("success"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=res.get("message", "Failed to switch protocol")
+        )
+    router_obj = await db.get(Router, router_id)
+    if not router_obj:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Router not found")
+    return ApiResponse(
+        data=RouterResponse.model_validate(router_obj),
+        message=res.get("message", "Protocol switched successfully")
+    )
 
 
 @router.post("/test-provision-ssl", response_model=ApiResponse[RouterProvisionSslResponse])
