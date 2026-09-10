@@ -37,7 +37,11 @@ class FakeRouter:
         # raises, exactly as httpx does on a connect failure.
         self.fail_reads = False
 
-    async def get_mangle_rules(self):
+    async def get_mangle_rules(self, fields=None):
+        # `fields` mirrors the real client's signature: the telemetry path asks for
+        # a .proplist, and a double that rejects that call hides the difference
+        # behind a swallowed exception rather than failing loudly.
+
         if self.fail_reads:
             raise ConnectionError("router unreachable")
         return [dict(r) for r in self.rules]

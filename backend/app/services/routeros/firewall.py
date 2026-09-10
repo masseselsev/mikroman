@@ -3,7 +3,8 @@
 Two unrelated jobs share this menu. Address lists back the pause/block feature.
 Mangle ``action=passthrough`` rules are how per-device volume is measured, after
 Simple Queue counters were found frozen at zero on RouterOS 7.25 while the
-forward chain accounted 243.8 MB against 246 MB of real traffic. Passthrough
+firewall forward chain counted the same traffic to within a rounding error.
+Passthrough
 only increments a counter and hands the packet on unchanged - it cannot drop,
 alter or reroute anything.
 """
@@ -150,10 +151,21 @@ class FirewallMixin:
     # measured with `action=passthrough` mangle rules instead. Passthrough only
     # increments a counter and hands the packet on - it never alters traffic.
 
-    async def get_mangle_rules(self) -> List[Dict[str, Any]]:
-        """Fetch all firewall mangle rules from RouterOS."""
+    async def get_mangle_rules(
+        self, fields: Optional[List[str]] = None
+    ) -> List[Dict[str, Any]]:
+        """Fetch firewall mangle rules from RouterOS.
+
+        ``fields`` maps onto ``.proplist``. On the per-second telemetry path it
+        is not an optimisation that can be skipped: an unqualified print makes
+        RouterOS render every attribute of every rule, and with one accounting
+        rule per device that read is the largest single cost the monitoring page
+        imposes on the router itself. Callers that reconcile rules — and so need
+        the attributes they intend to write — leave it unset.
+        """
+        params = {".proplist": ",".join(fields)} if fields else None
         async with self._get_client() as client:
-            resp = await client.get("/ip/firewall/mangle")
+            resp = await client.get("/ip/firewall/mangle", params=params)
             if resp.status_code != 200:
                 return []
             raw = resp.json()
