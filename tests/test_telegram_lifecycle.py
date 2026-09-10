@@ -16,8 +16,8 @@ import pytest
 from backend.app.core.config import Settings
 from backend.app.services.telegram_bot import TelegramBotService
 
-# A syntactically valid token; nothing here reaches the network.
-TOKEN = "1234567:AAExampleTokenNotRealAtAll000000000"
+# Synthetic mock token; nothing here reaches the network.
+TOKEN = "test_mock_token_not_real"
 
 
 class FakeBot:

@@ -16,7 +16,7 @@ from backend.app.db.session import get_db
 from backend.app.main import app
 
 TOKEN_KEY = "telegram_bot_token"
-REAL_TOKEN = "1234567:AAH-real-token-not-a-placeholder"
+REAL_TOKEN = "test_mock_token_for_settings_mask"
 
 
 @pytest.fixture
