@@ -60,8 +60,12 @@ export function useWebSocketTelemetry(routerId = null) {
         }
       };
 
-      ws.onclose = () => {
+      ws.onclose = (event) => {
         setIsConnected(false);
+        // Do not hammer server on auth policy violation (code 1008)
+        if (event && event.code === 1008) {
+          return;
+        }
         // Automatic reconnection attempt after 2.5s, unless the page went away.
         if (!isCancelled && document.visibilityState !== 'hidden') {
           reconnectTimeout = setTimeout(connect, 2500);

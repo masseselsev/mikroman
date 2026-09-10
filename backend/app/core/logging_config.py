@@ -39,6 +39,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import time
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -102,7 +103,9 @@ def _build_file_handler(log_dir: Path) -> RotatingFileHandler:
         # create files, and a read-only volume must not produce an empty log.
         delay=True,
     )
-    handler.setFormatter(logging.Formatter(FILE_FORMAT))
+    formatter = logging.Formatter(FILE_FORMAT)
+    formatter.converter = time.gmtime
+    handler.setFormatter(formatter)
     return handler
 
 
@@ -149,7 +152,9 @@ def configure_logging() -> Optional[Path]:
 
     if not any(getattr(h, "_mikroman_console", False) for h in root.handlers):
         console = logging.StreamHandler()
-        console.setFormatter(logging.Formatter(FILE_FORMAT))
+        formatter = logging.Formatter(FILE_FORMAT)
+        formatter.converter = time.gmtime
+        console.setFormatter(formatter)
         console._mikroman_console = True  # type: ignore[attr-defined]
         root.addHandler(console)
     for handler in list(root.handlers):

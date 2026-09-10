@@ -54,15 +54,19 @@ describe('ContainersPage resources', () => {
     await waitFor(() => expect(api.getContainers).toHaveBeenCalledWith(1));
     // 17.6 % of the device and 496 MB of cgroup memory - the two figures that
     // existed on the router and were dropped on the way to the DTO.
-    expect(container.textContent).toContain('17.6%');
-    expect(container.textContent).toContain('496 MB');
-    expect(container.textContent).toContain('250 MB');   // unpacked image size
+    await waitFor(() => {
+      expect(container.textContent).toContain('17.6%');
+      expect(container.textContent).toContain('496 MB');
+      expect(container.textContent).toContain('250 MB'); // unpacked image size
+    });
   });
 
   it('puts the router totals next to them so the share is readable', async () => {
     const { container } = render(<ContainersPage activeRouter={router} />);
-    await waitFor(() => expect(api.getContainers).toHaveBeenCalled());
-    expect(container.textContent).toContain('ctr_host_cpu');
+    await waitFor(() => {
+      expect(container.textContent).toContain('ctr_host_cpu');
+      expect(container.textContent).toContain('19%');
+    });
     expect(container.textContent).toContain('19%');
     // 2147483648 - 885293056 = 1262190592 bytes used of the 2 GB board
     expect(container.textContent).toContain('1.18 GB');

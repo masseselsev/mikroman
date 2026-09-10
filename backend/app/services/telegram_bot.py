@@ -432,7 +432,10 @@ class TelegramBotService:
             # Telegram refuses long polling while a webhook is registered, so a
             # webhook left over from a previous configuration must be cleared.
             try:
-                await self.bot.delete_webhook(drop_pending_updates=False)
+                await asyncio.wait_for(
+                    self.bot.delete_webhook(drop_pending_updates=False),
+                    timeout=3.0,
+                )
             except Exception as e:
                 logger.debug(f"Could not clear a previous webhook before polling: {e}")
             self.webhook_secret = None
@@ -455,10 +458,13 @@ class TelegramBotService:
                 return
             self.webhook_secret = secrets.token_urlsafe(32)
             try:
-                await self.bot.set_webhook(
-                    url,
-                    secret_token=self.webhook_secret,
-                    drop_pending_updates=True,
+                await asyncio.wait_for(
+                    self.bot.set_webhook(
+                        url,
+                        secret_token=self.webhook_secret,
+                        drop_pending_updates=True,
+                    ),
+                    timeout=5.0,
                 )
                 logger.info(f"Telegram webhook registered at {url}")
             except Exception as e:
@@ -480,7 +486,10 @@ class TelegramBotService:
         """
         if self.bot and self.webhook_secret:
             try:
-                await self.bot.delete_webhook(drop_pending_updates=False)
+                await asyncio.wait_for(
+                    self.bot.delete_webhook(drop_pending_updates=False),
+                    timeout=3.0,
+                )
             except Exception as e:
                 logger.debug(f"Could not delete Telegram webhook on shutdown: {e}")
             self.webhook_secret = None

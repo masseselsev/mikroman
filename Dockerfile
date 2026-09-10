@@ -71,8 +71,7 @@ LABEL maintainer="masseselsev" \
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    DATABASE_URL="sqlite+aiosqlite:////data/app.db" \
-    PORT=1928
+    DATABASE_URL="sqlite+aiosqlite:////data/app.db"
 
 WORKDIR /app
 

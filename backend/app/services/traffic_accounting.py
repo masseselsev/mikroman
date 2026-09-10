@@ -85,15 +85,15 @@ DIRECTION_FIELDS = {"up": "src-address", "down": "dst-address"}
 # --- intraday buckets ------------------------------------------------------------
 #
 # Width of one :class:`UserTrafficBucket` window, and how long those rows are
-# kept. Only the history modal's 1D view reads them; everything coarser reads
+# kept. Only the history modal's 1D/24H view reads them; everything coarser reads
 # the daily rollups, so two weeks is comfortably enough and keeps the row count
-# to at most 48/user/day.
-BUCKET_MINUTES = 30
+# to at most 96/user/day.
+BUCKET_MINUTES = 15
 BUCKET_RETENTION_DAYS = 14
 
 
 def bucket_start_for(moment: datetime) -> datetime:
-    """Floor a router-local datetime to the start of its 30-minute window."""
+    """Floor a router-local datetime to the start of its 15-minute window."""
     return moment.replace(
         minute=(moment.minute // BUCKET_MINUTES) * BUCKET_MINUTES,
         second=0,
@@ -139,8 +139,8 @@ def parse_self_comment(comment: Optional[str]) -> Optional[Tuple[str, str]]:
     return direction, interface
 
 
-def parse_acct_comment(comment: Optional[str]) -> Optional[Tuple[int, str]]:
-    """Parse an accounting rule comment into ``(device_id, direction)``.
+def parse_acct_comment_with_interface(comment: Optional[str]) -> Optional[Tuple[int, str, Optional[str]]]:
+    """Parse an accounting rule comment into ``(device_id, direction, interface)``.
 
     Returns None for any comment that is not a MikroMan accounting tag, so
     unrelated user-defined mangle rules are never touched.
@@ -148,8 +148,8 @@ def parse_acct_comment(comment: Optional[str]) -> Optional[Tuple[int, str]]:
     if not comment or not comment.startswith(ACCT_PREFIX):
         return None
     parts = comment.split(":")
-    # mikroman : acct : dev_<id> : <direction>   (self-traffic tags have 5 parts)
-    if len(parts) != 4 or not parts[2].startswith("dev_"):
+    # mikroman : acct : dev_<id> : <direction> [ : <interface> ]   (self-traffic tags have 5 parts starting with "self")
+    if len(parts) not in (4, 5) or not parts[2].startswith("dev_"):
         return None
     try:
         device_id = int(parts[2][4:])
@@ -158,7 +158,20 @@ def parse_acct_comment(comment: Optional[str]) -> Optional[Tuple[int, str]]:
     direction = parts[3]
     if direction not in DIRECTION_FIELDS:
         return None
-    return device_id, direction
+    interface = parts[4] if len(parts) == 5 else None
+    return device_id, direction, interface
+
+
+def parse_acct_comment(comment: Optional[str]) -> Optional[Tuple[int, str]]:
+    """Parse an accounting rule comment into ``(device_id, direction)``.
+
+    Returns None for any comment that is not a MikroMan accounting tag.
+    Maintains 2-tuple return for callers.
+    """
+    res = parse_acct_comment_with_interface(comment)
+    if not res:
+        return None
+    return res[0], res[1]
 
 
 class LiveRateTracker:
@@ -192,9 +205,12 @@ class LiveRateTracker:
                 continue
             device_id, direction = parsed
             try:
-                current.setdefault(device_id, {})[direction] = int(rule.get("bytes", 0) or 0)
+                val = int(rule.get("bytes", 0) or 0)
             except (TypeError, ValueError):
                 continue
+            current.setdefault(device_id, {})[direction] = (
+                current.get(device_id, {}).get(direction, 0) + val
+            )
 
         rates: Dict[int, Dict[str, float]] = {}
         for device_id, values in current.items():
@@ -322,17 +338,99 @@ class TrafficAccountingService:
                 logger.debug(f"Could not parse {key} for self-traffic accounting")
         return []
 
+    async def _accounting_scope(self, session: AsyncSession) -> str:
+        """Return 'wan_only' or 'all_routed' for this router.
+
+        Under 'wan_only' (the recommended default), per-device mangle rules are
+        constrained to traffic entering or exiting monitored WAN interfaces.
+        Local traffic between subnets/VLANs is excluded from device accounting.
+        """
+        key = (
+            f"traffic_accounting_scope_{self.router_id}"
+            if self.router_id else "traffic_accounting_scope_default"
+        )
+        setting = await session.get(AppSetting, key)
+        if setting and setting.value:
+            val = setting.value.strip().lower()
+            if val in ("wan_only", "all_routed"):
+                return val
+        default_setting = await session.get(AppSetting, "traffic_accounting_scope")
+        if default_setting and default_setting.value:
+            val = default_setting.value.strip().lower()
+            if val in ("wan_only", "all_routed"):
+                return val
+        return "wan_only"
+
     async def sync_counter_rules(self, session: AsyncSession) -> Dict[str, int]:
         """Create, correct and prune the per-device accounting rules.
 
         Returns a small summary dict for logging/telemetry.
         """
         devices = await self._accountable_devices(session)
-        desired: Dict[Tuple[int, str], str] = {}
+        scope = await self._accounting_scope(session)
+        monitored = await self._monitored_interfaces(session)
+
+        # desired: (device_id, direction, Optional[interface]) -> spec
+        desired: Dict[Tuple[int, str, Optional[str]], Dict[str, Any]] = {}
+        use_wan_filter = (scope == "wan_only" and len(monitored) > 0)
+
         for device in devices:
             ip = (device.ip_address or "").strip()
-            for direction in DIRECTION_FIELDS:
-                desired[(device.id, direction)] = ip
+            if not ip:
+                continue
+            if not use_wan_filter:
+                desired[(device.id, "up", None)] = {
+                    "ip": ip,
+                    "direction": "up",
+                    "field": DIRECTION_FIELDS["up"],
+                    "in_interface": None,
+                    "out_interface": None,
+                    "comment": ACCT_COMMENT.format(device_id=device.id, direction="up"),
+                }
+                desired[(device.id, "down", None)] = {
+                    "ip": ip,
+                    "direction": "down",
+                    "field": DIRECTION_FIELDS["down"],
+                    "in_interface": None,
+                    "out_interface": None,
+                    "comment": ACCT_COMMENT.format(device_id=device.id, direction="down"),
+                }
+            elif len(monitored) == 1:
+                wan = monitored[0]
+                desired[(device.id, "up", None)] = {
+                    "ip": ip,
+                    "direction": "up",
+                    "field": DIRECTION_FIELDS["up"],
+                    "in_interface": None,
+                    "out_interface": wan,
+                    "comment": ACCT_COMMENT.format(device_id=device.id, direction="up"),
+                }
+                desired[(device.id, "down", None)] = {
+                    "ip": ip,
+                    "direction": "down",
+                    "field": DIRECTION_FIELDS["down"],
+                    "in_interface": wan,
+                    "out_interface": None,
+                    "comment": ACCT_COMMENT.format(device_id=device.id, direction="down"),
+                }
+            else:
+                for wan in monitored:
+                    desired[(device.id, "up", wan)] = {
+                        "ip": ip,
+                        "direction": "up",
+                        "field": DIRECTION_FIELDS["up"],
+                        "in_interface": None,
+                        "out_interface": wan,
+                        "comment": f"mikroman:acct:dev_{device.id}:up:{wan}",
+                    }
+                    desired[(device.id, "down", wan)] = {
+                        "ip": ip,
+                        "direction": "down",
+                        "field": DIRECTION_FIELDS["down"],
+                        "in_interface": wan,
+                        "out_interface": None,
+                        "comment": f"mikroman:acct:dev_{device.id}:down:{wan}",
+                    }
 
         try:
             rules = await self.router_client.get_mangle_rules()
@@ -340,10 +438,10 @@ class TrafficAccountingService:
             logger.warning(f"Could not read mangle rules for accounting sync: {e}")
             return {"created": 0, "updated": 0, "removed": 0}
 
-        existing: Dict[Tuple[int, str], Dict[str, Any]] = {}
+        existing: Dict[Tuple[int, str, Optional[str]], Dict[str, Any]] = {}
         existing_self: Dict[Tuple[str, str], Dict[str, Any]] = {}
         for rule in rules:
-            parsed = parse_acct_comment(rule.get("comment"))
+            parsed = parse_acct_comment_with_interface(rule.get("comment"))
             if parsed:
                 existing[parsed] = rule
                 continue
@@ -356,7 +454,7 @@ class TrafficAccountingService:
         # The router's own input/output traffic, one passthrough pair per WAN
         # interface. Created before the device rules are pruned so a freshly
         # monitored interface starts counting on the same tick it is added.
-        for interface in await self._monitored_interfaces(session):
+        for interface in monitored:
             for direction, (chain, field) in SELF_DIRECTION_RULES.items():
                 if (direction, interface) in existing_self:
                     continue
@@ -373,53 +471,68 @@ class TrafficAccountingService:
                         f"Failed to create self-traffic rule for {interface} ({direction}): {e}"
                     )
 
-        # Create or correct
-        for key, ip in desired.items():
-            device_id, direction = key
-            field = DIRECTION_FIELDS[direction]
+        # Create or correct per-device rules
+        for key, spec in desired.items():
             rule = existing.get(key)
+            ip = spec["ip"]
+            field = spec["field"]
+            expected_in = spec["in_interface"]
+            expected_out = spec["out_interface"]
+            comment = spec["comment"]
+
             if rule is None:
+                new_rule = {
+                    "chain": "forward",
+                    "action": "passthrough",
+                    field: ip,
+                    "comment": comment,
+                }
+                if expected_in:
+                    new_rule["in-interface"] = expected_in
+                if expected_out:
+                    new_rule["out-interface"] = expected_out
                 try:
-                    await self.router_client.create_mangle_rule({
-                        "chain": "forward",
-                        "action": "passthrough",
-                        field: ip,
-                        "comment": ACCT_COMMENT.format(device_id=device_id, direction=direction),
-                    })
+                    await self.router_client.create_mangle_rule(new_rule)
                     created += 1
                 except Exception as e:
-                    logger.warning(f"Failed to create accounting rule for device {device_id}: {e}")
-            elif (rule.get(field) or "").split("/")[0] != ip:
-                # The device's IP changed - repoint the rule. Its counter keeps
-                # running, and the baseline logic absorbs the discontinuity.
-                try:
-                    await self.router_client.update_mangle_rule(rule[".id"], {field: ip})
-                    updated += 1
-                except Exception as e:
-                    logger.warning(f"Failed to repoint accounting rule for device {device_id}: {e}")
+                    logger.warning(f"Failed to create accounting rule for device {key[0]}: {e}")
+            else:
+                current_ip = (rule.get(field) or "").split("/")[0]
+                current_in = rule.get("in-interface") or None
+                current_out = rule.get("out-interface") or None
 
-        # Prune rules for devices that are gone or no longer accountable.
-        #
-        # Read each counter one last time and flush the bytes accrued since the
-        # previous baseline BEFORE deleting the rule, otherwise every active ->
-        # inactive transition drops up to one interval of that device's traffic.
-        # That is normally negligible (a device about to go idle is already
-        # idle), but across a router outage that also spanned the device
-        # dropping off, it is minutes of real volume. main.py additionally runs
-        # collect() before this method so the common path never reaches here
-        # with unflushed bytes; this is the backstop.
+                updates = {}
+                if current_ip != ip:
+                    updates[field] = ip
+                if current_in != expected_in:
+                    updates["in-interface"] = expected_in or ""
+                if current_out != expected_out:
+                    updates["out-interface"] = expected_out or ""
+
+                if updates:
+                    try:
+                        await self.router_client.update_mangle_rule(rule[".id"], updates)
+                        updated += 1
+                    except Exception as e:
+                        logger.warning(f"Failed to repoint accounting rule for device {key[0]}: {e}")
+
+        # Prune rules for devices/interfaces that are gone or no longer accountable.
         to_prune = {key: rule for key, rule in existing.items() if key not in desired}
         if to_prune:
             final_deltas: Dict[int, Tuple[int, int]] = {}
             baselines = await self._load_baselines(session, self.router_id)
-            for (device_id, direction), rule in to_prune.items():
+            for (device_id, direction, iface), rule in to_prune.items():
                 try:
                     current = int(rule.get("bytes", 0) or 0)
                 except (TypeError, ValueError):
                     current = 0
-                bkey = f"{device_id}:{direction}"
-                delta = self.compute_delta(current, baselines.get(bkey))
+                bkey = f"{device_id}:{direction}:{iface}" if iface else f"{device_id}:{direction}"
+                delta = self.compute_delta(
+                    current,
+                    baselines.get(bkey) or baselines.get(f"{device_id}:{direction}")
+                )
                 baselines.pop(bkey, None)
+                baselines.pop(f"{device_id}:{direction}", None)
                 if delta <= 0:
                     continue
                 down, up = final_deltas.get(device_id, (0, 0))
@@ -435,9 +548,8 @@ class TrafficAccountingService:
                 )
             await self._save_baselines(session, baselines, self.router_id)
 
-            # bytes for these device ids, so their redirects have done their job.
             successors = await self._load_successors(session)
-            pruned_ids = {str(device_id) for device_id, _ in to_prune}
+            pruned_ids = {str(device_id) for device_id, _, _ in to_prune}
             if successors.keys() & pruned_ids:
                 await self._save_successors(
                     session, {k: v for k, v in successors.items() if k not in pruned_ids}
@@ -453,7 +565,8 @@ class TrafficAccountingService:
 
         if created or updated or removed:
             logger.info(
-                f"Accounting rules synced: {created} created, {updated} repointed, {removed} removed"
+                f"Accounting rules synced: {created} created, {updated} repointed, {removed} removed "
+                f"(scope={scope})"
             )
         # Mark whenever accounting rules are in place - not only when they were
         # created on this tick - so the marker is also recorded for an install
@@ -643,7 +756,7 @@ class TrafficAccountingService:
             logger.warning(f"Could not read mangle counters: {e}")
             return {"devices": 0, "bytes_in": 0, "bytes_out": 0}
 
-        readings: Dict[int, Dict[str, int]] = {}
+        readings: Dict[Tuple[int, str, Optional[str]], int] = {}
         # (direction, interface) -> counter, for the router's own input/output.
         self_readings: Dict[Tuple[str, str], int] = {}
         for rule in rules:
@@ -651,10 +764,9 @@ class TrafficAccountingService:
                 value = int(rule.get("bytes", 0) or 0)
             except (TypeError, ValueError):
                 continue
-            parsed = parse_acct_comment(rule.get("comment"))
+            parsed = parse_acct_comment_with_interface(rule.get("comment"))
             if parsed:
-                device_id, direction = parsed
-                readings.setdefault(device_id, {})[direction] = value
+                readings[parsed] = value
                 continue
             parsed_self = parse_self_comment(rule.get("comment"))
             if parsed_self:
@@ -698,18 +810,20 @@ class TrafficAccountingService:
 
         # device_id -> (downloaded, uploaded) accumulated this tick
         per_device: Dict[int, Tuple[int, int]] = {}
-        for device_id, values in readings.items():
-            deltas = {}
-            for direction, current in values.items():
-                key = f"{device_id}:{direction}"
-                deltas[direction] = self.compute_delta(
-                    current, baselines.get(key), reset=rebooted
-                )
-                baselines[key] = current
-            down = deltas.get("down", 0)
-            up = deltas.get("up", 0)
-            if down or up:
-                per_device[device_id] = (down, up)
+        for (device_id, direction, iface), current in readings.items():
+            key = f"{device_id}:{direction}:{iface}" if iface else f"{device_id}:{direction}"
+            base_val = baselines.get(key)
+            if base_val is None and iface:
+                base_val = baselines.get(f"{device_id}:{direction}")
+            delta = self.compute_delta(current, base_val, reset=rebooted)
+            baselines[key] = current
+            if delta <= 0:
+                continue
+            cur_down, cur_up = per_device.get(device_id, (0, 0))
+            if direction == "down":
+                per_device[device_id] = (cur_down + delta, cur_up)
+            else:
+                per_device[device_id] = (cur_down, cur_up + delta)
 
         # The router's own traffic, summed across every monitored WAN interface.
         self_down = self_up = 0
@@ -790,7 +904,7 @@ class TrafficAccountingService:
         # user_id -> (down, up) for the intraday bucket. The daily split above
         # handles day attribution for the rollups; the buckets only need the
         # shape of the current day, so this tick's whole per-user delta is
-        # credited to the 30-minute window it ended in. A tick that straddles a
+        # credited to the 15-minute window it ended in. A tick that straddles a
         # bucket edge misattributes a few seconds - invisible at this width.
         user_bucket_totals: Dict[int, Tuple[int, int]] = {}
         device_bucket_totals: Dict[int, Tuple[int, int]] = {}
@@ -890,7 +1004,7 @@ class TrafficAccountingService:
         bytes_in: int,
         bytes_out: int,
     ) -> None:
-        """Add this tick's delta onto its 30-minute bucket, or create it.
+        """Add this tick's delta onto its 15-minute bucket, or create it.
 
         Mirrors :meth:`_add_rollup` but keyed by ``(owner, bucket_start)`` and
         parameterised over the two bucket tables - per-user and per-device -

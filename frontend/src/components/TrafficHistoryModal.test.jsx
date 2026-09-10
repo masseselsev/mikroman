@@ -180,6 +180,39 @@ describe('TrafficHistoryModal component', () => {
     expect(screen.getAllByText('09:00').length).toBeGreaterThanOrEqual(1);
   });
 
+  it('renders the 24H view as a 15-minute timeline when resolution is quarter_hour', async () => {
+    api.getUserTrafficHistory.mockResolvedValueOnce({ data: mockUserData });
+    api.getUserTrafficHistory.mockResolvedValueOnce({
+      data: {
+        ...mockUserData,
+        range_preset: '24h',
+        resolution: 'quarter_hour',
+        start_date: '2026-09-02',
+        end_date: '2026-09-02',
+        peak_label: '09:15',
+        timeline: [
+          { record_date: '2026-09-02', label: '09:00', bytes_in: 0, bytes_out: 0, total_bytes: 0 },
+          { record_date: '2026-09-02', label: '09:15', bytes_in: 200000, bytes_out: 50000, total_bytes: 250000 },
+          { record_date: '2026-09-02', label: '09:30', bytes_in: 100000, bytes_out: 40000, total_bytes: 140000 },
+        ],
+      },
+    });
+
+    renderWithProviders(
+      <TrafficHistoryModal isOpen={true} target={{ type: 'user', id: 1, name: 'Alice' }} onClose={vi.fn()} />
+    );
+
+    await waitFor(() => expect(api.getUserTrafficHistory).toHaveBeenCalledWith(1, { preset: '7d' }));
+    fireEvent.click(screen.getByRole('button', { name: '24H' }));
+
+    await waitFor(() => expect(api.getUserTrafficHistory).toHaveBeenCalledWith(1, { preset: '24h' }));
+
+    await waitFor(() => expect(screen.getByText('15-minute breakdown')).toBeInTheDocument());
+    expect(screen.getByRole('columnheader', { name: 'Time' })).toBeInTheDocument();
+    expect(screen.getByText('3 intervals')).toBeInTheDocument();
+    expect(screen.getAllByText('09:15').length).toBeGreaterThanOrEqual(1);
+  });
+
   it('renders the 1Y view as a weekly breakdown', async () => {
     api.getUserTrafficHistory.mockResolvedValueOnce({ data: mockUserData });
     api.getUserTrafficHistory.mockResolvedValueOnce({

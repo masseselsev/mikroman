@@ -21,6 +21,8 @@ import { SetupWizard } from './components/SetupWizard';
 import { AppFooter } from './components/AppFooter';
 import { QuotaStrip } from './components/QuotaStrip';
 import { ContainersPage } from './components/ContainersPage';
+import { LoginPage } from './components/LoginPage';
+import { useAuth } from './context/AuthContext';
 import { Users, Laptop, Activity, BarChart2, Plus, AlertCircle, EyeOff, ChevronDown, ChevronRight, AlertTriangle, Container, ArrowUpDown, Radio } from 'lucide-react';
 // Firmware status and log counters change on the order of days, not seconds,
 // and each firmware check costs the router two REST calls. Riding the 6 s data
@@ -62,6 +64,7 @@ function markLogsSeen(routerId) {
 
 export function App() {
   const { t, lang } = useI18n();
+  const { authEnabled, isAuthenticated, isLoading: isAuthLoading } = useAuth();
 
   const [routers, setRouters] = useState([]);
   const [activeRouter, setActiveRouter] = useState(null);
@@ -105,6 +108,7 @@ export function App() {
   // answer changes about once a month. Keyed by router id so a switch
   // refreshes immediately instead of waiting out the previous router's window.
   const slowPollAtRef = useRef({});
+  const lastIfacesAtRef = useRef({});
 
   const handleOpenConnections = (deviceId = null) => {
     setConnectionsDeviceId(deviceId);
@@ -162,12 +166,25 @@ export function App() {
     const effectiveId = routerIdOverride ?? activeRouterIdRef.current;
     if (effectiveId == null) return;
     try {
-      const [usersRes, devsRes, ifacesRes, alertsRes] = await Promise.all([
+      const lastIfacesAt = lastIfacesAtRef.current[effectiveId] || 0;
+      // Interfaces rarely change: fetch on initial load (empty), when accordion is open,
+      // or at most once every 30s to keep router REST load low.
+      const shouldFetchIfaces = interfaces.length === 0 || interfacesOpen || (Date.now() - lastIfacesAt > 30000);
+
+      const reqs = [
         api.getUsers(effectiveId).catch(() => ({ data: [] })),
         api.getDevices(true, showHiddenDevices, 'client', effectiveId).catch(() => ({ data: [] })),
-        api.getInterfaces(effectiveId).catch(() => ({ data: [] })),
         api.getAlerts(effectiveId).catch(() => ({ data: [] }))
-      ]);
+      ];
+      if (shouldFetchIfaces) {
+        reqs.push(api.getInterfaces(effectiveId).catch(() => ({ data: null })));
+      }
+
+      const results = await Promise.all(reqs);
+      const usersRes = results[0];
+      const devsRes = results[1];
+      const alertsRes = results[2];
+      const ifacesRes = shouldFetchIfaces ? results[3] : null;
 
       // Discard if a switch superseded this load while its data was in flight -
       // otherwise the previous router's users briefly overwrite the new one's.
@@ -175,8 +192,11 @@ export function App() {
 
       setUsers(usersRes.data || []);
       setUnassignedDevices(devsRes.data || []);
-      setInterfaces(ifacesRes.data || []);
       setAlerts(alertsRes.data || []);
+      if (ifacesRes && ifacesRes.data) {
+        setInterfaces(ifacesRes.data);
+        lastIfacesAtRef.current[effectiveId] = Date.now();
+      }
 
       const lastSlow = slowPollAtRef.current[effectiveId] || 0;
       if (Date.now() - lastSlow > SLOW_POLL_MS) {
@@ -215,6 +235,7 @@ export function App() {
   };
 
   useEffect(() => {
+    if (authEnabled && !isAuthenticated) return;
     let cancelled = false;
     (async () => {
       await loadRouters();
@@ -229,7 +250,7 @@ export function App() {
       clearInterval(dataPoll);
       clearInterval(routerPoll);
     };
-  }, [activeRouter?.id]);
+  }, [activeRouter?.id, authEnabled, isAuthenticated]);
 
   const [interfacesOpen, setInterfacesOpen] = useState(false);
   const [draggedUserId, setDraggedUserId] = useState(null);
@@ -377,6 +398,21 @@ export function App() {
       setSettingsModalOpen(false);
     }
   };
+
+  if (isAuthLoading) {
+    return (
+      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--bg-primary)', color: 'var(--text-secondary)' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12 }}>
+          <div style={{ width: 32, height: 32, borderRadius: 'var(--radius-full)', border: '2px solid var(--color-primary)', borderTopColor: 'transparent', animation: 'spin 1s linear infinite' }} />
+          <span style={{ fontSize: 'var(--fs-xs)', textTransform: 'uppercase', letterSpacing: '0.08em', fontWeight: 600, color: 'var(--text-muted)' }}>MikroMan</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (authEnabled && !isAuthenticated) {
+    return <LoginPage />;
+  }
 
   // If no routers exist and not loading, show First-Run Setup Wizard!
   if (!isLoading && routers.length === 0) {
@@ -649,7 +685,22 @@ export function App() {
                   problem is still visible without expanding. */}
               <button
                 type="button"
-                onClick={() => setInterfacesOpen(o => !o)}
+                onClick={() => {
+                  setInterfacesOpen(o => {
+                    const next = !o;
+                    if (next && activeRouterIdRef.current) {
+                      api.getInterfaces(activeRouterIdRef.current)
+                        .then(res => {
+                          if (res?.data) {
+                            setInterfaces(res.data);
+                            lastIfacesAtRef.current[activeRouterIdRef.current] = Date.now();
+                          }
+                        })
+                        .catch(() => {});
+                    }
+                    return next;
+                  });
+                }}
                 style={{
                   width: '100%',
                   display: 'flex',

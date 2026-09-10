@@ -1,4 +1,5 @@
 import logging
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy import select
@@ -84,6 +85,22 @@ async def resolve_unassigned_limit(session: AsyncSession, router_id: Optional[in
             select(AppSetting).where(AppSetting.key == "unassigned_device_speed_limit")
         )).scalar_one_or_none()
     return row.value if row and row.value else DEFAULT_UNASSIGNED_LIMIT
+
+
+_VOLUME_CACHE_TTL_SECONDS = 10.0
+_user_volume_cache: Dict[str, Tuple[float, Dict[int, Tuple[int, int]]]] = {}
+_device_volume_cache: Dict[str, Tuple[float, Dict[int, Tuple[int, int]]]] = {}
+
+
+def invalidate_volume_cache(router_id: Optional[int] = None) -> None:
+    """Clear today's cached rollups when a new rollup computation finishes."""
+    if router_id is None:
+        _user_volume_cache.clear()
+        _device_volume_cache.clear()
+    else:
+        key = str(router_id)
+        _user_volume_cache.pop(key, None)
+        _device_volume_cache.pop(key, None)
 
 
 class TrafficController:
@@ -653,7 +670,13 @@ class TrafficController:
     async def _todays_user_volume(
         session: AsyncSession, router_id: Optional[int] = None
     ) -> Dict[int, Tuple[int, int]]:
-        """Today's accumulated (download, upload) bytes per user from the rollups."""
+        """Today's accumulated (download, upload) bytes per user from the rollups. Cached for 10s."""
+        now = time.monotonic()
+        key = str(router_id)
+        cached = _user_volume_cache.get(key)
+        if cached and (now - cached[0]) < _VOLUME_CACHE_TTL_SECONDS:
+            return cached[1]
+
         from backend.app.db.models import TrafficRollup
         from backend.app.services.router_time import router_local_date
 
@@ -661,13 +684,21 @@ class TrafficController:
             TrafficRollup.user_id, TrafficRollup.bytes_in, TrafficRollup.bytes_out
         ).where(TrafficRollup.record_date == await router_local_date(session, router_id=router_id))
         rows = (await session.execute(stmt)).all()
-        return {row[0]: (int(row[1] or 0), int(row[2] or 0)) for row in rows}
+        res = {row[0]: (int(row[1] or 0), int(row[2] or 0)) for row in rows}
+        _user_volume_cache[key] = (now, res)
+        return res
 
     @staticmethod
     async def _todays_device_volume(
         session: AsyncSession, router_id: Optional[int] = None
     ) -> Dict[int, Tuple[int, int]]:
-        """Today's accumulated (download, upload) bytes per device from the rollups."""
+        """Today's accumulated (download, upload) bytes per device from the rollups. Cached for 10s."""
+        now = time.monotonic()
+        key = str(router_id)
+        cached = _device_volume_cache.get(key)
+        if cached and (now - cached[0]) < _VOLUME_CACHE_TTL_SECONDS:
+            return cached[1]
+
         from backend.app.db.models import DeviceTrafficRollup
         from backend.app.services.router_time import router_local_date
 
@@ -677,7 +708,9 @@ class TrafficController:
             DeviceTrafficRollup.bytes_out,
         ).where(DeviceTrafficRollup.record_date == await router_local_date(session, router_id=router_id))
         rows = (await session.execute(stmt)).all()
-        return {row[0]: (int(row[1] or 0), int(row[2] or 0)) for row in rows}
+        res = {row[0]: (int(row[1] or 0), int(row[2] or 0)) for row in rows}
+        _device_volume_cache[key] = (now, res)
+        return res
 
     async def reconcile_managed_queues(self, session: AsyncSession, router_id: Optional[int] = None) -> int:
         """Delete managed Simple Queues whose owning user or device is gone.

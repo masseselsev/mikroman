@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     )
 
     APP_NAME: str = "MikroMan"
-    APP_VERSION: str = "0.2.11"
+    APP_VERSION: str = "0.2.12"
     DEBUG: bool = False
 
     # Database
@@ -60,6 +60,45 @@ class Settings(BaseSettings):
     ALERT_CPU_THRESHOLD_PERCENT: int = 90
     ALERT_TEMP_THRESHOLD_CELSIUS: int = 70
     ALERT_NEW_DEVICE_ENABLED: bool = True
+
+    # Application Authentication & Session Security
+    AUTH_ENABLED: bool = True
+    ADMIN_PASSWORD: Optional[str] = None
+    API_KEY: Optional[str] = None
+    SESSION_EXPIRE_DAYS: int = 7
+
+    @field_validator("AUTH_ENABLED", mode="before")
+    @classmethod
+    def parse_auth_enabled(cls, v):
+        import os
+        env_val = os.environ.get("MIKROMAN_AUTH_ENABLED")
+        if env_val is not None:
+            return env_val.strip().lower() in ("true", "1", "yes")
+        if isinstance(v, str):
+            return v.strip().lower() in ("true", "1", "yes")
+        return bool(v)
+
+    @field_validator("ADMIN_PASSWORD", mode="before")
+    @classmethod
+    def parse_admin_password(cls, v: Optional[str]) -> Optional[str]:
+        import os
+        env_val = os.environ.get("MIKROMAN_ADMIN_PASSWORD")
+        if env_val and env_val.strip():
+            return env_val.strip()
+        if isinstance(v, str) and not v.strip():
+            return None
+        return v
+
+    @field_validator("API_KEY", mode="before")
+    @classmethod
+    def parse_api_key(cls, v: Optional[str]) -> Optional[str]:
+        import os
+        env_val = os.environ.get("MIKROMAN_API_KEY")
+        if env_val and env_val.strip():
+            return env_val.strip()
+        if isinstance(v, str) and not v.strip():
+            return None
+        return v
 
     @field_validator("TELEGRAM_BOT_TOKEN", "TELEGRAM_WEBHOOK_URL", mode="before")
     @classmethod

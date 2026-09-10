@@ -348,15 +348,15 @@ async def test_collect_accumulates_deltas_not_absolute_counters(session):
     assert user_rollup[0].bytes_in == 500_000
     assert user_rollup[0].bytes_out == 60_000
 
-    # The same delta is also credited to the user's 30-minute intraday bucket,
-    # aligned to the half hour, so the 1D history view has a shape to draw.
+    # The same delta is also credited to the user's 15-minute intraday bucket,
+    # aligned to the quarter hour, so the 1D/24H history view has a shape to draw.
     buckets = (await session.execute(select(UserTrafficBucket))).scalars().all()
     assert len(buckets) == 1
     assert buckets[0].user_id == user.id
     assert buckets[0].bytes_in == 500_000
     assert buckets[0].bytes_out == 60_000
     assert buckets[0].bucket_start == bucket_start_for(buckets[0].bucket_start)
-    assert buckets[0].bucket_start.minute in (0, 30)
+    assert buckets[0].bucket_start.minute in (0, 15, 30, 45)
 
 
 @pytest.mark.asyncio

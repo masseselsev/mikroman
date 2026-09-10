@@ -1,9 +1,10 @@
 import React from 'react';
 import { useTheme } from '../context/ThemeContext';
 import { useI18n } from '../context/I18nContext';
+import { useAuth } from '../context/AuthContext';
 import { RouterSelector } from './RouterSelector';
 import { RouterCommentBar } from './RouterCommentBar';
-import { Sun, Moon, Settings as SettingsIcon, Activity, Clock, Terminal, Archive, Package } from 'lucide-react';
+import { Sun, Moon, Settings as SettingsIcon, Activity, Clock, Terminal, Archive, Package, LogOut } from 'lucide-react';
 
 /**
  * "+5" / "-3:30" from a GMT offset in minutes. The city name that used to sit
@@ -132,6 +133,7 @@ export function Navbar({
 }) {
   const { theme, toggleTheme } = useTheme();
   const { t, lang, setLang } = useI18n();
+  const { authEnabled, isAuthenticated, logout } = useAuth();
 
   return (
     <header style={{
@@ -302,6 +304,20 @@ export function Navbar({
             <SettingsIcon size={16} />
             <span className="hide-mobile">{t('tab_settings')}</span>
           </button>
+
+          {/* Logout Button */}
+          {authEnabled && isAuthenticated && (
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm"
+              onClick={logout}
+              title={t('auth_logout_btn')}
+              id="navbar-logout-btn"
+            >
+              <LogOut size={16} />
+              <span className="hide-mobile">{t('auth_logout_btn')}</span>
+            </button>
+          )}
         </div>
       </div>
     </header>

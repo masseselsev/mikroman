@@ -107,6 +107,24 @@ export function SettingsModal({
     }
   };
 
+  const [billingCycle, setBillingCycle] = useState({ anchor_day: 1, anchor_hour: 0, anchor_minute: 0 });
+
+  const loadBillingCycle = async (routerId = selectedRouterId) => {
+    if (typeof api.getBillingCycleConfig !== 'function') return;
+    try {
+      const res = await api.getBillingCycleConfig(routerId);
+      if (res?.data) {
+        setBillingCycle({
+          anchor_day: res.data.anchor_day || 1,
+          anchor_hour: res.data.anchor_hour ?? 0,
+          anchor_minute: res.data.anchor_minute ?? 0,
+        });
+      }
+    } catch (e) {
+      console.debug('Failed to load billing cycle config', e);
+    }
+  };
+
   // External IP lookup services. The catalogue comes from the server so the
   // built-ins can change without a frontend release.
   const [ipLookup, setIpLookup] = useState({ services: [], enabled_ids: [], default_id: null });
@@ -173,6 +191,7 @@ export function SettingsModal({
       }
       loadSettingsAndRouters(rid);
       loadQuota(rid);
+      loadBillingCycle(rid);
       loadIpLookup();
       setIpLookupError('');
       setTestResult(null);
@@ -187,13 +206,27 @@ export function SettingsModal({
     setIsSaving(true);
     try {
       await api.saveSettings(settings);
-      const quotaRes = await api.saveQuota({
-        limit_bytes: Math.max(0, Math.round(quota.limit_gb * (1024 ** 3))),
-        thresholds: quota.thresholds,
-        notify_telegram: quota.notify_telegram,
-        portal_url: quota.portal_url.trim() || null,
-        portal_label: quota.portal_label.trim() || null,
-      }, selectedRouterId || activeRouter?.id || null);
+      const effRid = selectedRouterId || activeRouter?.id || null;
+      const savePromises = [
+        api.saveQuota({
+          limit_bytes: Math.max(0, Math.round(quota.limit_gb * (1024 ** 3))),
+          thresholds: quota.thresholds,
+          notify_telegram: quota.notify_telegram,
+          portal_url: quota.portal_url.trim() || null,
+          portal_label: quota.portal_label.trim() || null,
+        }, effRid)
+      ];
+      if (typeof api.saveBillingCycleConfig === 'function') {
+        savePromises.push(
+          api.saveBillingCycleConfig(
+            billingCycle.anchor_day,
+            effRid,
+            billingCycle.anchor_hour,
+            billingCycle.anchor_minute
+          )
+        );
+      }
+      const [quotaRes] = await Promise.all(savePromises);
       // Only the user's own entries travel back; the built-in catalogue is the
       // server's and is reconstructed there.
       await api.saveIpLookup({
@@ -545,6 +578,50 @@ export function SettingsModal({
                   </div>
                 </div>
 
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 10 }}>
+                  <div className="form-group">
+                    <label className="form-label">{t('billing_anchor_day')} (1 - 31)</label>
+                    <input
+                      type="number"
+                      min="1"
+                      max="31"
+                      className="form-input font-mono"
+                      value={billingCycle.anchor_day || 1}
+                      onChange={e => {
+                        const val = parseInt(e.target.value, 10);
+                        setBillingCycle(prev => ({
+                          ...prev,
+                          anchor_day: Number.isFinite(val) ? Math.min(31, Math.max(1, val)) : 1,
+                        }));
+                      }}
+                    />
+                    <div className="form-hint">
+                      {t('billing_anchor_desc')}
+                    </div>
+                  </div>
+                  <div className="form-group">
+                    <label className="form-label" htmlFor="settings-billing-time">{t('billing_anchor_time')}</label>
+                    <input
+                      id="settings-billing-time"
+                      type="time"
+                      aria-label={t('billing_anchor_time')}
+                      className="form-input font-mono"
+                      value={`${String(billingCycle.anchor_hour).padStart(2, '0')}:${String(billingCycle.anchor_minute).padStart(2, '0')}`}
+                      onChange={e => {
+                        const [h, m] = (e.target.value || '0:0').split(':').map(Number);
+                        setBillingCycle(prev => ({
+                          ...prev,
+                          anchor_hour: Number.isFinite(h) ? Math.min(23, Math.max(0, h)) : 0,
+                          anchor_minute: Number.isFinite(m) ? Math.min(59, Math.max(0, m)) : 0,
+                        }));
+                      }}
+                    />
+                    <div className="form-hint">
+                      {t('billing_anchor_time_hint')}
+                    </div>
+                  </div>
+                </div>
+
                 <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--fs-sm)', cursor: 'pointer', color: 'var(--text-secondary)' }}>
                   <input
                     type="checkbox"
@@ -582,6 +659,39 @@ export function SettingsModal({
                 <p style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', marginTop: -2 }}>
                   {t('quota_portal_hint')}
                 </p>
+
+                <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid var(--border-color)' }}>
+                  <label className="form-label" style={{ fontWeight: 600, marginBottom: 6 }}>
+                    {t('accounting_scope_title')}
+                  </label>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--fs-sm)', cursor: 'pointer' }}>
+                      <input
+                        type="radio"
+                        name="traffic_accounting_scope"
+                        value="wan_only"
+                        checked={(settings.traffic_accounting_scope || 'wan_only') === 'wan_only'}
+                        onChange={e => setSettings(s => ({ ...s, traffic_accounting_scope: e.target.value }))}
+                        style={{ accentColor: 'var(--color-primary)' }}
+                      />
+                      <span>{t('accounting_scope_wan_only')}</span>
+                    </label>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--fs-sm)', cursor: 'pointer' }}>
+                      <input
+                        type="radio"
+                        name="traffic_accounting_scope"
+                        value="all_routed"
+                        checked={settings.traffic_accounting_scope === 'all_routed'}
+                        onChange={e => setSettings(s => ({ ...s, traffic_accounting_scope: e.target.value }))}
+                        style={{ accentColor: 'var(--color-primary)' }}
+                      />
+                      <span>{t('accounting_scope_all_routed')}</span>
+                    </label>
+                  </div>
+                  <p style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', marginTop: 6, marginBottom: 0 }}>
+                    {t('accounting_scope_hint')}
+                  </p>
+                </div>
               </div>
 
               <div style={{ height: 1, background: 'var(--border-color)', margin: '6px 0' }}></div>

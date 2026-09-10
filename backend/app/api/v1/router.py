@@ -1,6 +1,7 @@
 from fastapi import APIRouter
 
 from backend.app.api.v1.endpoints.analytics import router as analytics_router
+from backend.app.api.v1.endpoints.auth import router as auth_router
 from backend.app.api.v1.endpoints.backups import router as backups_router
 from backend.app.api.v1.endpoints.connections import router as connections_router
 from backend.app.api.v1.endpoints.containers import router as containers_router
@@ -16,6 +17,7 @@ from backend.app.api.v1.endpoints.traffic import router as traffic_router
 from backend.app.api.v1.endpoints.users import router as users_router
 
 api_v1_router = APIRouter(prefix="/api/v1")
+api_v1_router.include_router(auth_router)
 api_v1_router.include_router(routers_router)
 api_v1_router.include_router(firmware_router, prefix="/routers/{router_id}/firmware", tags=["Firmware & Upgrades"])
 api_v1_router.include_router(backups_router)

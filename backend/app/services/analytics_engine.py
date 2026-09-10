@@ -861,7 +861,7 @@ class AnalyticsEngine:
 
         The ``timeline`` shape follows the range, flagged by ``resolution``:
 
-        * ``half_hour`` - ``intraday_now`` set: 30-minute :class:`UserTrafficBucket`
+        * ``quarter_hour`` - ``intraday_now`` set: 15-minute :class:`UserTrafficBucket`
           points from ``intraday_start`` (or local midnight of ``start_date``)
           up to the current window. This is the modal's 24H view.
         * ``week`` - ``range_preset`` is ``1y`` or ``all_time``: one point per
@@ -883,19 +883,19 @@ class AnalyticsEngine:
         peak_bytes = 0
         intraday = intraday_now is not None
         weekly = range_preset in ("1y", "all_time")
-        resolution = "half_hour" if intraday else ("week" if weekly else "day")
+        resolution = "quarter_hour" if intraday else ("week" if weekly else "day")
 
         if intraday:
-            # 30-minute buckets for the window ending "now" (floored to :00/:30),
+            # 15-minute buckets for the window ending "now" (floored to :00/:15/:30/:45),
             # starting at intraday_start or local midnight of start_date.
-            def _floor30(m: datetime) -> datetime:
+            def _floor_bucket(m: datetime, minutes: int = 15) -> datetime:
                 return m.replace(
-                    minute=(m.minute // 30) * 30, second=0, microsecond=0
+                    minute=(m.minute // minutes) * minutes, second=0, microsecond=0
                 )
 
-            win_end = _floor30(intraday_now)
+            win_end = _floor_bucket(intraday_now)
             win_start = (
-                _floor30(intraday_start)
+                _floor_bucket(intraday_start)
                 if intraday_start is not None
                 else datetime.combine(start_date, datetime.min.time())
             )
@@ -932,7 +932,7 @@ class AnalyticsEngine:
                     bytes_out=b_out,
                     total_bytes=slot_total,
                 ))
-                cur += timedelta(minutes=30)
+                cur += timedelta(minutes=15)
         elif weekly:
             # One bar per ISO week. all_time starts at the week of the user's
             # earliest recorded day; 1y at the week 52 weeks back.
@@ -1104,7 +1104,7 @@ class AnalyticsEngine:
         """Detailed historical traffic timeline for a specific network device.
 
         The ``timeline`` takes the same three shapes the per-user history does,
-        flagged by ``resolution`` - ``half_hour`` for the 24H view (from
+        flagged by ``resolution`` - ``quarter_hour`` for the 24H view (from
         :class:`DeviceTrafficBucket`), ``week`` for 1Y and All Time, ``day``
         otherwise - so both modals read identically.
         """
@@ -1137,19 +1137,19 @@ class AnalyticsEngine:
 
         intraday = intraday_now is not None
         weekly = range_preset in ("1y", "all_time")
-        resolution = "half_hour" if intraday else ("week" if weekly else "day")
+        resolution = "quarter_hour" if intraday else ("week" if weekly else "day")
         timeline: List[DailyTrafficPoint] = []
         peak_date = None
         peak_label: Optional[str] = None
 
         if intraday:
-            # 30-minute buckets for the window ending "now" (floored to :00/:30).
-            def _floor30(m: datetime) -> datetime:
-                return m.replace(minute=(m.minute // 30) * 30, second=0, microsecond=0)
+            # 15-minute buckets for the window ending "now" (floored to :00/:15/:30/:45).
+            def _floor_bucket(m: datetime, minutes: int = 15) -> datetime:
+                return m.replace(minute=(m.minute // minutes) * minutes, second=0, microsecond=0)
 
-            win_end = _floor30(intraday_now)
+            win_end = _floor_bucket(intraday_now)
             win_start = (
-                _floor30(intraday_start)
+                _floor_bucket(intraday_start)
                 if intraday_start is not None
                 else datetime.combine(start_date, datetime.min.time())
             )
@@ -1188,7 +1188,7 @@ class AnalyticsEngine:
                     bytes_out=b_out,
                     total_bytes=slot_total,
                 ))
-                cur += timedelta(minutes=30)
+                cur += timedelta(minutes=15)
         elif weekly:
             if range_preset == "all_time":
                 first_seen = (await session.execute(
