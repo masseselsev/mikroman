@@ -5,9 +5,9 @@ SQLite in WAL mode allows exactly **one** writer. MikroMan's own
 that turns every other worker into an ``OperationalError: database is locked``.
 
 Measured on the router-hosted container, exactly that happened: the retention
-prune ran on every 10-second telemetry tick, scanning a 116 MB database of
-~700k metric rows, and the log scraper inserted ~300 rows and deleted ~300 rows
-every minute. The statements that failed were the ones innocent bystanders ran -
+prune ran on every 10-second telemetry tick over a database carrying hundreds of
+thousands of metric rows, and the log scraper inserted and deleted a comparable
+batch every minute. The statements that failed were the ones innocent bystanders ran -
 ``DELETE FROM system_metrics WHERE timestamp < ?`` and the interface-rollup
 delete - while the lock was held elsewhere.
 

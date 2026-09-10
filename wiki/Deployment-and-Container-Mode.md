@@ -145,7 +145,7 @@ router nor a working database.
 Compare two different numbers deliberately:
 
 * `/container` → `memory-current` is the **cgroup** figure. It includes the page
-  cache the app pushes through its data mount, which on a 116 MB database on USB
+  cache the app pushes through its data mount, which on a database of that size on USB
   is the difference between "500 MB used" and the ~230 MB the process actually
   holds. That cached memory is reclaimable and does not compete with the router.
 * `diagnostics.memory_bytes` is the app's own **resident set**. Roughly 150 MB of

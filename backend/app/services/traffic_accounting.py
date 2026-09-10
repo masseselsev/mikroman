@@ -9,8 +9,8 @@ queue placed first in the queue order, targeting the busiest client, counted
 0 bytes through a 4.9 MB burst. FastTrack, hardware offload, ``use-ip-firewall``
 and stale queue objects were each ruled out individually.
 
-The firewall forward chain, by contrast, accounted 243.8 MB against 246 MB of
-actual WAN download in the same window (99.1%). So volume is measured with a
+The firewall forward chain, by contrast, tracked the same download to within a
+fraction of a percent. So volume is measured with a
 pair of ``action=passthrough`` mangle rules per device - one matching the device
 as source (upload), one as destination (download). ``passthrough`` increments a
 counter and passes the packet on unchanged; it cannot drop, alter or reroute

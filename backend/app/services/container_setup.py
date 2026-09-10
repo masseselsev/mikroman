@@ -5,7 +5,7 @@ Why this exists as a service rather than a few client calls: provisioning is a
 container - and each step is only correct in the context of what the router
 already has. The old ``scripts/setup_ros_container.rsc`` could not express that,
 and got three things wrong as a result: it left ``layer-dir`` and ``tmpdir`` on
-internal flash (a ~340 MB image onto a board with 473 MB free), it forwarded the
+internal flash (a ~340 MB image onto a board with a few hundred MB free), it forwarded the
 web port with no ``in-interface``, so the dashboard answered on every interface
 including WAN, and it pointed the mount at a directory that need not exist.
 
@@ -38,7 +38,7 @@ logger = logging.getLogger("mikroman.container_setup")
 # own later cleanups.
 OWNED = "mikroman:"
 
-# Measured on the hAP be3 Media: mikroman:latest unpacks to 262 MB on top of a
+# Measured on the hAP be3 Media: mikroman:latest unpacks to a few hundred MB on top of a
 # ~340 MB download. Below this, a pull cannot finish and the router is left with
 # half an image, so it is a hard block rather than advice.
 MIN_FREE_BYTES = 400 * 1024 * 1024

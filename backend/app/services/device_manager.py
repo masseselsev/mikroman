@@ -76,7 +76,7 @@ async def prune_device_history(session: AsyncSession, retention_days: int = 90) 
 
 
 #: Events kept per device when trimming by count. The device history is shown as
-#: a timeline of what happened to *this* machine, and 35 123 rows of one host
+#: a timeline of what happened to *this* machine, and tens of thousands of rows of one host
 #: alternating its IP is not a timeline — it is one event recorded 17 561 times.
 #: 200 is enough to hold every real change of a decade-old entry.
 HISTORY_KEEP_PER_DEVICE = 200
@@ -233,7 +233,7 @@ class DeviceManager(DeviceConsolidationMixin):
         here WIN-HOST-A and WIN-HOST-B, on 192.0.2.11 and 192.0.2.12, behind the same
         address). The discovery loop then visited the same MAC twice per sweep,
         each visit "changing" the IP and the hostname away from what the other
-        had just written: four `device_history` rows every sweep, 35 123 of them
+        had just written: four `device_history` rows every sweep, tens of thousands of them
         on one row in six days, ~10 800 a day, never pruned — and the eager
         history load made that the most expensive part of the analytics request.
 
@@ -447,7 +447,7 @@ class DeviceManager(DeviceConsolidationMixin):
         # Existing devices for this router (or unassigned), WITHOUT their event
         # log. `Device.history` is eager by relationship, so this query used to
         # materialise every event of every device once per sweep - on the live
-        # database 35 123 rows for one device, ~50 MB of ORM objects churned and
+        # database tens of thousands of rows for one device, ~50 MB of ORM objects churned and
         # dropped every minute, which is where the container's resident set came
         # from. Nothing below reads `.history`; the paths that do
         # (`_adopt_rotation`, consolidation) selectinload it themselves.

@@ -93,8 +93,8 @@ Any RouterOS counter used for accounting must be verified against real traffic
 before being relied on. The reason this project accounts from
 `/ip/firewall/mangle` passthrough rules rather than Simple Queue `bytes` is that
 the queue counters were measured returning zero through a 4.9 MB burst on
-7.25, while the firewall counters tracked 243.8 MB against 246 MB of real WAN
-throughput.
+7.25, while the firewall counters agreed with the measured WAN throughput to
+within a fraction of a percent.
 
 ---
 

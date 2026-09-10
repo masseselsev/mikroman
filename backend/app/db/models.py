@@ -184,7 +184,7 @@ class DeviceHistory(Base):
     # The history a device page asks for is "the newest events", which is an
     # ordered read on (device_id, created_at). With only the two single-column
     # indexes, SQLite fetches by device and then sorts every row of it - and one
-    # flapping device on the live database has 35 123 rows.
+    # flapping device on the live database has tens of thousands of rows.
     __table_args__ = (
         Index("ix_device_history_device_time", "device_id", "created_at"),
     )
@@ -476,10 +476,10 @@ class SystemMetric(Base):
 
     # Every chart query is "this router, this window, bucketed by time". With
     # separate indexes on router_id and timestamp the planner picked the router
-    # one and walked 296 403 entries to answer a one-hour question (EXPLAIN
+    # one and walked hundreds of thousands of entries to answer a one-hour question (EXPLAIN
     # output, live database) - 232 ms on a desktop, and the same statement runs
     # inside the background rollup pass every tick. The composite turns it into
-    # a range scan of the 6 778 rows that are actually in the window.
+    # a range scan of just the rows inside the requested window.
     __table_args__ = (
         Index("ix_system_metrics_router_time", "router_id", "timestamp"),
     )
@@ -497,7 +497,7 @@ class InterfaceMetric(Base):
     tx_bytes_total: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
     timestamp: Mapped[datetime] = mapped_column(DateTime, default=func.now(), nullable=False, index=True)
 
-    # The largest table in the database (691 142 rows on the live install), read
+    # The largest table in the database (hundreds of thousands of rows on the live install), read
     # on every chart request and on every background rollup pass. Same reasoning
     # as :class:`SystemMetric`, plus one more shape: the per-interface breakdown
     # filters by name and time together.
