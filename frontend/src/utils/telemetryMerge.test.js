@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { mergeTelemetryIntoUsers } from './telemetryMerge';
+import { mergeTelemetryIntoUsers, mergeRestUsersPreservingRates } from './telemetryMerge';
 
 /**
  * The identity rules here decide how often the dashboard repaints. A frame
@@ -114,5 +114,66 @@ describe('degenerate input', () => {
     const users = [{ id: 1, current_rate_in: 0, current_rate_out: 0, bytes_today_in: 0, bytes_today_out: 0, is_paused: false }];
     const result = mergeTelemetryIntoUsers(users, frameFor({ bytes_in: 0, bytes_out: 0 }));
     expect(result).toBe(users);
+  });
+});
+
+describe('mergeRestUsersPreservingRates', () => {
+  it('preserves existing non-zero user rates when REST poll returns 0 rates', () => {
+    const prevUsers = [
+      {
+        id: 1,
+        name: 'Mark',
+        current_rate_in: 1250000,
+        current_rate_out: 45000,
+        devices: [
+          { id: 10, name: 'PC', current_rate_in: 1200000, current_rate_out: 40000 },
+        ],
+      },
+    ];
+
+    const incomingFromRest = [
+      {
+        id: 1,
+        name: 'Mark (Renamed)',
+        current_rate_in: 0,
+        current_rate_out: 0,
+        bytes_total_in: 999999,
+        devices: [
+          { id: 10, name: 'PC', current_rate_in: 0, current_rate_out: 0 },
+        ],
+      },
+    ];
+
+    const merged = mergeRestUsersPreservingRates(prevUsers, incomingFromRest);
+    expect(merged[0].name).toBe('Mark (Renamed)');
+    expect(merged[0].bytes_total_in).toBe(999999);
+    // Preserved active live rates:
+    expect(merged[0].current_rate_in).toBe(1250000);
+    expect(merged[0].current_rate_out).toBe(45000);
+    expect(merged[0].devices[0].current_rate_in).toBe(1200000);
+    expect(merged[0].devices[0].current_rate_out).toBe(40000);
+  });
+
+  it('adopts new non-zero rates when REST payload provides them', () => {
+    const prevUsers = [
+      { id: 1, name: 'Mark', current_rate_in: 500, current_rate_out: 200, devices: [] },
+    ];
+    const incomingFromRest = [
+      { id: 1, name: 'Mark', current_rate_in: 9000, current_rate_out: 4000, devices: [] },
+    ];
+    const merged = mergeRestUsersPreservingRates(prevUsers, incomingFromRest);
+    expect(merged[0].current_rate_in).toBe(9000);
+    expect(merged[0].current_rate_out).toBe(4000);
+  });
+
+  it('returns incoming list when prevUsers is empty or uninitialized', () => {
+    const incoming = [{ id: 1, name: 'Mark', current_rate_in: 0, current_rate_out: 0 }];
+    expect(mergeRestUsersPreservingRates([], incoming)).toEqual(incoming);
+    expect(mergeRestUsersPreservingRates(null, incoming)).toEqual(incoming);
+  });
+
+  it('handles invalid incoming data safely', () => {
+    expect(mergeRestUsersPreservingRates([baseUser()], null)).toEqual([]);
+    expect(mergeRestUsersPreservingRates([baseUser()], undefined)).toEqual([]);
   });
 });

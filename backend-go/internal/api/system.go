@@ -67,6 +67,41 @@ func (h *SystemHandler) GetSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Supply production defaults if not stored in DB
+	if _, ok := settings["telemetry_interval_seconds"]; !ok {
+		settings["telemetry_interval_seconds"] = "3"
+	}
+	if _, ok := settings["poll_interval_seconds"]; !ok {
+		settings["poll_interval_seconds"] = "10"
+	}
+	if _, ok := settings["heavy_sync_interval_seconds"]; !ok {
+		settings["heavy_sync_interval_seconds"] = "60"
+	}
+	if _, ok := settings["unassigned_device_speed_limit"]; !ok {
+		settings["unassigned_device_speed_limit"] = "5M/5M"
+	}
+	if _, ok := settings["temp_warning_threshold"]; !ok {
+		settings["temp_warning_threshold"] = "80"
+	}
+	if _, ok := settings["auto_scan_enabled"]; !ok {
+		settings["auto_scan_enabled"] = "true"
+	}
+	if _, ok := settings["alert_cpu_threshold"]; !ok {
+		settings["alert_cpu_threshold"] = "90"
+	}
+	if _, ok := settings["alert_new_device_enabled"]; !ok {
+		settings["alert_new_device_enabled"] = "true"
+	}
+	if _, ok := settings["telegram_lang"]; !ok {
+		settings["telegram_lang"] = "en"
+	}
+	if _, ok := settings["pause_allowed_networks"]; !ok {
+		settings["pause_allowed_networks"] = "192.168.0.0/16, 10.0.0.0/8, 172.16.0.0/12"
+	}
+	if _, ok := settings["traffic_accounting_scope"]; !ok {
+		settings["traffic_accounting_scope"] = "wan_only"
+	}
+
 	WriteJSON(w, http.StatusOK, settings)
 }
 

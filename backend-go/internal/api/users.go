@@ -11,12 +11,18 @@ import (
 	"github.com/masseselsev/mikroman/internal/db"
 )
 
-type UserHandler struct {
-	database *db.DB
+// LiveRatesProvider supplies latest sampled live rates for a router.
+type LiveRatesProvider interface {
+	GetLatestRates(routerID int) (userRates map[int][2]int64, devRates map[int][2]int64)
 }
 
-func NewUserHandler(database *db.DB) *UserHandler {
-	return &UserHandler{database: database}
+type UserHandler struct {
+	database      *db.DB
+	ratesProvider LiveRatesProvider
+}
+
+func NewUserHandler(database *db.DB, ratesProvider LiveRatesProvider) *UserHandler {
+	return &UserHandler{database: database, ratesProvider: ratesProvider}
 }
 
 func (h *UserHandler) List(w http.ResponseWriter, r *http.Request) {
@@ -32,6 +38,21 @@ func (h *UserHandler) List(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		WriteError(w, http.StatusInternalServerError, "Failed to load users")
 		return
+	}
+
+	var effRouterID int
+	if routerID != nil {
+		effRouterID = *routerID
+	} else if def, err := h.database.GetDefaultRouter(); err == nil && def != nil {
+		effRouterID = def.ID
+	} else if routers, err := h.database.GetRouters(); err == nil && len(routers) > 0 {
+		effRouterID = routers[0].ID
+	}
+
+	var liveUserRates map[int][2]int64
+	var liveDevRates map[int][2]int64
+	if h.ratesProvider != nil {
+		liveUserRates, liveDevRates = h.ratesProvider.GetLatestRates(effRouterID)
 	}
 
 	now := time.Now()
@@ -53,6 +74,12 @@ func (h *UserHandler) List(w http.ResponseWriter, r *http.Request) {
 				dev.BytesCycleOut = s.CycleOut
 				dev.BytesTodayIn = s.TodayIn
 				dev.BytesTodayOut = s.TodayOut
+			}
+			if liveDevRates != nil {
+				if r, ok := liveDevRates[dev.ID]; ok {
+					dev.CurrentRateIn = r[0]
+					dev.CurrentRateOut = r[1]
+				}
 			}
 			devMap[*dev.UserID] = append(devMap[*dev.UserID], dev)
 		}
@@ -102,6 +129,13 @@ func (h *UserHandler) List(w http.ResponseWriter, r *http.Request) {
 		u.BytesTodayIn = uTodIn
 		u.BytesTodayOut = uTodOut
 		u.LastSeen = maxSeen
+
+		if liveUserRates != nil {
+			if r, ok := liveUserRates[u.ID]; ok {
+				u.CurrentRateIn = r[0]
+				u.CurrentRateOut = r[1]
+			}
+		}
 	}
 
 	if users == nil {
@@ -122,6 +156,21 @@ func (h *UserHandler) Get(w http.ResponseWriter, r *http.Request) {
 	if user == nil {
 		WriteError(w, http.StatusNotFound, "User not found")
 		return
+	}
+
+	var effRouterID int
+	if user.RouterID != nil {
+		effRouterID = *user.RouterID
+	} else if def, err := h.database.GetDefaultRouter(); err == nil && def != nil {
+		effRouterID = def.ID
+	} else if routers, err := h.database.GetRouters(); err == nil && len(routers) > 0 {
+		effRouterID = routers[0].ID
+	}
+
+	var liveUserRates map[int][2]int64
+	var liveDevRates map[int][2]int64
+	if h.ratesProvider != nil {
+		liveUserRates, liveDevRates = h.ratesProvider.GetLatestRates(effRouterID)
 	}
 
 	now := time.Now()
@@ -145,6 +194,12 @@ func (h *UserHandler) Get(w http.ResponseWriter, r *http.Request) {
 				dev.BytesCycleOut = s.CycleOut
 				dev.BytesTodayIn = s.TodayIn
 				dev.BytesTodayOut = s.TodayOut
+			}
+			if liveDevRates != nil {
+				if r, ok := liveDevRates[dev.ID]; ok {
+					dev.CurrentRateIn = r[0]
+					dev.CurrentRateOut = r[1]
+				}
 			}
 			uTotIn += dev.BytesTotalIn
 			uTotOut += dev.BytesTotalOut
@@ -184,6 +239,13 @@ func (h *UserHandler) Get(w http.ResponseWriter, r *http.Request) {
 	user.BytesTodayIn = uTodIn
 	user.BytesTodayOut = uTodOut
 	user.LastSeen = maxSeen
+
+	if liveUserRates != nil {
+		if r, ok := liveUserRates[user.ID]; ok {
+			user.CurrentRateIn = r[0]
+			user.CurrentRateOut = r[1]
+		}
+	}
 
 	WriteJSON(w, http.StatusOK, user)
 }

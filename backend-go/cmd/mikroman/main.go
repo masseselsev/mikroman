@@ -99,11 +99,12 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	var telemSvc *services.TelemetryService
 	if client != nil {
 		discSvc := services.NewDiscoveryService(database, client, hub)
 		discSvc.StartBackgroundLoop(ctx, cfg.HeavySyncIntervalSeconds)
 
-		telemSvc := services.NewTelemetryService(database, client, hub)
+		telemSvc = services.NewTelemetryService(database, client, hub)
 		telemSvc.StartBackgroundLoop(ctx, cfg.PollIntervalSeconds)
 
 		trafficSvc := services.NewTrafficService(database, client)
@@ -127,12 +128,13 @@ func main() {
 	}
 
 	routerHandler := api.NewRouter(api.RouterConfig{
-		Config:  cfg,
-		DB:      database,
-		Fernet:  fernet,
-		Client:  client,
-		Hub:     hub,
-		DistDir: distDir,
+		Config:    cfg,
+		DB:        database,
+		Fernet:    fernet,
+		Client:    client,
+		Hub:       hub,
+		LiveRates: telemSvc,
+		DistDir:   distDir,
 	})
 
 	server := &http.Server{
