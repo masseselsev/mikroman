@@ -125,4 +125,19 @@ func TestDiscoveryAndTelemetryServices(t *testing.T) {
 	if err != nil || rxBytes != 100000 {
 		t.Fatalf("expected 100000 rx_bytes in interface_metrics, got %d (err: %v)", rxBytes, err)
 	}
+
+	// 3. Test GetLatestRates snapshot
+	uRates, dRates := telem.GetLatestRates(1)
+	if uRates == nil || dRates == nil {
+		t.Fatalf("expected non-nil rate maps from GetLatestRates, got uRates=%v, dRates=%v", uRates, dRates)
+	}
+
+	// 4. Test dynamic telemetry interval
+	if interval := telem.getInterval(0); interval != 3*time.Second {
+		t.Fatalf("expected default 3s interval, got %v", interval)
+	}
+	_ = database.SetSetting("telemetry_interval_seconds", "2", "")
+	if interval := telem.getInterval(0); interval != 2*time.Second {
+		t.Fatalf("expected 2s interval from DB setting, got %v", interval)
+	}
 }

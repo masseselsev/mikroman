@@ -59,6 +59,9 @@ neither reflects nor responds to client-side pooling.
 **[2026-09-11] Problem:** RouterOS 7 REST API returns disabled and dynamic fields as JSON booleans (`false`/`true`) while some endpoints or versions return strings (`"false"`/`"true"`/`"yes"`/`"no"`). Strict Go string types caused JSON unmarshal failures and HTTP 400 Bad Request on mangle rule sync, causing device traffic accounting to fail silently and live speed tests to display 0 bps. Multi-router client reuse also caused cross-router rule pruning collisions.
 **→ Solution:** Introduce a custom `FlexibleBool` unmarshaler supporting both JSON booleans and string variants, and isolate RouterOS client pools per router ID with immediate sync reconciliation on startup.
 
+**[2026-09-11] Problem:** Live traffic figures periodically and simultaneously dropped to `0 bps` across all user cards and device rows. A 6-second periodic REST polling loop in the frontend called `api.getUsers()`, which unconditionally replaced state with unpopulated zero-rate user objects from the backend handler, clobbering the active WebSocket stream. Furthermore, the telemetry collection loop was tied to a slow 10-second ticker, leaving long sampling gaps during bursty chunked media streaming (e.g. YouTube 1080p).
+**→ Solution:** Implemented non-destructive REST user state merging (`mergeRestUsersPreservingRates`) in the frontend to retain active rates, added an in-memory rate snapshot cache in Go's `TelemetryService` to enrich `GET /api/v1/users` endpoints, and made the telemetry collection loop dynamically respect `telemetry_interval_seconds` (defaulting to 3 seconds).
+
 ## Connection handling
 
 **[2026-08-31] Problem:** `RouterManager.get_client()` consulted its client cache

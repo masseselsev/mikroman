@@ -21,8 +21,9 @@ type RouterConfig struct {
 	DB       *db.DB
 	Fernet   *crypto.Fernet
 	Client   *routeros.Client
-	Hub      *Hub
-	DistDir  string
+	Hub       *Hub
+	LiveRates LiveRatesProvider
+	DistDir   string
 }
 
 // NewRouter constructs the Chi router with all endpoints and SPA fallback.
@@ -179,7 +180,7 @@ func NewRouter(rc RouterConfig) http.Handler {
 		})
 
 		// Users
-		userH := NewUserHandler(rc.DB)
+		userH := NewUserHandler(rc.DB, rc.LiveRates)
 		api.Route("/users", func(u chi.Router) {
 			u.Get("/", userH.List)
 			u.Post("/", userH.Create)

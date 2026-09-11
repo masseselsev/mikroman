@@ -16,7 +16,7 @@ import RouterLogsModal from './components/RouterLogsModal';
 import RouterBackupsModal from './components/RouterBackupsModal';
 import RouterFirmwareModal from './components/RouterFirmwareModal';
 import { formatBytes, formatRouterDateTime } from './utils/formatters';
-import { mergeTelemetryIntoUsers } from './utils/telemetryMerge';
+import { mergeTelemetryIntoUsers, mergeRestUsersPreservingRates } from './utils/telemetryMerge';
 import { SetupWizard } from './components/SetupWizard';
 import { AppFooter } from './components/AppFooter';
 import { QuotaStrip } from './components/QuotaStrip';
@@ -190,7 +190,7 @@ export function App() {
       // otherwise the previous router's users briefly overwrite the new one's.
       if (effectiveId !== activeRouterIdRef.current) return;
 
-      setUsers(usersRes.data || []);
+      setUsers(prevUsers => mergeRestUsersPreservingRates(prevUsers, usersRes.data || []));
       setUnassignedDevices(devsRes.data || []);
       setAlerts(alertsRes.data || []);
       if (ifacesRes && ifacesRes.data) {

@@ -15,6 +15,12 @@ import (
 	"github.com/masseselsev/mikroman/internal/routeros"
 )
 
+// LiveRateSnapshot stores the latest sampled rates for users and devices on a router.
+type LiveRateSnapshot struct {
+	UserRates   map[int][2]int64 // userID -> [2]int64{rxBps, txBps}
+	DeviceRates map[int][2]int64 // deviceID -> [2]int64{rxBps, txBps}
+}
+
 type TelemetryService struct {
 	database        *db.DB
 	client          *routeros.Client
@@ -25,6 +31,7 @@ type TelemetryService struct {
 	prevTime        map[int]time.Time
 	prevDeviceBytes map[int]map[int][2]int64
 	prevMangleTime  map[int]time.Time
+	latestRates     map[int]LiveRateSnapshot
 }
 
 func NewTelemetryService(database *db.DB, client *routeros.Client, hub *api.Hub) *TelemetryService {
@@ -43,7 +50,29 @@ func NewTelemetryService(database *db.DB, client *routeros.Client, hub *api.Hub)
 		prevTime:        make(map[int]time.Time),
 		prevDeviceBytes: make(map[int]map[int][2]int64),
 		prevMangleTime:  make(map[int]time.Time),
+		latestRates:     make(map[int]LiveRateSnapshot),
 	}
+}
+
+// GetLatestRates returns the latest user and device live rates for a router.
+func (s *TelemetryService) GetLatestRates(routerID int) (map[int][2]int64, map[int][2]int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	snap, ok := s.latestRates[routerID]
+	if !ok {
+		return nil, nil
+	}
+
+	uRates := make(map[int][2]int64, len(snap.UserRates))
+	for k, v := range snap.UserRates {
+		uRates[k] = v
+	}
+	dRates := make(map[int][2]int64, len(snap.DeviceRates))
+	for k, v := range snap.DeviceRates {
+		dRates[k] = v
+	}
+	return uRates, dRates
 }
 
 func (s *TelemetryService) getClient(routerID int) (*routeros.Client, error) {
@@ -419,6 +448,21 @@ func (s *TelemetryService) Collect(ctx context.Context, routerID int) error {
 		})
 	}
 
+	// Save snapshot of current rates for REST endpoints
+	userRatesSnapshot := make(map[int][2]int64, len(usersPayload))
+	for _, up := range usersPayload {
+		userRatesSnapshot[up.UserID] = [2]int64{up.CurrentRateIn, up.CurrentRateOut}
+	}
+	s.mu.Lock()
+	if s.latestRates == nil {
+		s.latestRates = make(map[int]LiveRateSnapshot)
+	}
+	s.latestRates[routerID] = LiveRateSnapshot{
+		UserRates:   userRatesSnapshot,
+		DeviceRates: devRates,
+	}
+	s.mu.Unlock()
+
 	// Broadcast router-scoped structure to frontend
 	if s.hub != nil {
 		defaultRouter, _ := s.database.GetDefaultRouter()
@@ -461,16 +505,41 @@ func (s *TelemetryService) Collect(ctx context.Context, routerID int) error {
 	return nil
 }
 
-func (s *TelemetryService) StartBackgroundLoop(ctx context.Context, interval time.Duration) {
+func (s *TelemetryService) getInterval(defaultInterval time.Duration) time.Duration {
+	val, err := s.database.GetSetting("telemetry_interval_seconds")
+	if err == nil && val != "" {
+		if sec, err := strconv.ParseFloat(val, 64); err == nil && sec >= 1 && sec <= 60 {
+			return time.Duration(sec * float64(time.Second))
+		}
+	}
+	if defaultInterval > 0 && defaultInterval < 10*time.Second {
+		return defaultInterval
+	}
+	return 3 * time.Second
+}
+
+func (s *TelemetryService) StartBackgroundLoop(ctx context.Context, defaultInterval time.Duration) {
 	go func() {
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
+		// Run initial collection immediately
+		routers, err := s.database.GetRouters()
+		if err == nil {
+			for _, r := range routers {
+				if r.IsActive {
+					callCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+					if err := s.Collect(callCtx, r.ID); err != nil {
+						slog.Debug("Initial telemetry collection failed", "router_id", r.ID, "err", err)
+					}
+					cancel()
+				}
+			}
+		}
 
 		for {
+			interval := s.getInterval(defaultInterval)
 			select {
 			case <-ctx.Done():
 				return
-			case <-ticker.C:
+			case <-time.After(interval):
 				routers, err := s.database.GetRouters()
 				if err != nil {
 					continue

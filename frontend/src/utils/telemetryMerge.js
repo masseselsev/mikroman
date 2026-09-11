@@ -63,3 +63,53 @@ export function mergeTelemetryIntoUsers(prevUsers, telemetryUsers) {
 
   return usersChanged ? nextUsers : prevUsers;
 }
+
+/**
+ * Merge incoming REST-loaded users into React state without clobbering active
+ * live rates delivered by WebSocket telemetry.
+ *
+ * If the incoming payload has 0 or missing rates, but previous state has active
+ * non-zero rates, the active rates are retained. Only WebSocket telemetry frames
+ * (via mergeTelemetryIntoUsers) perform authoritative decays down to 0.
+ */
+export function mergeRestUsersPreservingRates(prevUsers, incomingUsers) {
+  if (!Array.isArray(incomingUsers)) return [];
+  if (!Array.isArray(prevUsers) || prevUsers.length === 0) return incomingUsers;
+
+  const prevMap = new Map(prevUsers.map(u => [u.id, u]));
+
+  return incomingUsers.map(incomingUser => {
+    const prevUser = prevMap.get(incomingUser.id);
+    if (!prevUser) return incomingUser;
+
+    const currentRateIn = (incomingUser.current_rate_in !== undefined && incomingUser.current_rate_in > 0)
+      ? incomingUser.current_rate_in
+      : (prevUser.current_rate_in || 0);
+
+    const currentRateOut = (incomingUser.current_rate_out !== undefined && incomingUser.current_rate_out > 0)
+      ? incomingUser.current_rate_out
+      : (prevUser.current_rate_out || 0);
+
+    const prevDeviceMap = new Map((prevUser.devices || []).map(d => [d.id, d]));
+    const mergedDevices = (incomingUser.devices || []).map(d => {
+      const prevDev = prevDeviceMap.get(d.id);
+      if (!prevDev) return d;
+      return {
+        ...d,
+        current_rate_in: (d.current_rate_in !== undefined && d.current_rate_in > 0)
+          ? d.current_rate_in
+          : (prevDev.current_rate_in || 0),
+        current_rate_out: (d.current_rate_out !== undefined && d.current_rate_out > 0)
+          ? d.current_rate_out
+          : (prevDev.current_rate_out || 0),
+      };
+    });
+
+    return {
+      ...incomingUser,
+      current_rate_in: currentRateIn,
+      current_rate_out: currentRateOut,
+      devices: mergedDevices,
+    };
+  });
+}
