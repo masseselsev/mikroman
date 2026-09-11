@@ -1,7 +1,11 @@
 package routeros
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -16,14 +20,91 @@ func (c *Client) GetSystemResource(ctx context.Context) (*Resource, error) {
 
 // GetSystemHealth reads /system/health (returns empty slice if not supported on hardware)
 func (c *Client) GetSystemHealth(ctx context.Context) ([]HealthItem, error) {
-	var items []HealthItem
-	if err := c.Get(ctx, "/system/health", &items); err != nil {
+	var raw json.RawMessage
+	if err := c.Get(ctx, "/system/health", &raw); err != nil {
 		if strings.Contains(err.Error(), "404") || strings.Contains(err.Error(), "no such command") {
 			return nil, nil
 		}
 		return nil, err
 	}
+
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return nil, nil
+	}
+
+	var items []HealthItem
+	if trimmed[0] == '[' {
+		var rawList []map[string]interface{}
+		if err := json.Unmarshal(trimmed, &rawList); err == nil {
+			for _, m := range rawList {
+				name := fmt.Sprintf("%v", m["name"])
+				val := fmt.Sprintf("%v", m["value"])
+				if name != "" && name != "<nil>" {
+					items = append(items, HealthItem{
+						Name:  name,
+						Value: val,
+						Type:  fmt.Sprintf("%v", m["type"]),
+					})
+				} else {
+					for k, v := range m {
+						items = append(items, HealthItem{
+							Name:  k,
+							Value: fmt.Sprintf("%v", v),
+						})
+					}
+				}
+			}
+			return items, nil
+		}
+	} else if trimmed[0] == '{' {
+		var rawObj map[string]interface{}
+		if err := json.Unmarshal(trimmed, &rawObj); err == nil {
+			for k, v := range rawObj {
+				items = append(items, HealthItem{
+					Name:  k,
+					Value: fmt.Sprintf("%v", v),
+				})
+			}
+			return items, nil
+		}
+	}
+
 	return items, nil
+}
+
+// ExtractHealthMetrics extracts temperature and voltage from HealthItem slice.
+// Supports: "temperature", "cpu-temperature", "board-temperature1", "sfp-temperature",
+// "voltage", "supply-voltage", etc.
+func ExtractHealthMetrics(items []HealthItem) (temp *float64, volt *float64) {
+	for _, item := range items {
+		name := strings.ToLower(strings.TrimSpace(item.Name))
+		valStr := strings.TrimSpace(item.Value)
+		if valStr == "" || valStr == "<nil>" {
+			continue
+		}
+		valStr = strings.TrimSuffix(valStr, "C")
+		valStr = strings.TrimSuffix(valStr, "c")
+		valStr = strings.TrimSuffix(valStr, "V")
+		valStr = strings.TrimSuffix(valStr, "v")
+		valStr = strings.TrimSpace(valStr)
+
+		v, err := strconv.ParseFloat(valStr, 64)
+		if err != nil {
+			continue
+		}
+
+		if strings.Contains(name, "temp") {
+			if temp == nil || strings.Contains(name, "cpu") || name == "temperature" {
+				temp = &v
+			}
+		} else if strings.Contains(name, "volt") {
+			if volt == nil || name == "voltage" {
+				volt = &v
+			}
+		}
+	}
+	return temp, volt
 }
 
 // GetRouterBoard reads /system/routerboard

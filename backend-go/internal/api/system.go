@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"runtime"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/masseselsev/mikroman/internal/config"
@@ -16,10 +15,16 @@ import (
 
 var startedAt = time.Now()
 
+// TelegramReloader allows dynamic reconfiguration of the Telegram bot service.
+type TelegramReloader interface {
+	Reconfigure()
+}
+
 type SystemHandler struct {
-	cfg      *config.Config
-	database *db.DB
-	client   *routeros.Client
+	cfg              *config.Config
+	database         *db.DB
+	client           *routeros.Client
+	telegramReloader TelegramReloader
 }
 
 func NewSystemHandler(cfg *config.Config, database *db.DB, client *routeros.Client) *SystemHandler {
@@ -28,6 +33,10 @@ func NewSystemHandler(cfg *config.Config, database *db.DB, client *routeros.Clie
 		database: database,
 		client:   client,
 	}
+}
+
+func (h *SystemHandler) SetTelegramReloader(r TelegramReloader) {
+	h.telegramReloader = r
 }
 
 func (h *SystemHandler) GetHealth(w http.ResponseWriter, r *http.Request) {
@@ -101,6 +110,36 @@ func (h *SystemHandler) GetSettings(w http.ResponseWriter, r *http.Request) {
 	if _, ok := settings["traffic_accounting_scope"]; !ok {
 		settings["traffic_accounting_scope"] = "wan_only"
 	}
+	if _, ok := settings["backup_enabled"]; !ok {
+		settings["backup_enabled"] = "true"
+	}
+	if _, ok := settings["backup_interval_hours"]; !ok {
+		settings["backup_interval_hours"] = "24"
+	}
+	if _, ok := settings["backup_retention_days"]; !ok {
+		settings["backup_retention_days"] = "90"
+	}
+	if _, ok := settings["backup_max_count"]; !ok {
+		settings["backup_max_count"] = "30"
+	}
+	if _, ok := settings["log_scraping_enabled"]; !ok {
+		settings["log_scraping_enabled"] = "true"
+	}
+	if _, ok := settings["log_retention_days"]; !ok {
+		settings["log_retention_days"] = "14"
+	}
+	if _, ok := settings["telegram_mode"]; !ok {
+		settings["telegram_mode"] = "polling"
+	}
+	if _, ok := settings["telegram_webhook_url"]; !ok {
+		settings["telegram_webhook_url"] = ""
+	}
+	if _, ok := settings["telegram_bot_token"]; !ok {
+		settings["telegram_bot_token"] = ""
+	}
+	if _, ok := settings["telegram_admin_ids"]; !ok {
+		settings["telegram_admin_ids"] = ""
+	}
 
 	WriteJSON(w, http.StatusOK, settings)
 }
@@ -128,6 +167,10 @@ func (h *SystemHandler) SaveSettings(w http.ResponseWriter, r *http.Request) {
 			strVal = string(bytesVal)
 		}
 		_ = h.database.SetSetting(k, strVal, "")
+	}
+
+	if h.telegramReloader != nil {
+		go h.telegramReloader.Reconfigure()
 	}
 
 	WriteJSON(w, http.StatusOK, map[string]string{"message": "Settings saved successfully"})
@@ -249,20 +292,7 @@ func (h *SystemHandler) GetSystemStatus(w http.ResponseWriter, r *http.Request) 
 
 	health, _ := h.client.GetSystemHealth(ctx)
 	rb, _ := h.client.GetRouterBoard(ctx)
-
-	var temp, volt *float64
-	for _, item := range health {
-		if strings.EqualFold(item.Name, "temperature") {
-			if v, err := strconv.ParseFloat(item.Value, 64); err == nil {
-				temp = &v
-			}
-		}
-		if strings.EqualFold(item.Name, "voltage") {
-			if v, err := strconv.ParseFloat(item.Value, 64); err == nil {
-				volt = &v
-			}
-		}
-	}
+	temp, volt := routeros.ExtractHealthMetrics(health)
 
 	rbModel := ""
 	rbSerial := ""

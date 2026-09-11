@@ -1,6 +1,7 @@
 package api
 
 import (
+	"database/sql"
 	"net/http"
 	"strconv"
 	"time"
@@ -25,11 +26,27 @@ func (h *LogHandler) GetLogs(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	rows, err := h.database.SqlDB.Query(`
-		SELECT id, router_id, external_id, timestamp, topics, message, severity, category, created_at
-		FROM router_logs
-		ORDER BY timestamp DESC LIMIT ?
-	`, limit)
+	rID := 0
+	if idStr := q.Get("router_id"); idStr != "" {
+		rID, _ = strconv.Atoi(idStr)
+	}
+
+	var rows *sql.Rows
+	var err error
+	if rID > 0 {
+		rows, err = h.database.SqlDB.Query(`
+			SELECT id, router_id, external_id, timestamp, topics, message, severity, category, created_at
+			FROM router_logs
+			WHERE router_id = ?
+			ORDER BY timestamp DESC LIMIT ?
+		`, rID, limit)
+	} else {
+		rows, err = h.database.SqlDB.Query(`
+			SELECT id, router_id, external_id, timestamp, topics, message, severity, category, created_at
+			FROM router_logs
+			ORDER BY timestamp DESC LIMIT ?
+		`, limit)
+	}
 	if err != nil {
 		WriteError(w, http.StatusInternalServerError, "Failed to load logs")
 		return
@@ -63,7 +80,17 @@ func (h *LogHandler) GetLogs(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *LogHandler) ClearLogs(w http.ResponseWriter, r *http.Request) {
-	_, err := h.database.SqlDB.Exec("DELETE FROM router_logs")
+	rID := 0
+	if idStr := r.URL.Query().Get("router_id"); idStr != "" {
+		rID, _ = strconv.Atoi(idStr)
+	}
+
+	var err error
+	if rID > 0 {
+		_, err = h.database.SqlDB.Exec("DELETE FROM router_logs WHERE router_id = ?", rID)
+	} else {
+		_, err = h.database.SqlDB.Exec("DELETE FROM router_logs")
+	}
 	if err != nil {
 		WriteError(w, http.StatusInternalServerError, "Failed to clear logs")
 		return
