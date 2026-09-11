@@ -9,41 +9,41 @@ import (
 
 // Config holds all configuration settings for the application.
 type Config struct {
-	AppName                 string
-	AppVersion              string
-	Host                    string
-	Port                    int
-	DatabaseURL             string
-	DataDir                 string
-	Debug                   bool
-	SecretKey               string
-	AdminPassword           string
-	AuthEnabled             bool
-	PollIntervalSeconds     time.Duration
+	AppName                  string
+	AppVersion               string
+	Host                     string
+	Port                     int
+	DatabaseURL              string
+	DataDir                  string
+	Debug                    bool
+	SecretKey                string
+	AdminPassword            string
+	AuthEnabled              bool
+	PollIntervalSeconds      time.Duration
 	HeavySyncIntervalSeconds time.Duration
 	LogScrapeIntervalSeconds time.Duration
-	TelegramBotToken        string
-	TelegramAdminChatIDs    []int64
+	TelegramBotToken         string
+	TelegramAdminChatIDs     []int64
 }
 
 // Load populates Config from environment variables with sensible production defaults.
 func Load() *Config {
 	cfg := &Config{
-		AppName:                 getEnv("APP_NAME", "MikroMan"),
-		AppVersion:              getEnv("APP_VERSION", "0.3.2"),
-		Host:                    getEnv("HOST", "0.0.0.0"),
-		Port:                    getEnvInt("PORT", 1928),
-		DatabaseURL:             getEnv("DATABASE_URL", "sqlite:///data/app.db"),
-		DataDir:                 getEnv("MIKROMAN_DATA_DIR", "/data"),
-		Debug:                   getEnvBool("DEBUG", false),
-		SecretKey:               os.Getenv("MIKROMAN_SECRET_KEY"),
-		AdminPassword:           getEnv("ADMIN_PASSWORD", "admin"),
-		AuthEnabled:             getEnvBool("AUTH_ENABLED", true),
-		PollIntervalSeconds:     time.Duration(getEnvInt("POLL_INTERVAL_SECONDS", 10)) * time.Second,
+		AppName:                  getEnv("APP_NAME", "MikroMan"),
+		AppVersion:               getEnv("APP_VERSION", "0.3.3"),
+		Host:                     getEnv("HOST", "0.0.0.0"),
+		Port:                     getEnvInt("PORT", 1928),
+		DatabaseURL:              getEnv("DATABASE_URL", "sqlite:///data/app.db"),
+		DataDir:                  getEnv("MIKROMAN_DATA_DIR", "/data"),
+		Debug:                    getEnvBool("DEBUG", false),
+		SecretKey:                os.Getenv("MIKROMAN_SECRET_KEY"),
+		AdminPassword:            getEnv("ADMIN_PASSWORD", "admin"),
+		AuthEnabled:              getEnvBool("AUTH_ENABLED", true),
+		PollIntervalSeconds:      time.Duration(getEnvInt("POLL_INTERVAL_SECONDS", 10)) * time.Second,
 		HeavySyncIntervalSeconds: time.Duration(getEnvInt("HEAVY_SYNC_INTERVAL_SECONDS", 60)) * time.Second,
 		LogScrapeIntervalSeconds: time.Duration(getEnvInt("LOG_SCRAPE_INTERVAL_SECONDS", 60)) * time.Second,
-		TelegramBotToken:        os.Getenv("TELEGRAM_BOT_TOKEN"),
-		TelegramAdminChatIDs:    parseChatIDs(os.Getenv("TELEGRAM_ADMIN_CHAT_ID")),
+		TelegramBotToken:         os.Getenv("TELEGRAM_BOT_TOKEN"),
+		TelegramAdminChatIDs:     parseChatIDs(os.Getenv("TELEGRAM_ADMIN_CHAT_ID")),
 	}
 
 	// Normalize Database path if starts with sqlite:// or sqlite+aiosqlite://

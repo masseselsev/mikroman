@@ -146,3 +146,14 @@ type LogEntry struct {
 	Topics  string `json:"topics"`
 	Message string `json:"message"`
 }
+
+// IPAddress represents an address entry in /ip/address
+type IPAddress struct {
+	ID        string `json:".id,omitempty"`
+	Address   string `json:"address"`
+	Network   string `json:"network,omitempty"`
+	Interface string `json:"interface"`
+	Dynamic   string `json:"dynamic,omitempty"`
+	Disabled  string `json:"disabled,omitempty"`
+	Comment   string `json:"comment,omitempty"`
+}

@@ -490,16 +490,139 @@ func CalculateBillingCycleStart(anchorDay int, ref time.Time) string {
 	return fmt.Sprintf("%04d-%02d-%02d", cycleYear, int(cycleMonth), actualDay)
 }
 
-// GetBillingAnchorDay reads isp_billing_cycle_anchor_day from app_settings, default 1.
-func (d *DB) GetBillingAnchorDay() int {
-	val, err := d.GetSetting("isp_billing_cycle_anchor_day")
+// CalculateBillingCycleBounds calculates start and end instants of an ISP billing cycle.
+func CalculateBillingCycleBounds(anchorDay, anchorHour, anchorMinute int, ref time.Time, previous bool) (time.Time, time.Time) {
+	day := max(1, min(anchorDay, 31))
+	hh := max(0, min(anchorHour, 23))
+	mm := max(0, min(anchorMinute, 59))
+
+	resetOn := func(year int, month time.Month) time.Time {
+		lastDay := time.Date(year, month+1, 0, 0, 0, 0, 0, ref.Location()).Day()
+		actualDay := min(day, lastDay)
+		return time.Date(year, month, actualDay, hh, mm, 0, 0, ref.Location())
+	}
+
+	thisMonth := resetOn(ref.Year(), ref.Month())
+	var start time.Time
+	if !ref.Before(thisMonth) {
+		start = thisMonth
+	} else if ref.Month() == time.January {
+		start = resetOn(ref.Year()-1, time.December)
+	} else {
+		start = resetOn(ref.Year(), ref.Month()-1)
+	}
+
+	var end time.Time
+	if start.Month() == time.December {
+		end = resetOn(start.Year()+1, time.January)
+	} else {
+		end = resetOn(start.Year(), start.Month()+1)
+	}
+
+	if previous {
+		prevEnd := start
+		var prevStart time.Time
+		if start.Month() == time.January {
+			prevStart = resetOn(start.Year()-1, time.December)
+		} else {
+			prevStart = resetOn(start.Year(), start.Month()-1)
+		}
+		return prevStart, prevEnd
+	}
+
+	return start, end
+}
+
+// GetBillingAnchorDay reads billing_cycle_anchor_day from app_settings, default 1.
+func (d *DB) GetBillingAnchorDay(routerID ...*int) int {
+	var rID *int
+	if len(routerID) > 0 {
+		rID = routerID[0]
+	}
+
+	if rID != nil {
+		if val, err := d.GetSetting(fmt.Sprintf("billing_cycle_anchor_day_%d", *rID)); err == nil && val != "" {
+			if day, err := strconv.Atoi(val); err == nil && day >= 1 && day <= 31 {
+				return day
+			}
+		}
+	}
+
+	val, err := d.GetSetting("billing_cycle_anchor_day")
 	if err != nil || val == "" {
+		val, _ = d.GetSetting("isp_billing_cycle_anchor_day")
+	}
+	if val == "" {
 		val, _ = d.GetSetting("isp_monthly_quota_anchor_day")
 	}
 	if day, err := strconv.Atoi(val); err == nil && day >= 1 && day <= 31 {
 		return day
 	}
 	return 1
+}
+
+// GetBillingAnchorTime reads reset hour and minute (0-23, 0-59) from app_settings, default (0, 0).
+func (d *DB) GetBillingAnchorTime(routerID ...*int) (int, int) {
+	var rID *int
+	if len(routerID) > 0 {
+		rID = routerID[0]
+	}
+
+	hour := 0
+	minute := 0
+
+	hKey := "billing_cycle_anchor_hour"
+	mKey := "billing_cycle_anchor_minute"
+	if rID != nil {
+		hKey = fmt.Sprintf("billing_cycle_anchor_hour_%d", *rID)
+		mKey = fmt.Sprintf("billing_cycle_anchor_minute_%d", *rID)
+	}
+
+	hVal, _ := d.GetSetting(hKey)
+	if hVal == "" && rID != nil {
+		hVal, _ = d.GetSetting("billing_cycle_anchor_hour")
+	}
+	if h, err := strconv.Atoi(hVal); err == nil && h >= 0 && h <= 23 {
+		hour = h
+	}
+
+	mVal, _ := d.GetSetting(mKey)
+	if mVal == "" && rID != nil {
+		mVal, _ = d.GetSetting("billing_cycle_anchor_minute")
+	}
+	if m, err := strconv.Atoi(mVal); err == nil && m >= 0 && m <= 59 {
+		minute = m
+	}
+
+	return hour, minute
+}
+
+// SetBillingAnchorConfig persists the ISP billing cycle day and time.
+func (d *DB) SetBillingAnchorConfig(day, hour, minute int, routerID *int) error {
+	day = max(1, min(day, 31))
+	hour = max(0, min(hour, 23))
+	minute = max(0, min(minute, 59))
+
+	dayKey := "billing_cycle_anchor_day"
+	hourKey := "billing_cycle_anchor_hour"
+	minKey := "billing_cycle_anchor_minute"
+	if routerID != nil {
+		dayKey = fmt.Sprintf("billing_cycle_anchor_day_%d", *routerID)
+		hourKey = fmt.Sprintf("billing_cycle_anchor_hour_%d", *routerID)
+		minKey = fmt.Sprintf("billing_cycle_anchor_minute_%d", *routerID)
+	}
+
+	_ = d.SetSetting(dayKey, strconv.Itoa(day), "ISP billing cycle monthly anchor day (1-31)")
+	_ = d.SetSetting(hourKey, strconv.Itoa(hour), "ISP billing cycle reset hour (0-23)")
+	_ = d.SetSetting(minKey, strconv.Itoa(minute), "ISP billing cycle reset minute (0-59)")
+
+	if routerID != nil {
+		_ = d.SetSetting("billing_cycle_anchor_day", strconv.Itoa(day), "ISP billing cycle monthly anchor day (1-31)")
+		_ = d.SetSetting("billing_cycle_anchor_hour", strconv.Itoa(hour), "ISP billing cycle reset hour (0-23)")
+		_ = d.SetSetting("billing_cycle_anchor_minute", strconv.Itoa(minute), "ISP billing cycle reset minute (0-59)")
+	}
+
+	return nil
 }
 
 func migrateColumns(db *sql.DB) error {
@@ -531,6 +654,17 @@ func migrateColumns(db *sql.DB) error {
 			return err
 		}
 	}
+
+	uniqueIndexes := []string{
+		"CREATE UNIQUE INDEX IF NOT EXISTS uq_traffic_rollups_user_date ON traffic_rollups (user_id, record_date)",
+		"CREATE UNIQUE INDEX IF NOT EXISTS uq_device_traffic_rollups_dev_date ON device_traffic_rollups (device_id, record_date)",
+		"CREATE UNIQUE INDEX IF NOT EXISTS uq_router_traffic_rollups_rtr_date ON router_traffic_rollups (router_id, record_date)",
+		"CREATE UNIQUE INDEX IF NOT EXISTS uq_router_self_traffic_rollups_rtr_date ON router_self_traffic_rollups (router_id, record_date)",
+	}
+	for _, sqlStmt := range uniqueIndexes {
+		_, _ = db.Exec(sqlStmt)
+	}
+
 	return nil
 }
 

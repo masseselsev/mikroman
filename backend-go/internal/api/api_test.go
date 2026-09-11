@@ -29,7 +29,7 @@ func setupTestServer(t *testing.T) (http.Handler, *db.DB, *crypto.Fernet) {
 	}
 
 	cfg := &config.Config{
-		AppVersion:    "0.3.2-test",
+		AppVersion:    "0.3.3-test",
 		AdminPassword: "SecretAdminPassword123",
 		AuthEnabled:   true,
 	}
@@ -424,3 +424,117 @@ func TestNewDashboardEndpoints(t *testing.T) {
 	}
 }
 
+func TestBillingCycleAndTrafficAnalytics(t *testing.T) {
+	handler, database, _ := setupTestServer(t)
+	defer database.Close()
+
+	// 1. Status sets CSRF cookie
+	reqStatus := httptest.NewRequest(http.MethodGet, "/api/v1/auth/status", nil)
+	wStatus := httptest.NewRecorder()
+	handler.ServeHTTP(wStatus, reqStatus)
+	var csrfCookie *http.Cookie
+	for _, c := range wStatus.Result().Cookies() {
+		if c.Name == CSRFCookie {
+			csrfCookie = c
+		}
+	}
+	if csrfCookie == nil {
+		t.Fatal("expected CSRF cookie")
+	}
+
+	// 2. Authenticate
+	loginJSON := []byte(`{"password":"SecretAdminPassword123"}`)
+	reqLogin := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", bytes.NewReader(loginJSON))
+	reqLogin.Header.Set("Content-Type", "application/json")
+	reqLogin.AddCookie(csrfCookie)
+	reqLogin.Header.Set(CSRFHeader, csrfCookie.Value)
+	wLogin := httptest.NewRecorder()
+	handler.ServeHTTP(wLogin, reqLogin)
+
+	var sessionCookie *http.Cookie
+	for _, c := range wLogin.Result().Cookies() {
+		if c.Name == SessionCookie {
+			sessionCookie = c
+		}
+	}
+	if sessionCookie == nil {
+		t.Fatal("expected session cookie")
+	}
+
+	// 1. GET /api/v1/analytics/billing-cycle (default Day 1, 00:00)
+	reqBC := httptest.NewRequest(http.MethodGet, "/api/v1/analytics/billing-cycle", nil)
+	reqBC.AddCookie(sessionCookie)
+	wBC := httptest.NewRecorder()
+	handler.ServeHTTP(wBC, reqBC)
+	if wBC.Code != http.StatusOK {
+		t.Fatalf("expected 200 for billing cycle, got %d: %s", wBC.Code, wBC.Body.String())
+	}
+	var bcResp APIResponse
+	if err := json.NewDecoder(wBC.Body).Decode(&bcResp); err != nil {
+		t.Fatalf("failed to decode billing cycle response: %v", err)
+	}
+	bcData, ok := bcResp.Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected object in response data, got %T", bcResp.Data)
+	}
+	if int(bcData["anchor_day"].(float64)) != 1 {
+		t.Fatalf("expected default anchor_day 1, got %v", bcData["anchor_day"])
+	}
+
+	// 2. POST /api/v1/analytics/billing-cycle
+	saveBCJSON := []byte(`{"anchor_day":18,"anchor_hour":10,"anchor_minute":30}`)
+	reqSaveBC := httptest.NewRequest(http.MethodPost, "/api/v1/analytics/billing-cycle", bytes.NewReader(saveBCJSON))
+	reqSaveBC.AddCookie(sessionCookie)
+	reqSaveBC.AddCookie(csrfCookie)
+	reqSaveBC.Header.Set(CSRFHeader, csrfCookie.Value)
+	wSaveBC := httptest.NewRecorder()
+	handler.ServeHTTP(wSaveBC, reqSaveBC)
+	if wSaveBC.Code != http.StatusOK {
+		t.Fatalf("expected 200 for save billing cycle, got %d: %s", wSaveBC.Code, wSaveBC.Body.String())
+	}
+
+	// 3. GET /api/v1/analytics/billing-cycle again to verify persistence
+	reqBC2 := httptest.NewRequest(http.MethodGet, "/api/v1/analytics/billing-cycle", nil)
+	reqBC2.AddCookie(sessionCookie)
+	wBC2 := httptest.NewRecorder()
+	handler.ServeHTTP(wBC2, reqBC2)
+	if wBC2.Code != http.StatusOK {
+		t.Fatalf("expected 200 for billing cycle, got %d", wBC2.Code)
+	}
+	var bcResp2 APIResponse
+	_ = json.NewDecoder(wBC2.Body).Decode(&bcResp2)
+	bcData2 := bcResp2.Data.(map[string]interface{})
+	if int(bcData2["anchor_day"].(float64)) != 18 {
+		t.Fatalf("expected persisted anchor_day 18, got %v", bcData2["anchor_day"])
+	}
+	if int(bcData2["anchor_hour"].(float64)) != 10 {
+		t.Fatalf("expected persisted anchor_hour 10, got %v", bcData2["anchor_hour"])
+	}
+	if int(bcData2["anchor_minute"].(float64)) != 30 {
+		t.Fatalf("expected persisted anchor_minute 30, got %v", bcData2["anchor_minute"])
+	}
+
+	// 4. GET /api/v1/analytics/traffic?preset=7d
+	reqTraffic := httptest.NewRequest(http.MethodGet, "/api/v1/analytics/traffic?preset=7d", nil)
+	reqTraffic.AddCookie(sessionCookie)
+	wTraffic := httptest.NewRecorder()
+	handler.ServeHTTP(wTraffic, reqTraffic)
+	if wTraffic.Code != http.StatusOK {
+		t.Fatalf("expected 200 for traffic analytics, got %d: %s", wTraffic.Code, wTraffic.Body.String())
+	}
+	var tResp APIResponse
+	if err := json.NewDecoder(wTraffic.Body).Decode(&tResp); err != nil {
+		t.Fatalf("failed to decode traffic response: %v", err)
+	}
+	tData, ok := tResp.Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected traffic data map, got %T", tResp.Data)
+	}
+	timeline, ok := tData["timeline"].([]interface{})
+	if !ok || len(timeline) != 7 {
+		t.Fatalf("expected 7 days in timeline, got %d (ok: %v)", len(timeline), ok)
+	}
+	if int(tData["billing_anchor_day"].(float64)) != 18 {
+		t.Fatalf("expected billing_anchor_day 18 in traffic analytics, got %v", tData["billing_anchor_day"])
+	}
+}
