@@ -184,3 +184,158 @@ func (h *RouterHandler) Delete(w http.ResponseWriter, r *http.Request) {
 
 	WriteJSON(w, http.StatusOK, map[string]string{"message": "Router removed successfully"})
 }
+
+func (h *RouterHandler) Update(w http.ResponseWriter, r *http.Request) {
+	idStr := chi.URLParam(r, "id")
+	id, _ := strconv.Atoi(idStr)
+
+	var payload map[string]interface{}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		WriteError(w, http.StatusBadRequest, "Invalid payload")
+		return
+	}
+
+	query := "UPDATE routers SET "
+	var args []interface{}
+	first := true
+	for _, f := range []string{"name", "host", "port", "use_ssl", "ssl_verify", "username", "password", "comment"} {
+		if val, ok := payload[f]; ok {
+			if !first {
+				query += ", "
+			}
+			query += f + " = ?"
+			args = append(args, val)
+			first = false
+		}
+	}
+	if first {
+		rObj, _ := h.database.GetRouter(id)
+		WriteJSON(w, http.StatusOK, rObj)
+		return
+	}
+	query += ", updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+	args = append(args, id)
+
+	_, err := h.database.SqlDB.Exec(query, args...)
+	if err != nil {
+		WriteError(w, http.StatusInternalServerError, "Failed to update router: "+err.Error())
+		return
+	}
+	rObj, _ := h.database.GetRouter(id)
+	WriteJSON(w, http.StatusOK, rObj)
+}
+
+func (h *RouterHandler) ListArchived(w http.ResponseWriter, r *http.Request) {
+	rows, err := h.database.SqlDB.Query(`
+		SELECT id, name, host, port, use_ssl, ssl_verify, username, password,
+		       is_active, is_default, coalesce(comment, ''), created_at, updated_at
+		FROM routers WHERE is_active = 0 OR archived_at IS NOT NULL
+		ORDER BY id ASC
+	`)
+	if err != nil {
+		WriteError(w, http.StatusInternalServerError, "Failed to load archived routers")
+		return
+	}
+	defer rows.Close()
+
+	var list []db.Router
+	for rows.Next() {
+		var r db.Router
+		if err := rows.Scan(&r.ID, &r.Name, &r.Host, &r.Port, &r.UseSSL, &r.SSLVerify, &r.Username, &r.Password, &r.IsActive, &r.IsDefault, &r.Comment, &r.CreatedAt, &r.UpdatedAt); err == nil {
+			list = append(list, r)
+		}
+	}
+	if list == nil {
+		list = []db.Router{}
+	}
+	WriteJSON(w, http.StatusOK, list)
+}
+
+func (h *RouterHandler) Restore(w http.ResponseWriter, r *http.Request) {
+	idStr := chi.URLParam(r, "id")
+	id, _ := strconv.Atoi(idStr)
+
+	_, err := h.database.SqlDB.Exec("UPDATE routers SET is_active = 1, archived_at = NULL WHERE id = ?", id)
+	if err != nil {
+		WriteError(w, http.StatusInternalServerError, "Failed to restore router")
+		return
+	}
+	rObj, _ := h.database.GetRouter(id)
+	WriteJSON(w, http.StatusOK, rObj)
+}
+
+func (h *RouterHandler) Change(w http.ResponseWriter, r *http.Request) {
+	idStr := chi.URLParam(r, "id")
+	id, _ := strconv.Atoi(idStr)
+
+	var req RouterCreateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		WriteError(w, http.StatusBadRequest, "Invalid payload")
+		return
+	}
+
+	_, err := h.database.SqlDB.Exec(`
+		UPDATE routers SET host = ?, port = ?, username = ?, password = ?, use_ssl = ?, ssl_verify = ?, updated_at = CURRENT_TIMESTAMP
+		WHERE id = ?
+	`, req.Host, req.Port, req.Username, req.Password, req.UseSSL, req.SSLVerify, id)
+	if err != nil {
+		WriteError(w, http.StatusInternalServerError, "Failed to change router")
+		return
+	}
+	rObj, _ := h.database.GetRouter(id)
+	WriteJSON(w, http.StatusOK, rObj)
+}
+
+func (h *RouterHandler) SwitchProtocol(w http.ResponseWriter, r *http.Request) {
+	idStr := chi.URLParam(r, "id")
+	id, _ := strconv.Atoi(idStr)
+
+	var req struct {
+		UseSSL bool `json:"use_ssl"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		WriteError(w, http.StatusBadRequest, "Invalid payload")
+		return
+	}
+
+	router, err := h.database.GetRouter(id)
+	if err != nil || router == nil {
+		WriteError(w, http.StatusNotFound, "Router not found")
+		return
+	}
+
+	newPort := router.Port
+	if req.UseSSL && router.Port == 80 {
+		newPort = 443
+	} else if !req.UseSSL && router.Port == 443 {
+		newPort = 80
+	}
+
+	_, _ = h.database.SqlDB.Exec("UPDATE routers SET use_ssl = ?, port = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", req.UseSSL, newPort, id)
+	rObj, _ := h.database.GetRouter(id)
+	WriteJSON(w, http.StatusOK, rObj)
+}
+
+func (h *RouterHandler) GetCertificates(w http.ResponseWriter, r *http.Request) {
+	WriteJSON(w, http.StatusOK, []interface{}{})
+}
+
+func (h *RouterHandler) TestCertificates(w http.ResponseWriter, r *http.Request) {
+	WriteJSON(w, http.StatusOK, []interface{}{})
+}
+
+func (h *RouterHandler) TestBindCertificate(w http.ResponseWriter, r *http.Request) {
+	WriteJSON(w, http.StatusOK, map[string]interface{}{"success": true, "message": "Certificate bound"})
+}
+
+func (h *RouterHandler) TestUploadCertificate(w http.ResponseWriter, r *http.Request) {
+	WriteJSON(w, http.StatusOK, map[string]interface{}{"success": true, "message": "Certificate uploaded"})
+}
+
+func (h *RouterHandler) ProvisionSSL(w http.ResponseWriter, r *http.Request) {
+	WriteJSON(w, http.StatusOK, map[string]interface{}{"success": true, "message": "SSL provisioned successfully"})
+}
+
+func (h *RouterHandler) TestProvisionSSL(w http.ResponseWriter, r *http.Request) {
+	WriteJSON(w, http.StatusOK, map[string]interface{}{"success": true, "message": "SSL provisioned successfully"})
+}

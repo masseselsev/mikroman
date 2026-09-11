@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -825,5 +826,360 @@ func TestHubRouterScoping(t *testing.T) {
 	}
 	if replayMsg["type"] != "telemetry_tick" || int(replayMsg["router_id"].(float64)) != 1 {
 		t.Fatalf("c4 received unexpected replay: %v", replayMsg)
+	}
+}
+
+func loginForTest(t *testing.T, handler http.Handler) (*http.Cookie, *http.Cookie) {
+	reqStatus := httptest.NewRequest(http.MethodGet, "/api/v1/auth/status", nil)
+	wStatus := httptest.NewRecorder()
+	handler.ServeHTTP(wStatus, reqStatus)
+	var csrfCookie *http.Cookie
+	for _, c := range wStatus.Result().Cookies() {
+		if c.Name == CSRFCookie {
+			csrfCookie = c
+			break
+		}
+	}
+	if csrfCookie == nil {
+		t.Fatal("expected CSRF cookie")
+	}
+
+	loginJSON := []byte(`{"password":"SecretAdminPassword123"}`)
+	reqLogin := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", bytes.NewReader(loginJSON))
+	reqLogin.Header.Set("Content-Type", "application/json")
+	reqLogin.AddCookie(csrfCookie)
+	reqLogin.Header.Set(CSRFHeader, csrfCookie.Value)
+	wLogin := httptest.NewRecorder()
+	handler.ServeHTTP(wLogin, reqLogin)
+
+	var sessionCookie *http.Cookie
+	for _, c := range wLogin.Result().Cookies() {
+		if c.Name == SessionCookie {
+			sessionCookie = c
+			break
+		}
+	}
+	if sessionCookie == nil {
+		t.Fatal("expected session cookie")
+	}
+
+	return sessionCookie, csrfCookie
+}
+
+func TestQuotaEndpoints(t *testing.T) {
+	handler, database, _ := setupTestServer(t)
+	defer database.Close()
+
+	sessionCookie, csrfCookie := loginForTest(t, handler)
+
+	// 1. Initial GET /analytics/quota should report disabled
+	reqGet := httptest.NewRequest(http.MethodGet, "/api/v1/analytics/quota", nil)
+	reqGet.AddCookie(sessionCookie)
+	wGet := httptest.NewRecorder()
+	handler.ServeHTTP(wGet, reqGet)
+
+	if wGet.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", wGet.Code)
+	}
+	var resp APIResponse
+	if err := json.NewDecoder(wGet.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	quotaMap := resp.Data.(map[string]interface{})
+	if quotaMap["enabled"].(bool) {
+		t.Fatalf("expected quota to be disabled initially")
+	}
+
+	// 2. Save valid quota
+	saveBody := `{"limit_bytes": 2199023255552, "thresholds": [50, 80], "portal_url": "http://192.0.2.10/portal", "portal_label": "5G ONU", "notify_telegram": true}`
+	reqSave := httptest.NewRequest(http.MethodPost, "/api/v1/analytics/quota", strings.NewReader(saveBody))
+	reqSave.Header.Set("Content-Type", "application/json")
+	reqSave.AddCookie(sessionCookie)
+	reqSave.AddCookie(csrfCookie)
+	reqSave.Header.Set(CSRFHeader, csrfCookie.Value)
+	wSave := httptest.NewRecorder()
+	handler.ServeHTTP(wSave, reqSave)
+
+	if wSave.Code != http.StatusOK {
+		t.Fatalf("expected 200 on save quota, got %d: %s", wSave.Code, wSave.Body.String())
+	}
+
+	// 3. GET again and verify fields
+	reqGet2 := httptest.NewRequest(http.MethodGet, "/api/v1/analytics/quota", nil)
+	reqGet2.AddCookie(sessionCookie)
+	wGet2 := httptest.NewRecorder()
+	handler.ServeHTTP(wGet2, reqGet2)
+
+	var resp2 APIResponse
+	if err := json.NewDecoder(wGet2.Body).Decode(&resp2); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	quotaMap2 := resp2.Data.(map[string]interface{})
+	if !quotaMap2["enabled"].(bool) {
+		t.Fatalf("expected quota to be enabled after save")
+	}
+	if quotaMap2["portal_label"].(string) != "5G ONU" {
+		t.Fatalf("expected portal_label '5G ONU', got %v", quotaMap2["portal_label"])
+	}
+
+	// 4. Invalid portal url rejection
+	badBody := `{"limit_bytes": 1000, "portal_url": "ftp://bad-proto.org"}`
+	reqBad := httptest.NewRequest(http.MethodPost, "/api/v1/analytics/quota", strings.NewReader(badBody))
+	reqBad.Header.Set("Content-Type", "application/json")
+	reqBad.AddCookie(sessionCookie)
+	reqBad.AddCookie(csrfCookie)
+	reqBad.Header.Set(CSRFHeader, csrfCookie.Value)
+	wBad := httptest.NewRecorder()
+	handler.ServeHTTP(wBad, reqBad)
+
+	if wBad.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for bad portal url, got %d", wBad.Code)
+	}
+
+	// 5. GET user destinations
+	reqDest := httptest.NewRequest(http.MethodGet, "/api/v1/analytics/users/1/destinations", nil)
+	reqDest.AddCookie(sessionCookie)
+	wDest := httptest.NewRecorder()
+	handler.ServeHTTP(wDest, reqDest)
+	if wDest.Code != http.StatusOK {
+		t.Fatalf("expected 200 for user destinations, got %d", wDest.Code)
+	}
+}
+
+func TestDeviceLinkUnlinkMergeSplit(t *testing.T) {
+	handler, database, _ := setupTestServer(t)
+	defer database.Close()
+
+	sessionCookie, csrfCookie := loginForTest(t, handler)
+
+	// Create test router
+	router := &db.Router{
+		Name:      "TestGW",
+		Host:      "192.0.2.1",
+		Port:      8728,
+		Username:  "admin",
+		Password:  "secret",
+		IsActive:  true,
+		IsDefault: true,
+	}
+	if err := database.CreateRouter(router); err != nil {
+		t.Fatalf("failed to create router: %v", err)
+	}
+	rID := router.ID
+
+	// Create 2 test devices
+	res1, err := database.SqlDB.Exec("INSERT INTO devices (router_id, mac_address, ip_address, hostname, is_active, is_hidden, is_deleted, speed_limit, is_paused, priority, last_seen) VALUES (?, ?, ?, ?, 1, 0, 0, '', 0, 0, ?)", rID, "00:11:22:33:44:01", "192.0.2.101", "HOST-A", time.Now().UTC().Format(time.RFC3339))
+	if err != nil {
+		t.Fatalf("failed to insert d1: %v", err)
+	}
+	d1ID64, _ := res1.LastInsertId()
+	d1ID := int(d1ID64)
+
+	res2, err := database.SqlDB.Exec("INSERT INTO devices (router_id, mac_address, ip_address, hostname, is_active, is_hidden, is_deleted, speed_limit, is_paused, priority, last_seen) VALUES (?, ?, ?, ?, 1, 0, 0, '', 0, 0, ?)", rID, "00:11:22:33:44:02", "192.0.2.102", "HOST-A", time.Now().UTC().Format(time.RFC3339))
+	if err != nil {
+		t.Fatalf("failed to insert d2: %v", err)
+	}
+	d2ID64, _ := res2.LastInsertId()
+	d2ID := int(d2ID64)
+
+	// Check suggestions
+	reqSug := httptest.NewRequest(http.MethodGet, "/api/v1/devices/suggestions?router_id="+strconv.Itoa(rID), nil)
+	reqSug.AddCookie(sessionCookie)
+	wSug := httptest.NewRecorder()
+	handler.ServeHTTP(wSug, reqSug)
+	if wSug.Code != http.StatusOK {
+		t.Fatalf("expected 200 for suggestions, got %d", wSug.Code)
+	}
+
+	// Check link-suggestions
+	reqLinkSug := httptest.NewRequest(http.MethodGet, "/api/v1/devices/link-suggestions?router_id="+strconv.Itoa(rID), nil)
+	reqLinkSug.AddCookie(sessionCookie)
+	wLinkSug := httptest.NewRecorder()
+	handler.ServeHTTP(wLinkSug, reqLinkSug)
+	if wLinkSug.Code != http.StatusOK {
+		t.Fatalf("expected 200 for link-suggestions, got %d", wLinkSug.Code)
+	}
+
+	// Link d2 -> d1
+	linkPayload := fmt.Sprintf(`{"primary_device_id": %d}`, d1ID)
+	reqLink := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/v1/devices/%d/link", d2ID), strings.NewReader(linkPayload))
+	reqLink.Header.Set("Content-Type", "application/json")
+	reqLink.AddCookie(sessionCookie)
+	reqLink.AddCookie(csrfCookie)
+	reqLink.Header.Set(CSRFHeader, csrfCookie.Value)
+	wLink := httptest.NewRecorder()
+	handler.ServeHTTP(wLink, reqLink)
+	if wLink.Code != http.StatusOK {
+		t.Fatalf("expected 200 for link, got %d: %s", wLink.Code, wLink.Body.String())
+	}
+
+	// Unlink d2
+	reqUnlink := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/v1/devices/%d/unlink", d2ID), nil)
+	reqUnlink.AddCookie(sessionCookie)
+	reqUnlink.AddCookie(csrfCookie)
+	reqUnlink.Header.Set(CSRFHeader, csrfCookie.Value)
+	wUnlink := httptest.NewRecorder()
+	handler.ServeHTTP(wUnlink, reqUnlink)
+	if wUnlink.Code != http.StatusOK {
+		t.Fatalf("expected 200 for unlink, got %d: %s", wUnlink.Code, wUnlink.Body.String())
+	}
+
+	// Merge d2 -> d1
+	mergePayload := fmt.Sprintf(`{"target_device_id": %d, "note": "merge test"}`, d1ID)
+	reqMerge := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/v1/devices/%d/merge", d2ID), strings.NewReader(mergePayload))
+	reqMerge.Header.Set("Content-Type", "application/json")
+	reqMerge.AddCookie(sessionCookie)
+	reqMerge.AddCookie(csrfCookie)
+	reqMerge.Header.Set(CSRFHeader, csrfCookie.Value)
+	wMerge := httptest.NewRecorder()
+	handler.ServeHTTP(wMerge, reqMerge)
+	if wMerge.Code != http.StatusOK {
+		t.Fatalf("expected 200 for merge, got %d: %s", wMerge.Code, wMerge.Body.String())
+	}
+
+	// Split d1
+	splitPayload := `{"mac_address": "00:11:22:33:44:02"}`
+	reqSplit := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/v1/devices/%d/split", d1ID), strings.NewReader(splitPayload))
+	reqSplit.Header.Set("Content-Type", "application/json")
+	reqSplit.AddCookie(sessionCookie)
+	reqSplit.AddCookie(csrfCookie)
+	reqSplit.Header.Set(CSRFHeader, csrfCookie.Value)
+	wSplit := httptest.NewRecorder()
+	handler.ServeHTTP(wSplit, reqSplit)
+	if wSplit.Code != http.StatusOK {
+		t.Fatalf("expected 200 for split, got %d: %s", wSplit.Code, wSplit.Body.String())
+	}
+}
+
+func TestTelegramTestEndpoint(t *testing.T) {
+	handler, database, _ := setupTestServer(t)
+	defer database.Close()
+
+	sessionCookie, csrfCookie := loginForTest(t, handler)
+
+	// Missing bot token should return 400
+	reqTg := httptest.NewRequest(http.MethodPost, "/api/v1/telegram/test", strings.NewReader(`{}`))
+	reqTg.Header.Set("Content-Type", "application/json")
+	reqTg.AddCookie(sessionCookie)
+	reqTg.AddCookie(csrfCookie)
+	reqTg.Header.Set(CSRFHeader, csrfCookie.Value)
+	wTg := httptest.NewRecorder()
+	handler.ServeHTTP(wTg, reqTg)
+
+	if wTg.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 when telegram not configured, got %d: %s", wTg.Code, wTg.Body.String())
+	}
+}
+
+func TestRouterSubresourceEndpoints(t *testing.T) {
+	handler, database, _ := setupTestServer(t)
+	defer database.Close()
+
+	sessionCookie, csrfCookie := loginForTest(t, handler)
+
+	router := &db.Router{
+		Name:      "TestCore",
+		Host:      "192.0.2.1",
+		Port:      8728,
+		Username:  "admin",
+		Password:  "secret",
+		IsActive:  true,
+		IsDefault: true,
+	}
+	if err := database.CreateRouter(router); err != nil {
+		t.Fatalf("failed to create router: %v", err)
+	}
+	rIDStr := strconv.Itoa(router.ID)
+
+	// 1. Containers
+	reqCont := httptest.NewRequest(http.MethodGet, "/api/v1/routers/"+rIDStr+"/containers", nil)
+	reqCont.AddCookie(sessionCookie)
+	wCont := httptest.NewRecorder()
+	handler.ServeHTTP(wCont, reqCont)
+	if wCont.Code != http.StatusOK {
+		t.Fatalf("expected 200 for containers list, got %d", wCont.Code)
+	}
+
+	reqStorage := httptest.NewRequest(http.MethodGet, "/api/v1/routers/"+rIDStr+"/containers/storage", nil)
+	reqStorage.AddCookie(sessionCookie)
+	wStorage := httptest.NewRecorder()
+	handler.ServeHTTP(wStorage, reqStorage)
+	if wStorage.Code != http.StatusOK {
+		t.Fatalf("expected 200 for containers storage, got %d", wStorage.Code)
+	}
+
+	// 2. Speedtest
+	reqSt := httptest.NewRequest(http.MethodGet, "/api/v1/routers/"+rIDStr+"/speedtest", nil)
+	reqSt.AddCookie(sessionCookie)
+	wSt := httptest.NewRecorder()
+	handler.ServeHTTP(wSt, reqSt)
+	if wSt.Code != http.StatusOK {
+		t.Fatalf("expected 200 for speedtest status, got %d", wSt.Code)
+	}
+
+	reqStHist := httptest.NewRequest(http.MethodGet, "/api/v1/routers/"+rIDStr+"/speedtest/history", nil)
+	reqStHist.AddCookie(sessionCookie)
+	wStHist := httptest.NewRecorder()
+	handler.ServeHTTP(wStHist, reqStHist)
+	if wStHist.Code != http.StatusOK {
+		t.Fatalf("expected 200 for speedtest history, got %d", wStHist.Code)
+	}
+
+	// 3. Firmware (raw JSON contracts)
+	reqFw := httptest.NewRequest(http.MethodGet, "/api/v1/routers/"+rIDStr+"/firmware", nil)
+	reqFw.AddCookie(sessionCookie)
+	wFw := httptest.NewRecorder()
+	handler.ServeHTTP(wFw, reqFw)
+	if wFw.Code != http.StatusOK {
+		t.Fatalf("expected 200 for firmware status, got %d", wFw.Code)
+	}
+	var fwStatus RouterFirmwareStatusOut
+	if err := json.NewDecoder(wFw.Body).Decode(&fwStatus); err != nil {
+		t.Fatalf("failed to decode firmware status: %v", err)
+	}
+	if fwStatus.Packages.Channel != "stable" {
+		t.Fatalf("expected channel 'stable', got %s", fwStatus.Packages.Channel)
+	}
+
+	reqChangelog := httptest.NewRequest(http.MethodGet, "/api/v1/routers/"+rIDStr+"/firmware/changelog?version=7.16.1", nil)
+	reqChangelog.AddCookie(sessionCookie)
+	wChangelog := httptest.NewRecorder()
+	handler.ServeHTTP(wChangelog, reqChangelog)
+	if wChangelog.Code != http.StatusOK {
+		t.Fatalf("expected 200 for changelog, got %d", wChangelog.Code)
+	}
+	var changelog ChangelogOut
+	if err := json.NewDecoder(wChangelog.Body).Decode(&changelog); err != nil {
+		t.Fatalf("failed to decode changelog: %v", err)
+	}
+	if changelog.Version != "7.16.1" || changelog.Notes == "" {
+		t.Fatalf("invalid changelog payload: %+v", changelog)
+	}
+
+	// 4. Backups (raw JSON contract)
+	reqBackups := httptest.NewRequest(http.MethodGet, "/api/v1/routers/"+rIDStr+"/backups", nil)
+	reqBackups.AddCookie(sessionCookie)
+	wBackups := httptest.NewRecorder()
+	handler.ServeHTTP(wBackups, reqBackups)
+	if wBackups.Code != http.StatusOK {
+		t.Fatalf("expected 200 for backups list, got %d", wBackups.Code)
+	}
+
+	reqRunBackup := httptest.NewRequest(http.MethodPost, "/api/v1/routers/"+rIDStr+"/backups/run", nil)
+	reqRunBackup.AddCookie(sessionCookie)
+	reqRunBackup.AddCookie(csrfCookie)
+	reqRunBackup.Header.Set(CSRFHeader, csrfCookie.Value)
+	wRunBackup := httptest.NewRecorder()
+	handler.ServeHTTP(wRunBackup, reqRunBackup)
+	if wRunBackup.Code != http.StatusOK {
+		t.Fatalf("expected 200 for backup run, got %d", wRunBackup.Code)
+	}
+
+	reqDiff := httptest.NewRequest(http.MethodGet, "/api/v1/routers/"+rIDStr+"/backups/diff", nil)
+	reqDiff.AddCookie(sessionCookie)
+	wDiff := httptest.NewRecorder()
+	handler.ServeHTTP(wDiff, reqDiff)
+	if wDiff.Code != http.StatusOK {
+		t.Fatalf("expected 200 for backup diff, got %d", wDiff.Code)
 	}
 }

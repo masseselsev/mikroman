@@ -93,13 +93,70 @@ func NewRouter(rc RouterConfig) http.Handler {
 
 		// Routers
 		routerH := NewRouterHandler(rc.DB)
+		containerH := NewContainerHandler(rc.DB)
+		speedtestH := NewSpeedTestHandler(rc.DB)
+		firmwareH := NewFirmwareHandler(rc.DB, rc.Client)
+		backupH := NewBackupHandler(rc.DB)
+
 		api.Route("/routers", func(rt chi.Router) {
 			rt.Get("/", routerH.List)
 			rt.Post("/", routerH.Create)
+			rt.Get("/archived", routerH.ListArchived)
 			rt.Post("/test", routerH.TestConnection)
+			rt.Post("/test-certificates", routerH.TestCertificates)
+			rt.Post("/test-bind-certificate", routerH.TestBindCertificate)
+			rt.Post("/test-upload-certificate", routerH.TestUploadCertificate)
+			rt.Post("/test-provision-ssl", routerH.TestProvisionSSL)
 			rt.Get("/{id}", routerH.Get)
+			rt.Put("/{id}", routerH.Update)
 			rt.Post("/{id}/activate", routerH.Activate)
+			rt.Post("/{id}/restore", routerH.Restore)
+			rt.Post("/{id}/change", routerH.Change)
+			rt.Post("/{id}/protocol", routerH.SwitchProtocol)
+			rt.Get("/{id}/certificates", routerH.GetCertificates)
+			rt.Post("/{id}/provision-ssl", routerH.ProvisionSSL)
 			rt.Delete("/{id}", routerH.Delete)
+
+			// Containers
+			rt.Route("/{id}/containers", func(c chi.Router) {
+				c.Get("/", containerH.List)
+				c.Post("/", containerH.Create)
+				c.Post("/setup/plan", containerH.SetupPlan)
+				c.Post("/setup/apply", containerH.SetupApply)
+				c.Get("/storage", containerH.Storage)
+				c.Post("/storage/format", containerH.Format)
+				c.Post("/{containerId}/{action}", containerH.Action)
+			})
+
+			// Speed Test
+			rt.Route("/{id}/speedtest", func(st chi.Router) {
+				st.Get("/", speedtestH.Status)
+				st.Post("/run", speedtestH.Run)
+				st.Post("/container", speedtestH.CreateContainer)
+				st.Get("/history", speedtestH.History)
+			})
+
+			// Firmware
+			rt.Route("/{id}/firmware", func(fw chi.Router) {
+				fw.Get("/", firmwareH.Status)
+				fw.Post("/check", firmwareH.Check)
+				fw.Put("/channel", firmwareH.SetChannel)
+				fw.Get("/changelog", firmwareH.Changelog)
+				fw.Post("/upgrade", firmwareH.Upgrade)
+				fw.Post("/bootloader", firmwareH.UpgradeBootloader)
+			})
+
+			// Backups
+			rt.Route("/{id}/backups", func(b chi.Router) {
+				b.Get("/", backupH.List)
+				b.Post("/run", backupH.Run)
+				b.Get("/diff", backupH.Diff)
+				b.Get("/{backupId}", backupH.Get)
+				b.Patch("/{backupId}", backupH.Update)
+				b.Delete("/{backupId}", backupH.Delete)
+				b.Get("/{backupId}/download/rsc", backupH.DownloadRsc)
+				b.Get("/{backupId}/download/backup", backupH.DownloadBackup)
+			})
 		})
 
 		// Devices
@@ -107,10 +164,16 @@ func NewRouter(rc RouterConfig) http.Handler {
 		api.Route("/devices", func(d chi.Router) {
 			d.Get("/", devH.List)
 			d.Post("/scan", devH.Scan)
+			d.Get("/suggestions", devH.GetMergeSuggestions)
+			d.Get("/link-suggestions", devH.GetLinkSuggestions)
 			d.Patch("/{id}", devH.Update)
 			d.Delete("/{id}", devH.Delete)
 			d.Post("/{id}/pause", devH.Pause)
 			d.Post("/{id}/limit", devH.Limit)
+			d.Post("/{id}/link", devH.Link)
+			d.Post("/{id}/unlink", devH.Unlink)
+			d.Post("/{id}/merge", devH.Merge)
+			d.Post("/{id}/split", devH.Split)
 			d.Get("/{id}/history", devH.History)
 			d.Get("/{id}/traffic-history", analyticsH.DeviceHistory)
 		})
@@ -142,6 +205,7 @@ func NewRouter(rc RouterConfig) http.Handler {
 			an.Get("/quota", analyticsH.GetQuota)
 			an.Post("/quota", analyticsH.SaveQuota)
 			an.Get("/users/{id}/traffic-history", analyticsH.UserHistory)
+			an.Get("/users/{id}/destinations", analyticsH.UserDestinations)
 			an.Get("/devices/{id}/traffic-history", analyticsH.DeviceHistory)
 		})
 
@@ -150,6 +214,9 @@ func NewRouter(rc RouterConfig) http.Handler {
 		api.Route("/logs", func(l chi.Router) {
 			l.Get("/", logH.GetLogs)
 			l.Get("/stats", logH.GetLogStats)
+			l.Get("/rules", logH.GetLoggingRules)
+			l.Post("/rules", logH.CreateLoggingRule)
+			l.Delete("/rules/{id}", logH.DeleteLoggingRule)
 			l.Delete("/", logH.ClearLogs)
 		})
 
@@ -158,6 +225,12 @@ func NewRouter(rc RouterConfig) http.Handler {
 		api.Route("/connections", func(c chi.Router) {
 			c.Get("/", connH.GetLiveConnections)
 			c.Post("/{id}/kill", connH.KillConnection)
+		})
+
+		// Telegram
+		tgH := NewTelegramHandler(rc.DB)
+		api.Route("/telegram", func(tg chi.Router) {
+			tg.Post("/test", tgH.Test)
 		})
 	})
 

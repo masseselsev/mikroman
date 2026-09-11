@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -697,27 +698,406 @@ func (h *AnalyticsHandler) GetTrafficOverview(w http.ResponseWriter, r *http.Req
 	WriteJSON(w, http.StatusOK, response)
 }
 
-func (h *AnalyticsHandler) GetQuota(w http.ResponseWriter, r *http.Request) {
-	quotaVal, _ := h.database.GetSetting("isp_monthly_quota_bytes")
-	quotaBytes, _ := strconv.ParseInt(quotaVal, 10, 64)
+type QuotaConfigDTO struct {
+	LimitBytes     int64   `json:"limit_bytes"`
+	Thresholds     []int   `json:"thresholds"`
+	NotifyTelegram *bool   `json:"notify_telegram"`
+	PortalURL      *string `json:"portal_url"`
+	PortalLabel    *string `json:"portal_label"`
+}
 
-	WriteJSON(w, http.StatusOK, map[string]interface{}{
-		"quota_bytes": quotaBytes,
-		"enabled":     quotaBytes > 0,
-	})
+type QuotaStatusDTO struct {
+	LimitBytes           int64   `json:"limit_bytes"`
+	UsedBytes            int64   `json:"used_bytes"`
+	RemainingBytes       int64   `json:"remaining_bytes"`
+	UsedPct              float64 `json:"used_pct"`
+	CycleStart           *string `json:"cycle_start"`
+	CycleEnd             *string `json:"cycle_end"`
+	CycleEndAt           *string `json:"cycle_end_at,omitempty"`
+	DaysRemaining        int     `json:"days_remaining"`
+	ProjectedDailyBudget int64   `json:"projected_daily_budget"`
+	CycleDaysTotal       int     `json:"cycle_days_total"`
+	CycleDaysElapsed     int     `json:"cycle_days_elapsed"`
+	ProjectedBytesLinear int64   `json:"projected_bytes_linear"`
+	ProjectedPctLinear   float64 `json:"projected_pct_linear"`
+	PaceBytesPerDay      int64   `json:"pace_bytes_per_day"`
+	ProjectedBytesAtPace int64   `json:"projected_bytes_at_pace"`
+	ProjectedPctAtPace   float64 `json:"projected_pct_at_pace"`
+	PrevCycleBytes       int64   `json:"prev_cycle_bytes"`
+	PrevCycleBytesPerDay int64   `json:"prev_cycle_bytes_per_day"`
+	PaceBlendWeight      float64 `json:"pace_blend_weight"`
+	PaceBasis            string  `json:"pace_basis"`
+	OnTrack              bool    `json:"on_track"`
+	Thresholds           []int   `json:"thresholds"`
+	ThresholdsReached    []int   `json:"thresholds_reached"`
+	Enabled              bool    `json:"enabled"`
+	NotifyTelegram       bool    `json:"notify_telegram"`
+	PortalURL            *string `json:"portal_url,omitempty"`
+	PortalLabel          *string `json:"portal_label,omitempty"`
+}
+
+func parseThresholds(raw string) []int {
+	if raw == "" {
+		return []int{}
+	}
+	parts := strings.Split(raw, ",")
+	seen := make(map[int]bool)
+	var res []int
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if val, err := strconv.Atoi(p); err == nil && val >= 1 && val <= 100 {
+			if !seen[val] {
+				seen[val] = true
+				res = append(res, val)
+			}
+		}
+	}
+	sort.Ints(res)
+	return res
+}
+
+func (h *AnalyticsHandler) buildQuotaStatus(routerID *int) QuotaStatusDTO {
+	getSetting := func(base string) string {
+		if routerID != nil {
+			if val, _ := h.database.GetSetting(fmt.Sprintf("%s_%d", base, *routerID)); val != "" {
+				return val
+			}
+		}
+		val, _ := h.database.GetSetting(base)
+		return val
+	}
+
+	limitStr := getSetting("quota_limit_bytes")
+	if limitStr == "" {
+		limitStr = getSetting("isp_monthly_quota_bytes")
+	}
+	limitBytes, _ := strconv.ParseInt(limitStr, 10, 64)
+	if limitBytes < 0 {
+		limitBytes = 0
+	}
+
+	threshStr := getSetting("quota_alert_thresholds")
+	thresholds := parseThresholds(threshStr)
+
+	notifyStr := getSetting("quota_notify_telegram")
+	notifyTelegram := notifyStr == "" || !strings.EqualFold(notifyStr, "false")
+
+	portalURLStr := strings.TrimSpace(getSetting("isp_portal_url"))
+	var portalURL *string
+	if portalURLStr != "" {
+		portalURL = &portalURLStr
+	}
+
+	portalLabelStr := strings.TrimSpace(getSetting("isp_portal_label"))
+	var portalLabel *string
+	if portalLabelStr != "" {
+		portalLabel = &portalLabelStr
+	}
+
+	anchorDay := h.database.GetBillingAnchorDay(routerID)
+	anchorHour, anchorMinute := h.database.GetBillingAnchorTime(routerID)
+	now := time.Now()
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	todayStr := today.Format("2006-01-02")
+
+	startDt, endDt := db.CalculateBillingCycleBounds(anchorDay, anchorHour, anchorMinute, now, false)
+	cycleStartStr := startDt.Format("2006-01-02")
+	cycleEndStr := endDt.Add(-time.Microsecond).Format("2006-01-02")
+
+	var cycleEndAt *string
+	if anchorHour != 0 || anchorMinute != 0 {
+		s := endDt.Format("2006-01-02T15:04:05")
+		cycleEndAt = &s
+	}
+
+	var usedIn, usedOut int64
+	if routerID != nil {
+		_ = h.database.SqlDB.QueryRow(`
+			SELECT COALESCE(SUM(bytes_in), 0), COALESCE(SUM(bytes_out), 0)
+			FROM router_traffic_rollups
+			WHERE router_id = ? AND record_date >= ? AND record_date <= ?
+		`, *routerID, cycleStartStr, todayStr).Scan(&usedIn, &usedOut)
+	} else {
+		_ = h.database.SqlDB.QueryRow(`
+			SELECT COALESCE(SUM(bytes_in), 0), COALESCE(SUM(bytes_out), 0)
+			FROM router_traffic_rollups
+			WHERE record_date >= ? AND record_date <= ?
+		`, cycleStartStr, todayStr).Scan(&usedIn, &usedOut)
+	}
+	usedBytes := usedIn + usedOut
+	if usedBytes == 0 {
+		_ = h.database.SqlDB.QueryRow(`
+			SELECT COALESCE(SUM(bytes_in), 0), COALESCE(SUM(bytes_out), 0)
+			FROM device_traffic_rollups
+			WHERE record_date >= ? AND record_date <= ?
+		`, cycleStartStr, todayStr).Scan(&usedIn, &usedOut)
+		usedBytes = usedIn + usedOut
+	}
+
+	totalDays := math.Max(1.0, endDt.Sub(startDt).Seconds()/86400.0)
+	var elapsedDays float64
+	if anchorHour == 0 && anchorMinute == 0 {
+		daysDiff := float64(int(today.Sub(startDt.Truncate(24*time.Hour)).Hours()/24) + 1)
+		elapsedDays = math.Min(totalDays, math.Max(1.0, daysDiff))
+	} else {
+		elapsedDays = math.Min(totalDays, math.Max(1.0, now.Sub(startDt).Seconds()/86400.0))
+	}
+	daysLeftAfterToday := math.Max(0.0, totalDays-elapsedDays)
+	remainingSeconds := math.Max(0.0, endDt.Sub(now).Seconds())
+	daysRemaining := int(remainingSeconds / 86400.0)
+	if int64(remainingSeconds)%86400 != 0 {
+		daysRemaining++
+	}
+	cycleDaysTotal := int(math.Round(totalDays))
+	if cycleDaysTotal < 1 {
+		cycleDaysTotal = 1
+	}
+	cycleDaysElapsed := int(math.Round(elapsedDays))
+	if cycleDaysElapsed < 1 {
+		cycleDaysElapsed = 1
+	}
+	if cycleDaysElapsed > cycleDaysTotal {
+		cycleDaysElapsed = cycleDaysTotal
+	}
+
+	avgPerDay := float64(usedBytes) / elapsedDays
+	projectedBytesLinear := int64(avgPerDay * totalDays)
+
+	prevStartDt, prevEndDt := db.CalculateBillingCycleBounds(anchorDay, anchorHour, anchorMinute, now, true)
+	prevStartStr := prevStartDt.Format("2006-01-02")
+	prevEndStr := prevEndDt.Add(-time.Microsecond).Format("2006-01-02")
+	var prevIn, prevOut int64
+	if routerID != nil {
+		_ = h.database.SqlDB.QueryRow(`
+			SELECT COALESCE(SUM(bytes_in), 0), COALESCE(SUM(bytes_out), 0)
+			FROM router_traffic_rollups
+			WHERE router_id = ? AND record_date >= ? AND record_date <= ?
+		`, *routerID, prevStartStr, prevEndStr).Scan(&prevIn, &prevOut)
+	} else {
+		_ = h.database.SqlDB.QueryRow(`
+			SELECT COALESCE(SUM(bytes_in), 0), COALESCE(SUM(bytes_out), 0)
+			FROM router_traffic_rollups
+			WHERE record_date >= ? AND record_date <= ?
+		`, prevStartStr, prevEndStr).Scan(&prevIn, &prevOut)
+	}
+	prevCycleBytes := prevIn + prevOut
+	prevDays := math.Max(1.0, prevEndDt.Sub(prevStartDt).Seconds()/86400.0)
+	var prevPerDay float64
+	if prevCycleBytes > 0 {
+		prevPerDay = float64(prevCycleBytes) / prevDays
+	}
+
+	rows, err := h.database.SqlDB.Query(`
+		SELECT COALESCE(SUM(bytes_in + bytes_out), 0)
+		FROM (
+			SELECT record_date, bytes_in, bytes_out FROM router_traffic_rollups WHERE record_date >= ? AND record_date <= ?
+			UNION ALL
+			SELECT record_date, bytes_in, bytes_out FROM device_traffic_rollups WHERE record_date >= ? AND record_date <= ?
+		)
+		GROUP BY record_date
+		ORDER BY record_date DESC
+		LIMIT 7
+	`, cycleStartStr, todayStr, cycleStartStr, todayStr)
+	var recentDaily []float64
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var b int64
+			if err := rows.Scan(&b); err == nil && b > 0 {
+				recentDaily = append(recentDaily, float64(b))
+			}
+		}
+	}
+	recentMean := avgPerDay
+	if len(recentDaily) > 0 {
+		var sumRecent float64
+		for _, v := range recentDaily {
+			sumRecent += v
+		}
+		recentMean = sumRecent / float64(len(recentDaily))
+	}
+
+	var paceBlendWeight float64 = 1.0
+	var pacePerDay float64
+	var paceBasis string
+	if prevCycleBytes > 0 {
+		paceBlendWeight = math.Min(1.0, float64(cycleDaysElapsed)/7.0)
+		pacePerDay = paceBlendWeight*recentMean + (1.0-paceBlendWeight)*prevPerDay
+		paceBasis = "blended"
+	} else if len(recentDaily) >= 3 {
+		paceBlendWeight = 1.0
+		pacePerDay = recentMean
+		paceBasis = "recent"
+	} else {
+		paceBlendWeight = 1.0
+		pacePerDay = avgPerDay
+		paceBasis = "sparse"
+	}
+
+	projectedBytesAtPace := int64(float64(usedBytes) + pacePerDay*daysLeftAfterToday)
+
+	var remainingBytes int64
+	if limitBytes > usedBytes {
+		remainingBytes = limitBytes - usedBytes
+	}
+
+	var usedPct float64
+	var projectedPctLinear float64
+	var projectedPctAtPace float64
+	if limitBytes > 0 {
+		usedPct = math.Round((float64(usedBytes)/float64(limitBytes))*10000) / 100
+		projectedPctLinear = math.Round((float64(projectedBytesLinear)/float64(limitBytes))*1000) / 10
+		projectedPctAtPace = math.Round((float64(projectedBytesAtPace)/float64(limitBytes))*1000) / 10
+	}
+
+	var projectedDailyBudget int64
+	if limitBytes > 0 && daysRemaining > 0 {
+		projectedDailyBudget = remainingBytes / int64(daysRemaining)
+	}
+
+	onTrack := limitBytes > 0 && projectedBytesLinear <= limitBytes
+
+	var thresholdsReached []int
+	for _, th := range thresholds {
+		if usedPct >= float64(th) {
+			thresholdsReached = append(thresholdsReached, th)
+		}
+	}
+	if thresholdsReached == nil {
+		thresholdsReached = []int{}
+	}
+
+	return QuotaStatusDTO{
+		LimitBytes:           limitBytes,
+		UsedBytes:            usedBytes,
+		RemainingBytes:       remainingBytes,
+		UsedPct:              usedPct,
+		CycleStart:           &cycleStartStr,
+		CycleEnd:             &cycleEndStr,
+		CycleEndAt:           cycleEndAt,
+		DaysRemaining:        daysRemaining,
+		ProjectedDailyBudget: projectedDailyBudget,
+		CycleDaysTotal:       cycleDaysTotal,
+		CycleDaysElapsed:     cycleDaysElapsed,
+		ProjectedBytesLinear: projectedBytesLinear,
+		ProjectedPctLinear:   projectedPctLinear,
+		PaceBytesPerDay:      int64(pacePerDay),
+		ProjectedBytesAtPace: projectedBytesAtPace,
+		ProjectedPctAtPace:   projectedPctAtPace,
+		PrevCycleBytes:       prevCycleBytes,
+		PrevCycleBytesPerDay: int64(prevPerDay),
+		PaceBlendWeight:      math.Round(paceBlendWeight*100) / 100,
+		PaceBasis:            paceBasis,
+		OnTrack:              onTrack,
+		Thresholds:           thresholds,
+		ThresholdsReached:    thresholdsReached,
+		Enabled:              limitBytes > 0,
+		NotifyTelegram:       notifyTelegram,
+		PortalURL:            portalURL,
+		PortalLabel:          portalLabel,
+	}
+}
+
+func (h *AnalyticsHandler) GetQuota(w http.ResponseWriter, r *http.Request) {
+	var routerID *int
+	if rIDStr := r.URL.Query().Get("router_id"); rIDStr != "" {
+		if id, err := strconv.Atoi(rIDStr); err == nil {
+			routerID = &id
+		}
+	}
+	if routerID == nil {
+		if def, err := h.database.GetDefaultRouter(); err == nil && def != nil {
+			routerID = &def.ID
+		}
+	}
+
+	status := h.buildQuotaStatus(routerID)
+	WriteJSON(w, http.StatusOK, status)
 }
 
 func (h *AnalyticsHandler) SaveQuota(w http.ResponseWriter, r *http.Request) {
-	var payload struct {
-		QuotaBytes int64 `json:"quota_bytes"`
+	var routerID *int
+	if rIDStr := r.URL.Query().Get("router_id"); rIDStr != "" {
+		if id, err := strconv.Atoi(rIDStr); err == nil {
+			routerID = &id
+		}
 	}
+	if routerID == nil {
+		if def, err := h.database.GetDefaultRouter(); err == nil && def != nil {
+			routerID = &def.ID
+		}
+	}
+
+	var payload QuotaConfigDTO
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 		WriteError(w, http.StatusBadRequest, "Invalid quota payload")
 		return
 	}
 
-	_ = h.database.SetSetting("isp_monthly_quota_bytes", strconv.FormatInt(payload.QuotaBytes, 10), "Monthly ISP Quota in Bytes")
-	WriteJSON(w, http.StatusOK, map[string]string{"message": "Quota updated"})
+	if payload.PortalURL != nil && *payload.PortalURL != "" {
+		u := strings.TrimSpace(*payload.PortalURL)
+		low := strings.ToLower(u)
+		if !strings.HasPrefix(low, "http://") && !strings.HasPrefix(low, "https://") {
+			WriteError(w, http.StatusBadRequest, "Portal URL must start with http:// or https://")
+			return
+		}
+		if strings.Contains(u, "@") {
+			WriteError(w, http.StatusBadRequest, "Portal URL must not contain embedded credentials")
+			return
+		}
+	}
+
+	threshStr := ""
+	if len(payload.Thresholds) > 0 {
+		var valid []string
+		seen := make(map[int]bool)
+		for _, t := range payload.Thresholds {
+			if t >= 1 && t <= 100 && !seen[t] {
+				seen[t] = true
+				valid = append(valid, strconv.Itoa(t))
+			}
+		}
+		threshStr = strings.Join(valid, ",")
+	}
+
+	notifyVal := "true"
+	if payload.NotifyTelegram != nil && !*payload.NotifyTelegram {
+		notifyVal = "false"
+	}
+
+	portalURLVal := ""
+	if payload.PortalURL != nil {
+		portalURLVal = strings.TrimSpace(*payload.PortalURL)
+	}
+
+	portalLabelVal := ""
+	if payload.PortalLabel != nil {
+		portalLabelVal = strings.TrimSpace(*payload.PortalLabel)
+		if len(portalLabelVal) > 40 {
+			portalLabelVal = portalLabelVal[:40]
+		}
+	}
+
+	limitVal := strconv.FormatInt(max(0, payload.LimitBytes), 10)
+
+	// Save router-scoped settings
+	if routerID != nil {
+		_ = h.database.SetSetting(fmt.Sprintf("quota_limit_bytes_%d", *routerID), limitVal, "ISP data limit in bytes")
+		_ = h.database.SetSetting(fmt.Sprintf("quota_alert_thresholds_%d", *routerID), threshStr, "Alert thresholds")
+		_ = h.database.SetSetting(fmt.Sprintf("quota_notify_telegram_%d", *routerID), notifyVal, "Notify Telegram")
+		_ = h.database.SetSetting(fmt.Sprintf("isp_portal_url_%d", *routerID), portalURLVal, "ISP portal link")
+		_ = h.database.SetSetting(fmt.Sprintf("isp_portal_label_%d", *routerID), portalLabelVal, "ISP portal label")
+	}
+
+	// Always maintain global fallbacks as well
+	_ = h.database.SetSetting("quota_limit_bytes", limitVal, "ISP data limit in bytes")
+	_ = h.database.SetSetting("quota_alert_thresholds", threshStr, "Alert thresholds")
+	_ = h.database.SetSetting("quota_notify_telegram", notifyVal, "Notify Telegram")
+	_ = h.database.SetSetting("isp_portal_url", portalURLVal, "ISP portal link")
+	_ = h.database.SetSetting("isp_portal_label", portalLabelVal, "ISP portal label")
+
+	status := h.buildQuotaStatus(routerID)
+	WriteJSON(w, http.StatusOK, status)
 }
 
 func (h *AnalyticsHandler) UserHistory(w http.ResponseWriter, r *http.Request) {
@@ -790,4 +1170,24 @@ func (h *AnalyticsHandler) DeviceHistory(w http.ResponseWriter, r *http.Request)
 		items = []DayHistory{}
 	}
 	WriteJSON(w, http.StatusOK, items)
+}
+
+type UserDestinationStatItem struct {
+	ID            int       `json:"id"`
+	UserID        int       `json:"user_id"`
+	DeviceID      int       `json:"device_id"`
+	DestinationIP string    `json:"destination_ip"`
+	Domain        string    `json:"domain"`
+	CountryCode   string    `json:"country_code"`
+	CountryName   string    `json:"country_name"`
+	FlagEmoji     string    `json:"flag_emoji"`
+	BytesIn       int64     `json:"bytes_in"`
+	BytesOut      int64     `json:"bytes_out"`
+	TotalBytes    int64     `json:"total_bytes"`
+	HitCount      int       `json:"hit_count"`
+	LastSeen      time.Time `json:"last_seen"`
+}
+
+func (h *AnalyticsHandler) UserDestinations(w http.ResponseWriter, r *http.Request) {
+	WriteJSON(w, http.StatusOK, []UserDestinationStatItem{})
 }

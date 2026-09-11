@@ -35,6 +35,30 @@ func (f FlexibleInt64) String() string {
 	return strconv.FormatInt(int64(f), 10)
 }
 
+// FlexibleBool unmarshals both boolean (true/false) and string ("true"/"false"/"yes"/"no").
+type FlexibleBool bool
+
+func (f *FlexibleBool) UnmarshalJSON(b []byte) error {
+	s := strings.ToLower(strings.Trim(string(b), "\""))
+	if s == "true" || s == "yes" || s == "1" {
+		*f = true
+		return nil
+	}
+	*f = false
+	return nil
+}
+
+func (f FlexibleBool) MarshalJSON() ([]byte, error) {
+	if f {
+		return []byte("true"), nil
+	}
+	return []byte("false"), nil
+}
+
+func (f FlexibleBool) Bool() bool {
+	return bool(f)
+}
+
 // Resource represents /system/resource
 type Resource struct {
 	Uptime           string  `json:"uptime"`
@@ -82,27 +106,27 @@ type Interface struct {
 
 // DHCPLease represents /ip/dhcp-server/lease
 type DHCPLease struct {
-	ID           string `json:".id"`
-	Address      string `json:"address"`
-	MacAddress   string `json:"mac-address"`
-	HostName     string `json:"host-name,omitempty"`
-	Status       string `json:"status"`
-	ExpiresAfter string `json:"expires-after,omitempty"`
-	Comment      string `json:"comment,omitempty"`
-	Dynamic      string `json:"dynamic"`
-	Disabled     string `json:"disabled"`
+	ID           string       `json:".id"`
+	Address      string       `json:"address"`
+	MacAddress   string       `json:"mac-address"`
+	HostName     string       `json:"host-name,omitempty"`
+	Status       string       `json:"status"`
+	ExpiresAfter string       `json:"expires-after,omitempty"`
+	Comment      string       `json:"comment,omitempty"`
+	Dynamic      FlexibleBool `json:"dynamic,omitempty"`
+	Disabled     FlexibleBool `json:"disabled,omitempty"`
 }
 
 // ARPEntry represents /ip/arp
 type ARPEntry struct {
-	ID         string `json:".id"`
-	Address    string `json:"address"`
-	MacAddress string `json:"mac-address"`
-	Interface  string `json:"interface"`
-	Complete   string `json:"complete"`
-	Dynamic    string `json:"dynamic"`
-	Disabled   string `json:"disabled"`
-	Comment    string `json:"comment,omitempty"`
+	ID         string       `json:".id"`
+	Address    string       `json:"address"`
+	MacAddress string       `json:"mac-address"`
+	Interface  string       `json:"interface"`
+	Complete   string       `json:"complete"`
+	Dynamic    FlexibleBool `json:"dynamic,omitempty"`
+	Disabled   FlexibleBool `json:"disabled,omitempty"`
+	Comment    string       `json:"comment,omitempty"`
 }
 
 // WiFiRegistration represents /interface/wifi/registration-table or /interface/wireless/registration-table
@@ -120,17 +144,17 @@ type WiFiRegistration struct {
 
 // SimpleQueue represents /queue/simple
 type SimpleQueue struct {
-	ID          string `json:".id,omitempty"`
-	Name        string `json:"name"`
-	Target      string `json:"target"`
-	MaxLimit    string `json:"max-limit"` // "upload/download" in bps, e.g. "10M/50M" or "0/0"
-	LimitAt     string `json:"limit-at,omitempty"`
-	Priority    string `json:"priority,omitempty"`
-	Disabled    string `json:"disabled"`
-	Comment     string `json:"comment,omitempty"`
-	Bytes       string `json:"bytes,omitempty"` // "upload/download" cumulative
-	TotalBytes  string `json:"total-bytes,omitempty"`
-	PacketRate  string `json:"rate,omitempty"`
+	ID         string       `json:".id,omitempty"`
+	Name       string       `json:"name"`
+	Target     string       `json:"target"`
+	MaxLimit   string       `json:"max-limit"` // "upload/download" in bps, e.g. "10M/50M" or "0/0"
+	LimitAt    string       `json:"limit-at,omitempty"`
+	Priority   string       `json:"priority,omitempty"`
+	Disabled   FlexibleBool `json:"disabled,omitempty"`
+	Comment    string       `json:"comment,omitempty"`
+	Bytes      string       `json:"bytes,omitempty"` // "upload/download" cumulative
+	TotalBytes string       `json:"total-bytes,omitempty"`
+	PacketRate string       `json:"rate,omitempty"`
 }
 
 // MangleRule represents /ip/firewall/mangle
@@ -147,7 +171,7 @@ type MangleRule struct {
 	Comment        string        `json:"comment,omitempty"`
 	Bytes          FlexibleInt64 `json:"bytes,omitempty"`
 	Packets        FlexibleInt64 `json:"packets,omitempty"`
-	Disabled       string        `json:"disabled"`
+	Disabled       FlexibleBool  `json:"disabled,omitempty"`
 }
 
 // FirewallConnection represents an entry in /ip/firewall/connection

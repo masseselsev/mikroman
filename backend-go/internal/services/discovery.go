@@ -2,8 +2,10 @@ package services
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/masseselsev/mikroman/internal/api"
@@ -15,25 +17,75 @@ type DiscoveryService struct {
 	database *db.DB
 	client   *routeros.Client
 	hub      *api.Hub
+	mu       sync.Mutex
+	clients  map[int]*routeros.Client
 }
 
 func NewDiscoveryService(database *db.DB, client *routeros.Client, hub *api.Hub) *DiscoveryService {
+	clients := make(map[int]*routeros.Client)
+	if client != nil {
+		if def, err := database.GetDefaultRouter(); err == nil && def != nil {
+			clients[def.ID] = client
+		}
+	}
 	return &DiscoveryService{
 		database: database,
 		client:   client,
 		hub:      hub,
+		clients:  clients,
 	}
+}
+
+func (s *DiscoveryService) getClient(routerID int) (*routeros.Client, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if c, ok := s.clients[routerID]; ok && c != nil {
+		return c, nil
+	}
+
+	defaultRouter, _ := s.database.GetDefaultRouter()
+	if (defaultRouter == nil || defaultRouter.ID == routerID) && s.client != nil {
+		s.clients[routerID] = s.client
+		return s.client, nil
+	}
+
+	router, err := s.database.GetRouter(routerID)
+	if err != nil {
+		return nil, err
+	}
+	if router == nil {
+		return nil, fmt.Errorf("router %d not found", routerID)
+	}
+
+	newClient, err := routeros.NewClient(routeros.Config{
+		Host:      router.Host,
+		Port:      router.Port,
+		Username:  router.Username,
+		Password:  router.Password,
+		UseSSL:    router.UseSSL,
+		SSLVerify: router.SSLVerify,
+		CACert:    router.CACert.String,
+		Timeout:   5 * time.Second,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	s.clients[routerID] = newClient
+	return newClient, nil
 }
 
 // SyncDevices performs one full discovery sweep across DHCP, ARP, and WiFi tables.
 func (s *DiscoveryService) SyncDevices(ctx context.Context, routerID int) (int, error) {
-	if s.client == nil {
-		return 0, nil
+	client, err := s.getClient(routerID)
+	if err != nil || client == nil {
+		return 0, err
 	}
 
-	leases, _ := s.client.GetDHCPLeases(ctx)
-	arps, _ := s.client.GetARPTable(ctx)
-	wifis, _ := s.client.GetWiFiRegistrations(ctx)
+	leases, _ := client.GetDHCPLeases(ctx)
+	arps, _ := client.GetARPTable(ctx)
+	wifis, _ := client.GetWiFiRegistrations(ctx)
 
 	// Index by MAC
 	type DiscoveredInfo struct {
@@ -151,7 +203,24 @@ func nullIfEmpty(s string) *string {
 
 // StartBackgroundLoop runs device discovery periodically in a goroutine.
 func (s *DiscoveryService) StartBackgroundLoop(ctx context.Context, interval time.Duration) {
+	runPass := func() {
+		routers, err := s.database.GetRouters()
+		if err != nil {
+			return
+		}
+		for _, r := range routers {
+			if r.IsActive {
+				sweepCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+				_, _ = s.SyncDevices(sweepCtx, r.ID)
+				cancel()
+			}
+		}
+	}
+
 	go func() {
+		// Run immediate discovery pass on startup
+		runPass()
+
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 
@@ -160,17 +229,7 @@ func (s *DiscoveryService) StartBackgroundLoop(ctx context.Context, interval tim
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				routers, err := s.database.GetRouters()
-				if err != nil {
-					continue
-				}
-				for _, r := range routers {
-					if r.IsActive {
-						sweepCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-						_, _ = s.SyncDevices(sweepCtx, r.ID)
-						cancel()
-					}
-				}
+				runPass()
 			}
 		}
 	}()

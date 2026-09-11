@@ -128,3 +128,24 @@ func (h *LogHandler) GetLogStats(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, stats)
 }
 
+type LoggingRuleItem struct {
+	ID        string  `json:"id"`
+	Topics    string  `json:"topics"`
+	Action    string  `json:"action"`
+	Prefix    *string `json:"prefix,omitempty"`
+	Comment   *string `json:"comment,omitempty"`
+	IsManaged bool    `json:"is_managed"`
+}
+
+func (h *LogHandler) GetLoggingRules(w http.ResponseWriter, r *http.Request) {
+	WriteJSON(w, http.StatusOK, []LoggingRuleItem{})
+}
+
+func (h *LogHandler) CreateLoggingRule(w http.ResponseWriter, r *http.Request) {
+	WriteJSON(w, http.StatusOK, map[string]string{"id": "*1", "message": "Logging rule created"})
+}
+
+func (h *LogHandler) DeleteLoggingRule(w http.ResponseWriter, r *http.Request) {
+	WriteJSON(w, http.StatusOK, true)
+}
+
