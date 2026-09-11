@@ -223,21 +223,20 @@ export function TrafficAnalytics({ activeRouter, initialBreakdownTab = 'overview
             </div>
             <div>
               <h2 style={{ fontSize: 'var(--fs-xl)', fontWeight: 800 }}>{t('analytics_title')}</h2>
-              <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-muted)' }}>
-                {t('analytics_subtitle')}
-              </div>
-              {/* Feedback for the switch. `loading` was tracked and never shown,
-                  so a preset change left the previous range's numbers on screen
-                  with no indication that anything was happening - which is what
-                  read as "it is very slow" rather than "it is working". */}
-              {loading && (
-                <div style={{
-                  display: 'flex', alignItems: 'center', gap: 6,
-                  fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', marginTop: 4,
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, minHeight: 20, flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-muted)' }}>
+                  {t('analytics_subtitle')}
+                </span>
+                <span style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 5,
+                  fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)',
+                  opacity: loading ? 1 : 0,
+                  transition: 'opacity 0.15s ease',
+                  pointerEvents: 'none',
                 }}>
                   <RefreshCw size={11} className="spin" /> {t('analytics_loading')}
-                </div>
-              )}
+                </span>
+              </div>
             </div>
           </div>
 

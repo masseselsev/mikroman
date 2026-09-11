@@ -258,13 +258,24 @@ type RouterLog struct {
 	Message   string    `json:"message"`
 }
 
-// RouterBackup holds router configuration snapshots.
+// RouterBackup holds router configuration snapshots and binary backups.
 type RouterBackup struct {
-	ID         int       `json:"id"`
-	RouterID   int       `json:"router_id"`
-	BackupType string    `json:"backup_type"`
-	FilePath   string    `json:"file_path"`
-	FileSize   int64     `json:"file_size"`
-	CreatedAt  time.Time `json:"created_at"`
-	Details    string    `json:"details"`
+	ID             int        `json:"id"`
+	RouterID       int        `json:"router_id"`
+	CreatedAt      time.Time  `json:"created_at"`
+	Outcome        string     `json:"outcome"`
+	Source         string     `json:"source"`
+	Fingerprint    NullString `json:"fingerprint"`
+	RSCContent     NullString `json:"rsc_content,omitempty"`
+	RSCBytes       int64      `json:"rsc_bytes"`
+	BackupFilePath NullString `json:"backup_file_path"`
+	BackupBytes    int64      `json:"backup_bytes"`
+	BackupPassword NullString `json:"backup_password,omitempty"`
+	IsPinned       bool       `json:"is_pinned"`
+	Note           NullString `json:"note"`
+	Model          NullString `json:"model"`
+	Serial         NullString `json:"serial"`
+	OSVersion      NullString `json:"os_version"`
+	ErrorMessage   NullString `json:"error_message"`
+	DurationMS     int        `json:"duration_ms"`
 }

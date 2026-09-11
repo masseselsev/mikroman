@@ -11,11 +11,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/masseselsev/mikroman/internal/api"
 	"github.com/masseselsev/mikroman/internal/crypto"
 	"github.com/masseselsev/mikroman/internal/db"
 	"github.com/masseselsev/mikroman/internal/routeros"
 )
+
+type testBroadcaster struct{}
+
+func (b *testBroadcaster) Broadcast(event interface{})                                {}
+func (b *testBroadcaster) BroadcastRouter(routerID int, isDefault bool, event interface{}) {}
 
 func TestDiscoveryAndTelemetryServices(t *testing.T) {
 	tempDir := t.TempDir()
@@ -42,6 +46,12 @@ func TestDiscoveryAndTelemetryServices(t *testing.T) {
 			FreeMemory:  "500000000",
 			TotalMemory: "1000000000",
 			Uptime:      "2d5h",
+		})
+	})
+	mux.HandleFunc("/rest/system/health", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode([]map[string]interface{}{
+			{"name": "cpu-temperature", "value": "48.5", "type": "C"},
+			{"name": "voltage", "value": "24.0", "type": "V"},
 		})
 	})
 	mux.HandleFunc("/rest/interface", func(w http.ResponseWriter, r *http.Request) {
@@ -87,7 +97,7 @@ func TestDiscoveryAndTelemetryServices(t *testing.T) {
 		t.Fatalf("failed to create client: %v", err)
 	}
 
-	hub := api.NewHub()
+	hub := &testBroadcaster{}
 	ctx := context.Background()
 
 	// 1. Test Discovery
@@ -114,10 +124,10 @@ func TestDiscoveryAndTelemetryServices(t *testing.T) {
 		t.Fatalf("telemetry collect failed: %v", err)
 	}
 
-	var cpuLoad float64
-	err = database.SqlDB.QueryRow("SELECT cpu_load FROM system_metrics WHERE router_id = 1").Scan(&cpuLoad)
-	if err != nil || cpuLoad != 5.0 {
-		t.Fatalf("expected cpu_load 5.0 in system_metrics, got %f (err: %v)", cpuLoad, err)
+	var cpuLoad, temperature, voltage float64
+	err = database.SqlDB.QueryRow("SELECT cpu_load, temperature, voltage FROM system_metrics WHERE router_id = 1").Scan(&cpuLoad, &temperature, &voltage)
+	if err != nil || cpuLoad != 5.0 || temperature != 48.5 || voltage != 24.0 {
+		t.Fatalf("expected cpu_load 5.0, temp 48.5, volt 24.0 in system_metrics, got cpu=%f, temp=%f, volt=%f (err: %v)", cpuLoad, temperature, voltage, err)
 	}
 
 	var rxBytes int64

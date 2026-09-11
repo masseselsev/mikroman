@@ -715,3 +715,208 @@ func ensureColumn(db *sql.DB, table, col, colType string) error {
 	return err
 }
 
+func scanBackup(scanner interface{ Scan(...interface{}) error }) (*RouterBackup, error) {
+	var b RouterBackup
+	err := scanner.Scan(
+		&b.ID, &b.RouterID, &b.CreatedAt, &b.Outcome, &b.Source,
+		&b.Fingerprint, &b.RSCContent, &b.RSCBytes, &b.BackupFilePath, &b.BackupBytes,
+		&b.BackupPassword, &b.IsPinned, &b.Note, &b.Model, &b.Serial,
+		&b.OSVersion, &b.ErrorMessage, &b.DurationMS,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &b, nil
+}
+
+// CreateRouterBackup inserts a new backup record.
+func (d *DB) CreateRouterBackup(b *RouterBackup) (int, error) {
+	query := `
+		INSERT INTO router_backups (
+			router_id, created_at, outcome, source, fingerprint,
+			rsc_content, rsc_bytes, backup_file_path, backup_bytes,
+			backup_password, is_pinned, note, model, serial,
+			os_version, error_message, duration_ms
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`
+	createdAt := b.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = time.Now().UTC()
+	}
+	res, err := d.SqlDB.Exec(query,
+		b.RouterID, createdAt, b.Outcome, b.Source, b.Fingerprint,
+		b.RSCContent, b.RSCBytes, b.BackupFilePath, b.BackupBytes,
+		b.BackupPassword, b.IsPinned, b.Note, b.Model, b.Serial,
+		b.OSVersion, b.ErrorMessage, b.DurationMS,
+	)
+	if err != nil {
+		return 0, err
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return 0, err
+	}
+	b.ID = int(id)
+	b.CreatedAt = createdAt
+	return b.ID, nil
+}
+
+func (d *DB) GetRouterBackup(id int) (*RouterBackup, error) {
+	row := d.SqlDB.QueryRow(`
+		SELECT id, router_id, created_at, outcome, source, fingerprint,
+		       rsc_content, rsc_bytes, backup_file_path, backup_bytes,
+		       backup_password, is_pinned, note, model, serial,
+		       os_version, error_message, duration_ms
+		FROM router_backups WHERE id = ?
+	`, id)
+	return scanBackup(row)
+}
+
+func (d *DB) GetRouterBackupRSC(id int) (string, error) {
+	b, err := d.GetRouterBackup(id)
+	if err != nil {
+		return "", err
+	}
+	if b.RSCContent.Valid && b.RSCContent.String != "" {
+		return b.RSCContent.String, nil
+	}
+	if b.Fingerprint.Valid && b.Fingerprint.String != "" {
+		var parentRSC string
+		err := d.SqlDB.QueryRow(`
+			SELECT rsc_content
+			FROM router_backups
+			WHERE router_id = ? AND fingerprint = ? AND rsc_content IS NOT NULL AND rsc_content != ''
+			ORDER BY created_at DESC
+			LIMIT 1
+		`, b.RouterID, b.Fingerprint.String).Scan(&parentRSC)
+		if err == nil && parentRSC != "" {
+			return parentRSC, nil
+		}
+	}
+	return "", nil
+}
+
+func (d *DB) GetLatestSuccessfulBackup(routerID int) (*RouterBackup, error) {
+	row := d.SqlDB.QueryRow(`
+		SELECT id, router_id, created_at, outcome, source, fingerprint,
+		       rsc_content, rsc_bytes, backup_file_path, backup_bytes,
+		       backup_password, is_pinned, note, model, serial,
+		       os_version, error_message, duration_ms
+		FROM router_backups
+		WHERE router_id = ? AND outcome IN ('changed', 'unchanged')
+		ORDER BY created_at DESC LIMIT 1
+	`, routerID)
+	return scanBackup(row)
+}
+
+func (d *DB) ListRouterBackups(routerID int, outcome *string, pinnedOnly bool, page, pageSize int) ([]RouterBackup, int, error) {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 || pageSize > 200 {
+		pageSize = 50
+	}
+
+	where := []string{"router_id = ?"}
+	args := []interface{}{routerID}
+
+	if outcome != nil && *outcome != "" {
+		where = append(where, "outcome = ?")
+		args = append(args, *outcome)
+	}
+	if pinnedOnly {
+		where = append(where, "is_pinned = 1")
+	}
+
+	whereClause := strings.Join(where, " AND ")
+
+	var total int
+	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM router_backups WHERE %s", whereClause)
+	if err := d.SqlDB.QueryRow(countQuery, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
+	offset := (page - 1) * pageSize
+	dataQuery := fmt.Sprintf(`
+		SELECT id, router_id, created_at, outcome, source, fingerprint,
+		       rsc_content, rsc_bytes, backup_file_path, backup_bytes,
+		       backup_password, is_pinned, note, model, serial,
+		       os_version, error_message, duration_ms
+		FROM router_backups
+		WHERE %s
+		ORDER BY created_at DESC
+		LIMIT ? OFFSET ?
+	`, whereClause)
+
+	dataArgs := append(args, pageSize, offset)
+	rows, err := d.SqlDB.Query(dataQuery, dataArgs...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	var list []RouterBackup
+	for rows.Next() {
+		b, err := scanBackup(rows)
+		if err == nil && b != nil {
+			list = append(list, *b)
+		}
+	}
+	if list == nil {
+		list = []RouterBackup{}
+	}
+	return list, total, nil
+}
+
+func (d *DB) UpdateRouterBackup(id int, isPinned *bool, note *string) (*RouterBackup, error) {
+	b, err := d.GetRouterBackup(id)
+	if err != nil {
+		return nil, err
+	}
+	if isPinned != nil {
+		b.IsPinned = *isPinned
+	}
+	if note != nil {
+		b.Note = NullString{sql.NullString{String: *note, Valid: true}}
+	}
+	_, err = d.SqlDB.Exec(`
+		UPDATE router_backups
+		SET is_pinned = ?, note = ?
+		WHERE id = ?
+	`, b.IsPinned, b.Note, id)
+	if err != nil {
+		return nil, err
+	}
+	return b, nil
+}
+
+func (d *DB) DeleteRouterBackup(id int) error {
+	_, err := d.SqlDB.Exec("DELETE FROM router_backups WHERE id = ?", id)
+	return err
+}
+
+func (d *DB) GetUnpinnedBackups(routerID int) ([]RouterBackup, error) {
+	rows, err := d.SqlDB.Query(`
+		SELECT id, router_id, created_at, outcome, source, fingerprint,
+		       rsc_content, rsc_bytes, backup_file_path, backup_bytes,
+		       backup_password, is_pinned, note, model, serial,
+		       os_version, error_message, duration_ms
+		FROM router_backups
+		WHERE router_id = ? AND is_pinned = 0 AND outcome != 'failed'
+		ORDER BY created_at DESC
+	`, routerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var list []RouterBackup
+	for rows.Next() {
+		b, err := scanBackup(rows)
+		if err == nil && b != nil {
+			list = append(list, *b)
+		}
+	}
+	return list, nil
+}
+

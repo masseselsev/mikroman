@@ -8,7 +8,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/masseselsev/mikroman/internal/api"
 	"github.com/masseselsev/mikroman/internal/db"
 	"github.com/masseselsev/mikroman/internal/routeros"
 )
@@ -16,12 +15,12 @@ import (
 type DiscoveryService struct {
 	database *db.DB
 	client   *routeros.Client
-	hub      *api.Hub
+	hub      EventBroadcaster
 	mu       sync.Mutex
 	clients  map[int]*routeros.Client
 }
 
-func NewDiscoveryService(database *db.DB, client *routeros.Client, hub *api.Hub) *DiscoveryService {
+func NewDiscoveryService(database *db.DB, client *routeros.Client, hub EventBroadcaster) *DiscoveryService {
 	clients := make(map[int]*routeros.Client)
 	if client != nil {
 		if def, err := database.GetDefaultRouter(); err == nil && def != nil {
@@ -45,9 +44,16 @@ func (s *DiscoveryService) getClient(routerID int) (*routeros.Client, error) {
 	}
 
 	defaultRouter, _ := s.database.GetDefaultRouter()
-	if (defaultRouter == nil || defaultRouter.ID == routerID) && s.client != nil {
+	if defaultRouter != nil && defaultRouter.ID == routerID && s.client != nil {
 		s.clients[routerID] = s.client
 		return s.client, nil
+	}
+	if defaultRouter == nil && s.client != nil {
+		routers, _ := s.database.GetRouters()
+		if len(routers) <= 1 {
+			s.clients[routerID] = s.client
+			return s.client, nil
+		}
 	}
 
 	router, err := s.database.GetRouter(routerID)

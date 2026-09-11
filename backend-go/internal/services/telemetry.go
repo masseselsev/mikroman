@@ -10,10 +10,15 @@ import (
 	"sync"
 	"time"
 
-	"github.com/masseselsev/mikroman/internal/api"
 	"github.com/masseselsev/mikroman/internal/db"
 	"github.com/masseselsev/mikroman/internal/routeros"
 )
+
+// EventBroadcaster allows decoupling telemetry from WebSocket hub implementations.
+type EventBroadcaster interface {
+	Broadcast(event interface{})
+	BroadcastRouter(routerID int, isDefault bool, event interface{})
+}
 
 // LiveRateSnapshot stores the latest sampled rates for users and devices on a router.
 type LiveRateSnapshot struct {
@@ -24,7 +29,7 @@ type LiveRateSnapshot struct {
 type TelemetryService struct {
 	database        *db.DB
 	client          *routeros.Client
-	hub             *api.Hub
+	hub             EventBroadcaster
 	mu              sync.Mutex
 	clients         map[int]*routeros.Client
 	prevIfaces      map[int]map[string][2]int64
@@ -34,7 +39,7 @@ type TelemetryService struct {
 	latestRates     map[int]LiveRateSnapshot
 }
 
-func NewTelemetryService(database *db.DB, client *routeros.Client, hub *api.Hub) *TelemetryService {
+func NewTelemetryService(database *db.DB, client *routeros.Client, hub EventBroadcaster) *TelemetryService {
 	clients := make(map[int]*routeros.Client)
 	if client != nil {
 		if def, err := database.GetDefaultRouter(); err == nil && def != nil {
@@ -84,9 +89,16 @@ func (s *TelemetryService) getClient(routerID int) (*routeros.Client, error) {
 	}
 
 	defaultRouter, _ := s.database.GetDefaultRouter()
-	if (defaultRouter == nil || defaultRouter.ID == routerID) && s.client != nil {
+	if defaultRouter != nil && defaultRouter.ID == routerID && s.client != nil {
 		s.clients[routerID] = s.client
 		return s.client, nil
+	}
+	if defaultRouter == nil && s.client != nil {
+		routers, _ := s.database.GetRouters()
+		if len(routers) <= 1 {
+			s.clients[routerID] = s.client
+			return s.client, nil
+		}
 	}
 
 	router, err := s.database.GetRouter(routerID)
@@ -137,11 +149,15 @@ func (s *TelemetryService) Collect(ctx context.Context, routerID int) error {
 		memPct = (float64(usedMem) / float64(totalMem)) * 100.0
 	}
 
+	// Fetch health early so temperature & voltage are saved with system_metrics
+	health, _ := client.GetSystemHealth(ctx)
+	temp, volt := routeros.ExtractHealthMetrics(health)
+
 	// Insert into system_metrics
 	_, _ = s.database.SqlDB.Exec(`
-		INSERT INTO system_metrics (router_id, cpu_load, memory_used_bytes, memory_total_bytes, memory_usage_pct, timestamp)
-		VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-	`, routerID, cpuLoad, usedMem, totalMem, memPct)
+		INSERT INTO system_metrics (router_id, cpu_load, memory_used_bytes, memory_total_bytes, memory_usage_pct, temperature, voltage, timestamp)
+		VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+	`, routerID, cpuLoad, usedMem, totalMem, memPct, temp, volt)
 
 	// Fetch interfaces
 	ifaces, _ := client.GetInterfaces(ctx)
@@ -335,23 +351,8 @@ func (s *TelemetryService) Collect(ctx context.Context, routerID int) error {
 	s.prevMangleTime[routerID] = now
 	s.mu.Unlock()
 
-	// Fetch health & hardware
-	health, _ := client.GetSystemHealth(ctx)
+	// Fetch hardware details
 	rb, _ := client.GetRouterBoard(ctx)
-
-	var temp, volt *float64
-	for _, item := range health {
-		if strings.EqualFold(item.Name, "temperature") {
-			if v, err := strconv.ParseFloat(item.Value, 64); err == nil {
-				temp = &v
-			}
-		}
-		if strings.EqualFold(item.Name, "voltage") {
-			if v, err := strconv.ParseFloat(item.Value, 64); err == nil {
-				volt = &v
-			}
-		}
-	}
 
 	rbModel := ""
 	rbSerial := ""

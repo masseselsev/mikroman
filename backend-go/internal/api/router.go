@@ -17,13 +17,14 @@ import (
 
 // RouterConfig holds all dependencies for API routes.
 type RouterConfig struct {
-	Config   *config.Config
-	DB       *db.DB
-	Fernet   *crypto.Fernet
-	Client   *routeros.Client
-	Hub       *Hub
-	LiveRates LiveRatesProvider
-	DistDir   string
+	Config           *config.Config
+	DB               *db.DB
+	Fernet           *crypto.Fernet
+	Client           *routeros.Client
+	Hub              *Hub
+	LiveRates        LiveRatesProvider
+	TelegramReloader TelegramReloader
+	DistDir          string
 }
 
 // NewRouter constructs the Chi router with all endpoints and SPA fallback.
@@ -69,6 +70,9 @@ func NewRouter(rc RouterConfig) http.Handler {
 
 		// System
 		sysH := NewSystemHandler(rc.Config, rc.DB, rc.Client)
+		if rc.TelegramReloader != nil {
+			sysH.SetTelegramReloader(rc.TelegramReloader)
+		}
 		api.Route("/system", func(s chi.Router) {
 			s.Get("/health", sysH.GetHealth)
 			s.Get("/status", sysH.GetSystemStatus)
@@ -94,7 +98,7 @@ func NewRouter(rc RouterConfig) http.Handler {
 
 		// Routers
 		routerH := NewRouterHandler(rc.DB)
-		containerH := NewContainerHandler(rc.DB)
+		containerH := NewContainerHandler(rc.DB, rc.Client)
 		speedtestH := NewSpeedTestHandler(rc.DB)
 		firmwareH := NewFirmwareHandler(rc.DB, rc.Client)
 		backupH := NewBackupHandler(rc.DB)

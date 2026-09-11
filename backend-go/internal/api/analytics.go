@@ -127,17 +127,17 @@ type UnassignedTrafficSummary struct {
 }
 
 type UserTrafficSummary struct {
-	UserID       int      `json:"user_id"`
-	UserName     string   `json:"user_name"`
-	AvatarIcon   string   `json:"avatar_icon"`
-	BytesIn      int64    `json:"bytes_in"`
-	BytesOut     int64    `json:"bytes_out"`
-	TotalBytes   int64    `json:"total_bytes"`
-	PctOfTotal   float64  `json:"pct_of_total"`
-	DeviceCount  int      `json:"device_count"`
-	LastSeen     *string  `json:"last_seen,omitempty"`
-	CycleBytes   int64    `json:"cycle_bytes"`
-	AllTimeBytes int64    `json:"all_time_bytes"`
+	UserID       int     `json:"user_id"`
+	UserName     string  `json:"user_name"`
+	AvatarIcon   string  `json:"avatar_icon"`
+	BytesIn      int64   `json:"bytes_in"`
+	BytesOut     int64   `json:"bytes_out"`
+	TotalBytes   int64   `json:"total_bytes"`
+	PctOfTotal   float64 `json:"pct_of_total"`
+	DeviceCount  int     `json:"device_count"`
+	LastSeen     *string `json:"last_seen,omitempty"`
+	CycleBytes   int64   `json:"cycle_bytes"`
+	AllTimeBytes int64   `json:"all_time_bytes"`
 }
 
 type DeviceTrafficSummary struct {
@@ -1100,76 +1100,473 @@ func (h *AnalyticsHandler) SaveQuota(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, status)
 }
 
+type EntityTrafficHistoryResponse struct {
+	EntityType        string                 `json:"entity_type"`
+	EntityID          int                    `json:"entity_id"`
+	EntityName        string                 `json:"entity_name"`
+	AvatarIcon        string                 `json:"avatar_icon,omitempty"`
+	MacAddress        string                 `json:"mac_address,omitempty"`
+	IPAddress         string                 `json:"ip_address,omitempty"`
+	UserName          string                 `json:"user_name,omitempty"`
+	UserID            *int                   `json:"user_id,omitempty"`
+	RangePreset       string                 `json:"range_preset"`
+	StartDate         string                 `json:"start_date"`
+	EndDate           string                 `json:"end_date"`
+	Resolution        string                 `json:"resolution"` // 'day' | 'quarter_hour' | 'week'
+	TotalBytesIn      int64                  `json:"total_bytes_in"`
+	TotalBytesOut     int64                  `json:"total_bytes_out"`
+	TotalBytes        int64                  `json:"total_bytes"`
+	DailyAverageBytes int64                  `json:"daily_average_bytes"`
+	PeakDate          *string                `json:"peak_date,omitempty"`
+	PeakLabel         *string                `json:"peak_label,omitempty"`
+	PeakBytes         int64                  `json:"peak_bytes"`
+	Timeline          []DailyTrafficPoint    `json:"timeline"`
+	Devices           []DeviceTrafficSummary `json:"devices,omitempty"`
+}
+
+func parseHistoryRange(preset, startStr, endStr string) (startDate, endDate time.Time, resolution string, daysCount int) {
+	now := time.Now()
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+
+	switch preset {
+	case "24h":
+		startDate = now.Add(-24 * time.Hour)
+		endDate = now
+		resolution = "quarter_hour"
+		daysCount = 1
+	case "7d":
+		startDate = today.AddDate(0, 0, -6)
+		endDate = today
+		resolution = "day"
+		daysCount = 7
+	case "30d":
+		startDate = today.AddDate(0, 0, -29)
+		endDate = today
+		resolution = "day"
+		daysCount = 30
+	case "1y":
+		startDate = today.AddDate(-1, 0, 0)
+		endDate = today
+		resolution = "week"
+		daysCount = 365
+	case "all_time":
+		startDate = today.AddDate(-10, 0, 0)
+		endDate = today
+		resolution = "week"
+		daysCount = 3650
+	case "custom":
+		resolution = "day"
+		if s, err := time.Parse("2006-01-02", startStr); err == nil {
+			startDate = s
+		} else {
+			startDate = today.AddDate(0, 0, -6)
+		}
+		if e, err := time.Parse("2006-01-02", endStr); err == nil {
+			endDate = e
+		} else {
+			endDate = today
+		}
+		daysCount = int(endDate.Sub(startDate).Hours()/24) + 1
+		if daysCount < 1 {
+			daysCount = 1
+		}
+	default:
+		startDate = today.AddDate(0, 0, -6)
+		endDate = today
+		resolution = "day"
+		daysCount = 7
+	}
+	return
+}
+
 func (h *AnalyticsHandler) UserHistory(w http.ResponseWriter, r *http.Request) {
 	idStr := chi.URLParam(r, "id")
 	id, _ := strconv.Atoi(idStr)
 
-	rows, err := h.database.SqlDB.Query(`
-		SELECT record_date, bytes_in, bytes_out
-		FROM traffic_rollups
-		WHERE user_id = ?
-		ORDER BY record_date DESC LIMIT 30
-	`, id)
-	if err != nil {
-		WriteError(w, http.StatusInternalServerError, "Failed to load history")
+	// Fetch user details
+	user, err := h.database.GetUser(id)
+	if err != nil || user == nil {
+		WriteError(w, http.StatusNotFound, "User not found")
 		return
 	}
-	defer rows.Close()
 
-	type DayHistory struct {
-		Date     string `json:"date"`
-		BytesIn  int64  `json:"bytes_in"`
-		BytesOut int64  `json:"bytes_out"`
+	q := r.URL.Query()
+	preset := q.Get("preset")
+	if preset == "" {
+		preset = "7d"
 	}
+	startStr := q.Get("start_date")
+	endStr := q.Get("end_date")
 
-	var items []DayHistory
-	for rows.Next() {
-		var d DayHistory
-		if err := rows.Scan(&d.Date, &d.BytesIn, &d.BytesOut); err == nil {
-			items = append(items, d)
+	startDate, endDate, resolution, daysCount := parseHistoryRange(preset, startStr, endStr)
+	startFormatted := startDate.Format("2006-01-02")
+	endFormatted := endDate.Format("2006-01-02")
+
+	var timeline []DailyTrafficPoint
+	var totalIn, totalOut, totalBytes int64
+	var peakBytes int64
+	var peakDate, peakLabel *string
+
+	if resolution == "quarter_hour" {
+		// 24-hour intraday breakdown from 15-minute buckets
+		bucketLimit := startDate.Format("2006-01-02 15:04:05")
+		rows, err := h.database.SqlDB.Query(`
+			SELECT bucket_start, bytes_in, bytes_out
+			FROM user_traffic_buckets
+			WHERE user_id = ? AND bucket_start >= ?
+			ORDER BY bucket_start ASC
+		`, id, bucketLimit)
+		if err == nil {
+			defer rows.Close()
+			for rows.Next() {
+				var bStart string
+				var bin, bout int64
+				if err := rows.Scan(&bStart, &bin, &bout); err == nil {
+					tBytes := bin + bout
+					totalIn += bin
+					totalOut += bout
+					totalBytes += tBytes
+
+					recDate := bStart
+					lbl := bStart
+					if t, err := time.Parse("2006-01-02 15:04:05", bStart); err == nil {
+						recDate = t.Format("2006-01-02")
+						lbl = t.Format("15:04")
+					} else if t, err := time.Parse(time.RFC3339, bStart); err == nil {
+						recDate = t.Format("2006-01-02")
+						lbl = t.Format("15:04")
+					}
+
+					pt := DailyTrafficPoint{
+						RecordDate: recDate,
+						Label:      &lbl,
+						BytesIn:    bin,
+						BytesOut:   bout,
+						TotalBytes: tBytes,
+					}
+					timeline = append(timeline, pt)
+
+					if tBytes > peakBytes {
+						peakBytes = tBytes
+						peakLabel = &lbl
+						peakDate = &recDate
+					}
+				}
+			}
+		}
+	} else {
+		// Daily aggregated history
+		rows, err := h.database.SqlDB.Query(`
+			SELECT record_date, bytes_in, bytes_out
+			FROM traffic_rollups
+			WHERE user_id = ? AND record_date BETWEEN ? AND ?
+			ORDER BY record_date ASC
+		`, id, startFormatted, endFormatted)
+
+		rollupsMap := make(map[string][2]int64)
+		if err == nil {
+			defer rows.Close()
+			for rows.Next() {
+				var rDate string
+				var bin, bout int64
+				if err := rows.Scan(&rDate, &bin, &bout); err == nil {
+					rollupsMap[rDate] = [2]int64{bin, bout}
+				}
+			}
+		}
+
+		// Fill every day in date range
+		curr := startDate
+		for !curr.After(endDate) {
+			dStr := curr.Format("2006-01-02")
+			val := rollupsMap[dStr]
+			bin, bout := val[0], val[1]
+			tBytes := bin + bout
+			totalIn += bin
+			totalOut += bout
+			totalBytes += tBytes
+
+			dayStr := dStr
+			timeline = append(timeline, DailyTrafficPoint{
+				RecordDate: dStr,
+				BytesIn:    bin,
+				BytesOut:   bout,
+				TotalBytes: tBytes,
+			})
+
+			if tBytes > peakBytes {
+				peakBytes = tBytes
+				peakDate = &dayStr
+			}
+			curr = curr.AddDate(0, 0, 1)
 		}
 	}
 
-	if items == nil {
-		items = []DayHistory{}
+	if timeline == nil {
+		timeline = []DailyTrafficPoint{}
 	}
-	WriteJSON(w, http.StatusOK, items)
+
+	dailyAvg := int64(0)
+	if daysCount > 0 {
+		dailyAvg = totalBytes / int64(daysCount)
+	}
+
+	// Fetch user's devices breakdown
+	var userDevices []DeviceTrafficSummary
+	devs, _ := h.database.GetDevices(nil)
+	for _, d := range devs {
+		if d.UserID != nil && *d.UserID == id {
+			var dIn, dOut int64
+			_ = h.database.SqlDB.QueryRow(`
+				SELECT COALESCE(SUM(bytes_in), 0), COALESCE(SUM(bytes_out), 0)
+				FROM device_traffic_rollups
+				WHERE device_id = ? AND record_date BETWEEN ? AND ?
+			`, d.ID, startFormatted, endFormatted).Scan(&dIn, &dOut)
+
+			dTotal := dIn + dOut
+			var pct float64
+			if totalBytes > 0 {
+				pct = roundFloat((float64(dTotal)/float64(totalBytes))*100.0, 1)
+			}
+			var customName, hostName, ipAddr, vendor *string
+			if d.CustomName.Valid && d.CustomName.String != "" {
+				cName := d.CustomName.String
+				customName = &cName
+			}
+			if d.Hostname.Valid && d.Hostname.String != "" {
+				hName := d.Hostname.String
+				hostName = &hName
+			}
+			if d.IPAddress.Valid && d.IPAddress.String != "" {
+				ip := d.IPAddress.String
+				ipAddr = &ip
+			}
+			if d.Vendor.Valid && d.Vendor.String != "" {
+				v := d.Vendor.String
+				vendor = &v
+			}
+			var lastSeenStr *string
+			if !d.LastSeen.IsZero() {
+				ls := d.LastSeen.Format("2006-01-02T15:04:05Z")
+				lastSeenStr = &ls
+			}
+
+			userDevices = append(userDevices, DeviceTrafficSummary{
+				DeviceID:      d.ID,
+				MacAddress:    d.MacAddress,
+				Hostname:      hostName,
+				CustomName:    customName,
+				IPAddress:     ipAddr,
+				Vendor:        vendor,
+				UserID:        d.UserID,
+				UserName:      &user.Name,
+				BytesIn:       dIn,
+				BytesOut:      dOut,
+				TotalBytes:    dTotal,
+				PctOfTotal:    pct,
+				SpeedLimit:    d.SpeedLimit,
+				IsPaused:      d.IsPaused,
+				IsHidden:      d.IsHidden,
+				LastSeen:      lastSeenStr,
+				CycleBytes:    0,
+				AllTimeBytes:  0,
+				IsRetiredPool: false,
+			})
+		}
+	}
+	if userDevices == nil {
+		userDevices = []DeviceTrafficSummary{}
+	}
+
+	response := EntityTrafficHistoryResponse{
+		EntityType:        "user",
+		EntityID:          id,
+		EntityName:        user.Name,
+		AvatarIcon:        user.AvatarIcon,
+		RangePreset:       preset,
+		StartDate:         startFormatted,
+		EndDate:           endFormatted,
+		Resolution:        resolution,
+		TotalBytesIn:      totalIn,
+		TotalBytesOut:     totalOut,
+		TotalBytes:        totalBytes,
+		DailyAverageBytes: dailyAvg,
+		PeakDate:          peakDate,
+		PeakLabel:         peakLabel,
+		PeakBytes:         peakBytes,
+		Timeline:          timeline,
+		Devices:           userDevices,
+	}
+
+	WriteJSON(w, http.StatusOK, response)
 }
 
 func (h *AnalyticsHandler) DeviceHistory(w http.ResponseWriter, r *http.Request) {
 	idStr := chi.URLParam(r, "id")
 	id, _ := strconv.Atoi(idStr)
 
-	rows, err := h.database.SqlDB.Query(`
-		SELECT record_date, bytes_in, bytes_out
-		FROM device_traffic_rollups
-		WHERE device_id = ?
-		ORDER BY record_date DESC LIMIT 30
-	`, id)
-	if err != nil {
-		WriteError(w, http.StatusInternalServerError, "Failed to load history")
+	// Fetch device details
+	dev, err := h.database.GetDevice(id)
+	if err != nil || dev == nil {
+		WriteError(w, http.StatusNotFound, "Device not found")
 		return
 	}
-	defer rows.Close()
 
-	type DayHistory struct {
-		Date     string `json:"date"`
-		BytesIn  int64  `json:"bytes_in"`
-		BytesOut int64  `json:"bytes_out"`
+	q := r.URL.Query()
+	preset := q.Get("preset")
+	if preset == "" {
+		preset = "7d"
 	}
+	startStr := q.Get("start_date")
+	endStr := q.Get("end_date")
 
-	var items []DayHistory
-	for rows.Next() {
-		var d DayHistory
-		if err := rows.Scan(&d.Date, &d.BytesIn, &d.BytesOut); err == nil {
-			items = append(items, d)
+	startDate, endDate, resolution, daysCount := parseHistoryRange(preset, startStr, endStr)
+	startFormatted := startDate.Format("2006-01-02")
+	endFormatted := endDate.Format("2006-01-02")
+
+	var timeline []DailyTrafficPoint
+	var totalIn, totalOut, totalBytes int64
+	var peakBytes int64
+	var peakDate, peakLabel *string
+
+	if resolution == "quarter_hour" {
+		bucketLimit := startDate.Format("2006-01-02 15:04:05")
+		rows, err := h.database.SqlDB.Query(`
+			SELECT bucket_start, bytes_in, bytes_out
+			FROM device_traffic_buckets
+			WHERE device_id = ? AND bucket_start >= ?
+			ORDER BY bucket_start ASC
+		`, id, bucketLimit)
+		if err == nil {
+			defer rows.Close()
+			for rows.Next() {
+				var bStart string
+				var bin, bout int64
+				if err := rows.Scan(&bStart, &bin, &bout); err == nil {
+					tBytes := bin + bout
+					totalIn += bin
+					totalOut += bout
+					totalBytes += tBytes
+
+					recDate := bStart
+					lbl := bStart
+					if t, err := time.Parse("2006-01-02 15:04:05", bStart); err == nil {
+						recDate = t.Format("2006-01-02")
+						lbl = t.Format("15:04")
+					} else if t, err := time.Parse(time.RFC3339, bStart); err == nil {
+						recDate = t.Format("2006-01-02")
+						lbl = t.Format("15:04")
+					}
+
+					timeline = append(timeline, DailyTrafficPoint{
+						RecordDate: recDate,
+						Label:      &lbl,
+						BytesIn:    bin,
+						BytesOut:   bout,
+						TotalBytes: tBytes,
+					})
+
+					if tBytes > peakBytes {
+						peakBytes = tBytes
+						peakLabel = &lbl
+						peakDate = &recDate
+					}
+				}
+			}
+		}
+	} else {
+		rows, err := h.database.SqlDB.Query(`
+			SELECT record_date, bytes_in, bytes_out
+			FROM device_traffic_rollups
+			WHERE device_id = ? AND record_date BETWEEN ? AND ?
+			ORDER BY record_date ASC
+		`, id, startFormatted, endFormatted)
+
+		rollupsMap := make(map[string][2]int64)
+		if err == nil {
+			defer rows.Close()
+			for rows.Next() {
+				var rDate string
+				var bin, bout int64
+				if err := rows.Scan(&rDate, &bin, &bout); err == nil {
+					rollupsMap[rDate] = [2]int64{bin, bout}
+				}
+			}
+		}
+
+		curr := startDate
+		for !curr.After(endDate) {
+			dStr := curr.Format("2006-01-02")
+			val := rollupsMap[dStr]
+			bin, bout := val[0], val[1]
+			tBytes := bin + bout
+			totalIn += bin
+			totalOut += bout
+			totalBytes += tBytes
+
+			dayStr := dStr
+			timeline = append(timeline, DailyTrafficPoint{
+				RecordDate: dStr,
+				BytesIn:    bin,
+				BytesOut:   bout,
+				TotalBytes: tBytes,
+			})
+
+			if tBytes > peakBytes {
+				peakBytes = tBytes
+				peakDate = &dayStr
+			}
+			curr = curr.AddDate(0, 0, 1)
 		}
 	}
 
-	if items == nil {
-		items = []DayHistory{}
+	if timeline == nil {
+		timeline = []DailyTrafficPoint{}
 	}
-	WriteJSON(w, http.StatusOK, items)
+
+	dailyAvg := int64(0)
+	if daysCount > 0 {
+		dailyAvg = totalBytes / int64(daysCount)
+	}
+
+	dName := dev.CustomName.String
+	if dName == "" {
+		dName = dev.Hostname.String
+	}
+	if dName == "" {
+		dName = dev.MacAddress
+	}
+
+	userName := ""
+	if dev.UserID != nil {
+		if u, _ := h.database.GetUser(*dev.UserID); u != nil {
+			userName = u.Name
+		}
+	}
+
+	response := EntityTrafficHistoryResponse{
+		EntityType:        "device",
+		EntityID:          id,
+		EntityName:        dName,
+		MacAddress:        dev.MacAddress,
+		IPAddress:         dev.IPAddress.String,
+		UserName:          userName,
+		UserID:            dev.UserID,
+		RangePreset:       preset,
+		StartDate:         startFormatted,
+		EndDate:           endFormatted,
+		Resolution:        resolution,
+		TotalBytesIn:      totalIn,
+		TotalBytesOut:     totalOut,
+		TotalBytes:        totalBytes,
+		DailyAverageBytes: dailyAvg,
+		PeakDate:          peakDate,
+		PeakLabel:         peakLabel,
+		PeakBytes:         peakBytes,
+		Timeline:          timeline,
+	}
+
+	WriteJSON(w, http.StatusOK, response)
 }
 
 type UserDestinationStatItem struct {

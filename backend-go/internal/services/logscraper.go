@@ -3,6 +3,8 @@ package services
 import (
 	"context"
 	"fmt"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -40,9 +42,16 @@ func (s *LogScraperService) getClient(routerID int) (*routeros.Client, error) {
 	}
 
 	defaultRouter, _ := s.database.GetDefaultRouter()
-	if (defaultRouter == nil || defaultRouter.ID == routerID) && s.client != nil {
+	if defaultRouter != nil && defaultRouter.ID == routerID && s.client != nil {
 		s.clients[routerID] = s.client
 		return s.client, nil
+	}
+	if defaultRouter == nil && s.client != nil {
+		routers, _ := s.database.GetRouters()
+		if len(routers) <= 1 {
+			s.clients[routerID] = s.client
+			return s.client, nil
+		}
 	}
 
 	router, err := s.database.GetRouter(routerID)
@@ -72,6 +81,11 @@ func (s *LogScraperService) getClient(routerID int) (*routeros.Client, error) {
 }
 
 func (s *LogScraperService) Scrape(ctx context.Context, routerID int) error {
+	enabled, _ := s.database.GetSetting("log_scraping_enabled")
+	if strings.EqualFold(enabled, "false") || enabled == "0" {
+		return nil
+	}
+
 	client, err := s.getClient(routerID)
 	if err != nil || client == nil {
 		return err
@@ -90,10 +104,16 @@ func (s *LogScraperService) Scrape(ctx context.Context, routerID int) error {
 		`, routerID, l.ID, l.Topics, l.Message)
 	}
 
-	// Prune logs older than 14 days
-	_, _ = s.database.SqlDB.Exec(`
-		DELETE FROM router_logs WHERE created_at < datetime('now', '-14 days')
-	`)
+	// Prune logs according to configured retention days (default 14)
+	retentionDays := 14
+	if retVal, err := s.database.GetSetting("log_retention_days"); err == nil && retVal != "" {
+		if d, err := strconv.Atoi(retVal); err == nil && d > 0 {
+			retentionDays = d
+		}
+	}
+
+	pruneQuery := fmt.Sprintf("DELETE FROM router_logs WHERE created_at < datetime('now', '-%d days')", retentionDays)
+	_, _ = s.database.SqlDB.Exec(pruneQuery)
 
 	return nil
 }

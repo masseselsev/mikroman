@@ -116,6 +116,15 @@ func main() {
 		slog.Info("Background workers started (Goroutines M:N scheduler)")
 	}
 
+	// Backup scheduler (hourly check)
+	backupSvc := services.NewBackupService(database)
+	backupSched := services.NewBackupScheduler(backupSvc, 1*time.Hour)
+	backupSched.Start()
+
+	// Telegram Bot service (long polling & alerts)
+	telegramSvc := services.NewTelegramBotService(database, client)
+	telegramSvc.Start()
+
 	// 8. Build HTTP Router
 	distDir := *distDirFlag
 	if _, err := os.Stat(distDir); os.IsNotExist(err) {
@@ -128,13 +137,14 @@ func main() {
 	}
 
 	routerHandler := api.NewRouter(api.RouterConfig{
-		Config:    cfg,
-		DB:        database,
-		Fernet:    fernet,
-		Client:    client,
-		Hub:       hub,
-		LiveRates: telemSvc,
-		DistDir:   distDir,
+		Config:           cfg,
+		DB:               database,
+		Fernet:           fernet,
+		Client:           client,
+		Hub:              hub,
+		LiveRates:        telemSvc,
+		TelegramReloader: telegramSvc,
+		DistDir:          distDir,
 	})
 
 	server := &http.Server{
@@ -154,6 +164,8 @@ func main() {
 
 		slog.Info("Shutting down MikroMan gracefully...")
 		cancel()
+		backupSched.Stop()
+		telegramSvc.Stop()
 
 		shutdownCtx, sCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer sCancel()

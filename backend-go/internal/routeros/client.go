@@ -278,3 +278,52 @@ func (c *Client) Post(ctx context.Context, path string, body, target interface{}
 func (c *Client) Delete(ctx context.Context, path string) error {
 	return c.doRequest(ctx, http.MethodDelete, path, nil, nil)
 }
+
+// DoRaw executes an HTTP request against the RouterOS REST API and returns raw body bytes and HTTP status code.
+func (c *Client) DoRaw(ctx context.Context, method, path string, body io.Reader, contentType string) ([]byte, int, error) {
+	if c.isBreakerOpen() {
+		return nil, 0, fmt.Errorf("%w (last error: %v)", ErrUnreachable, c.lastError)
+	}
+
+	url := c.baseURL + path
+	req, err := http.NewRequestWithContext(ctx, method, url, body)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	req.SetBasicAuth(c.cfg.Username, c.cfg.Password)
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		c.noteFailure(err)
+		return nil, 0, err
+	}
+	defer resp.Body.Close()
+
+	c.noteSuccess()
+
+	respData, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, resp.StatusCode, fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	return respData, resp.StatusCode, nil
+}
+
+// PostJSONRaw executes a POST request with JSON body and returns raw response body bytes.
+func (c *Client) PostJSONRaw(ctx context.Context, path string, body interface{}) ([]byte, int, error) {
+	var bodyReader io.Reader
+	if body != nil {
+		data, err := json.Marshal(body)
+		if err != nil {
+			return nil, 0, fmt.Errorf("failed to marshal request body: %w", err)
+		}
+		bodyReader = bytes.NewReader(data)
+	}
+	return c.DoRaw(ctx, http.MethodPost, path, bodyReader, "application/json")
+}
+
