@@ -1,0 +1,138 @@
+package db
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/masseselsev/mikroman/internal/crypto"
+)
+
+func TestDBSchemaAndOperations(t *testing.T) {
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "test.db")
+
+	fernet, err := crypto.NewFernet("cw_z4pYJ2-8_9V18R5v6R1XbJ9i9w9G1R1XbJ9i9w9E=")
+	if err != nil {
+		t.Fatalf("failed to create Fernet: %v", err)
+	}
+
+	database, err := Open(dbPath, fernet)
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer database.Close()
+
+	// 1. Test App Settings
+	if err := database.SetSetting("test_key", "test_val", "A test description"); err != nil {
+		t.Fatalf("failed to set setting: %v", err)
+	}
+
+	val, err := database.GetSetting("test_key")
+	if err != nil || val != "test_val" {
+		t.Fatalf("expected 'test_val', got %q (err: %v)", val, err)
+	}
+
+	// 2. Test Router with encrypted password
+	router := &Router{
+		Name:      "Home-Gateway",
+		Host:      "192.168.1.1",
+		Port:      443,
+		UseSSL:    true,
+		SSLVerify: false,
+		Username:  "admin",
+		Password:  "P@ssw0rdSecure!",
+		IsActive:  true,
+		IsDefault: true,
+	}
+	if err := database.CreateRouter(router); err != nil {
+		t.Fatalf("failed to create router: %v", err)
+	}
+
+	// Verify raw password in database is encrypted
+	var rawPass string
+	err = database.SqlDB.QueryRow("SELECT password FROM routers WHERE id = ?", router.ID).Scan(&rawPass)
+	if err != nil {
+		t.Fatalf("failed to read raw password: %v", err)
+	}
+	if rawPass == "P@ssw0rdSecure!" || len(rawPass) < 20 {
+		t.Fatalf("expected encrypted password, got %q", rawPass)
+	}
+
+	// Verify GetRouter decrypts it transparently
+	fetchedRouter, err := database.GetRouter(router.ID)
+	if err != nil || fetchedRouter == nil {
+		t.Fatalf("failed to get router: %v", err)
+	}
+	if fetchedRouter.Password != "P@ssw0rdSecure!" {
+		t.Fatalf("expected decrypted password 'P@ssw0rdSecure!', got %q", fetchedRouter.Password)
+	}
+
+	// 3. Test Users
+	user := &User{
+		RouterID:   &router.ID,
+		Name:       "John Doe",
+		AvatarIcon: "gamer",
+		SpeedLimit: "50M/50M",
+		IsPaused:   false,
+		Priority:   2,
+		SortOrder:  1,
+	}
+	if err := database.CreateUser(user); err != nil {
+		t.Fatalf("failed to create user: %v", err)
+	}
+
+	users, err := database.GetUsers(&router.ID)
+	if err != nil || len(users) != 1 {
+		t.Fatalf("expected 1 user, got %d (err: %v)", len(users), err)
+	}
+	if users[0].Name != "John Doe" {
+		t.Fatalf("expected 'John Doe', got %q", users[0].Name)
+	}
+
+	// Test Update User
+	user.Name = "Johnathan Doe"
+	if err := database.UpdateUser(user); err != nil {
+		t.Fatalf("failed to update user: %v", err)
+	}
+	updatedUser, _ := database.GetUser(user.ID)
+	if updatedUser.Name != "Johnathan Doe" {
+		t.Fatalf("expected updated name, got %q", updatedUser.Name)
+	}
+
+	// 4. Test Delete User
+	if err := database.DeleteUser(user.ID); err != nil {
+		t.Fatalf("failed to delete user: %v", err)
+	}
+	deletedUser, _ := database.GetUser(user.ID)
+	if deletedUser != nil {
+		t.Fatalf("expected user to be deleted, found: %+v", deletedUser)
+	}
+}
+
+func TestExistingDatabaseRead(t *testing.T) {
+	// If a backup DB exists in backups/, test that Go can open and read it!
+	backupPath := "../backups/app-20260902-151021.db"
+	if _, err := os.Stat(backupPath); os.IsNotExist(err) {
+		t.Skip("backup database not present, skipping")
+	}
+
+	// Use data/.secret_key if exists
+	fernet, _ := crypto.ResolveKey("", "../data")
+
+	database, err := Open(backupPath, fernet)
+	if err != nil {
+		t.Fatalf("failed to open existing backup database: %v", err)
+	}
+	defer database.Close()
+
+	routers, err := database.GetRouters()
+	if err != nil {
+		t.Fatalf("failed to read routers from existing database: %v", err)
+	}
+	if len(routers) == 0 {
+		t.Fatalf("expected at least 1 router in existing database")
+	}
+
+	t.Logf("Successfully read %d router(s) from existing production backup DB!", len(routers))
+}
