@@ -2,8 +2,10 @@ package services
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -148,11 +150,185 @@ func formatRate(limit string) string {
 	return fmt.Sprintf("%s/%s", l, l)
 }
 
+// SyncCounterRules ensures RouterOS has mangle accounting rules for all accountable devices and self-traffic.
+func (s *TrafficService) SyncCounterRules(ctx context.Context, routerID int) error {
+	if s.client == nil {
+		return nil
+	}
+
+	devices, err := s.database.GetDevices(&routerID)
+	if err != nil {
+		return err
+	}
+
+	// Filter accountable devices (not deleted, has non-empty IP)
+	var candidates []db.Device
+	for _, d := range devices {
+		if !d.IsDeleted && d.IPAddress.Valid && strings.TrimSpace(d.IPAddress.String) != "" {
+			candidates = append(candidates, d)
+		}
+	}
+
+	// Deduplicate by IP: deterministic winner (active first, then newer last seen, then lower ID)
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].IsActive != candidates[j].IsActive {
+			return candidates[i].IsActive
+		}
+		if !candidates[i].LastSeen.Equal(candidates[j].LastSeen) {
+			return candidates[i].LastSeen.After(candidates[j].LastSeen)
+		}
+		return candidates[i].ID < candidates[j].ID
+	})
+
+	accountableByIP := make(map[string]db.Device)
+	for _, d := range candidates {
+		ip := strings.TrimSpace(d.IPAddress.String)
+		if _, exists := accountableByIP[ip]; !exists {
+			accountableByIP[ip] = d
+		}
+	}
+
+	// Read monitored WAN interfaces
+	monKey := fmt.Sprintf("monitored_interfaces_%d", routerID)
+	monVal, _ := s.database.GetSetting(monKey)
+	if monVal == "" {
+		monVal, _ = s.database.GetSetting("monitored_interfaces_default")
+	}
+	var monitored []string
+	if monVal != "" {
+		_ = json.Unmarshal([]byte(monVal), &monitored)
+	}
+	if monitored == nil {
+		monitored = []string{}
+	}
+
+	desired := make(map[string]routeros.MangleRule)
+
+	// Router self traffic rules
+	for _, wan := range monitored {
+		downComment := fmt.Sprintf("mikroman:acct:self:down:%s", wan)
+		desired[downComment] = routeros.MangleRule{
+			Chain:       "input",
+			Action:      "passthrough",
+			InInterface: wan,
+			Comment:     downComment,
+			Disabled:    "false",
+		}
+		upComment := fmt.Sprintf("mikroman:acct:self:up:%s", wan)
+		desired[upComment] = routeros.MangleRule{
+			Chain:        "output",
+			Action:       "passthrough",
+			OutInterface: wan,
+			Comment:      upComment,
+			Disabled:     "false",
+		}
+	}
+
+	// Device rules
+	if len(monitored) <= 1 {
+		wan := ""
+		if len(monitored) == 1 {
+			wan = monitored[0]
+		}
+		for _, dev := range accountableByIP {
+			upComment := fmt.Sprintf("mikroman:acct:dev_%d:up", dev.ID)
+			desired[upComment] = routeros.MangleRule{
+				Chain:        "forward",
+				Action:       "passthrough",
+				SrcAddress:   dev.IPAddress.String,
+				OutInterface: wan,
+				Comment:      upComment,
+				Disabled:     "false",
+			}
+			downComment := fmt.Sprintf("mikroman:acct:dev_%d:down", dev.ID)
+			desired[downComment] = routeros.MangleRule{
+				Chain:       "forward",
+				Action:      "passthrough",
+				DstAddress:  dev.IPAddress.String,
+				InInterface: wan,
+				Comment:     downComment,
+				Disabled:    "false",
+			}
+		}
+	} else {
+		for _, dev := range accountableByIP {
+			for _, wan := range monitored {
+				upComment := fmt.Sprintf("mikroman:acct:dev_%d:up:%s", dev.ID, wan)
+				desired[upComment] = routeros.MangleRule{
+					Chain:        "forward",
+					Action:       "passthrough",
+					SrcAddress:   dev.IPAddress.String,
+					OutInterface: wan,
+					Comment:      upComment,
+					Disabled:     "false",
+				}
+				downComment := fmt.Sprintf("mikroman:acct:dev_%d:down:%s", dev.ID, wan)
+				desired[downComment] = routeros.MangleRule{
+					Chain:       "forward",
+					Action:      "passthrough",
+					DstAddress:  dev.IPAddress.String,
+					InInterface: wan,
+					Comment:     downComment,
+					Disabled:    "false",
+				}
+			}
+		}
+	}
+
+	rules, err := s.client.GetMangleRules(ctx)
+	if err != nil {
+		return err
+	}
+
+	existing := make(map[string]routeros.MangleRule)
+	for _, r := range rules {
+		if strings.HasPrefix(r.Comment, "mikroman:acct:") {
+			existing[r.Comment] = r
+		}
+	}
+
+	// Create or update desired rules
+	for comment, spec := range desired {
+		ruleCopy := spec
+		if existingRule, ok := existing[comment]; !ok {
+			_ = s.client.CreateMangleRule(ctx, &ruleCopy)
+		} else {
+			updates := make(map[string]interface{})
+			if existingRule.SrcAddress != spec.SrcAddress {
+				updates["src-address"] = spec.SrcAddress
+			}
+			if existingRule.DstAddress != spec.DstAddress {
+				updates["dst-address"] = spec.DstAddress
+			}
+			if existingRule.InInterface != spec.InInterface {
+				updates["in-interface"] = spec.InInterface
+			}
+			if existingRule.OutInterface != spec.OutInterface {
+				updates["out-interface"] = spec.OutInterface
+			}
+			if len(updates) > 0 {
+				_ = s.client.UpdateMangleRule(ctx, existingRule.ID, updates)
+			}
+		}
+	}
+
+	// Prune rules no longer desired
+	for comment, r := range existing {
+		if _, needed := desired[comment]; !needed {
+			_ = s.client.DeleteMangleRule(ctx, r.ID)
+		}
+	}
+
+	return nil
+}
+
 // AccountingPass computes byte deltas from mangle rules and stores rollups.
 func (s *TrafficService) AccountingPass(ctx context.Context, routerID int) error {
 	if s.client == nil {
 		return nil
 	}
+
+	_ = s.SyncCounterRules(ctx, routerID)
 
 	rules, err := s.client.GetMangleRules(ctx)
 	if err != nil {
@@ -169,17 +345,17 @@ func (s *TrafficService) AccountingPass(ctx context.Context, routerID int) error
 
 	prevMap := s.prevCounters[routerID]
 	if prevMap == nil {
-		// First pass: seed baseline without bogus deltas
 		s.prevCounters[routerID] = currentMap
 		return nil
 	}
 
-	today := time.Now().Format("2006-01-02")
+	now := time.Now()
+	today := now.Format("2006-01-02")
+	bucketStart := now.Truncate(15 * time.Minute).Format("2006-01-02 15:04:05")
 
 	for comment, currentBytes := range currentMap {
 		prevBytes := prevMap[comment]
 		if currentBytes < prevBytes {
-			// Counter reset (reboot)
 			prevBytes = 0
 		}
 		delta := currentBytes - prevBytes
@@ -187,45 +363,107 @@ func (s *TrafficService) AccountingPass(ctx context.Context, routerID int) error
 			continue
 		}
 
-		// Comment formats:
-		// mikroman:acct:dev_<devID>:up
-		// mikroman:acct:dev_<devID>:down
 		parts := strings.Split(comment, ":")
-		if len(parts) >= 4 && strings.HasPrefix(parts[2], "dev_") {
-			devIDStr := strings.TrimPrefix(parts[2], "dev_")
-			devID, err := strconv.Atoi(devIDStr)
-			if err != nil {
-				continue
-			}
+		if len(parts) >= 4 {
+			if strings.HasPrefix(parts[2], "dev_") {
+				devIDStr := strings.TrimPrefix(parts[2], "dev_")
+				devID, err := strconv.Atoi(devIDStr)
+				if err != nil {
+					continue
+				}
 
-			isUp := parts[3] == "up"
-			var bytesIn, bytesOut int64
-			if isUp {
-				bytesOut = delta
-			} else {
-				bytesIn = delta
-			}
+				isUp := parts[3] == "up"
+				var bytesIn, bytesOut int64
+				if isUp {
+					bytesOut = delta
+				} else {
+					bytesIn = delta
+				}
 
-			// Update device_traffic_rollups
-			_, _ = s.database.SqlDB.Exec(`
-				INSERT INTO device_traffic_rollups (device_id, record_date, bytes_in, bytes_out)
-				VALUES (?, ?, ?, ?)
-				ON CONFLICT(device_id, record_date) DO UPDATE SET
-					bytes_in = bytes_in + excluded.bytes_in,
-					bytes_out = bytes_out + excluded.bytes_out;
-			`, devID, today, bytesIn, bytesOut)
+				// Update device_traffic_rollups safely
+				res, err := s.database.SqlDB.Exec(`
+					UPDATE device_traffic_rollups
+					SET bytes_in = bytes_in + ?, bytes_out = bytes_out + ?
+					WHERE device_id = ? AND record_date = ?
+				`, bytesIn, bytesOut, devID, today)
+				if err == nil {
+					if aff, _ := res.RowsAffected(); aff == 0 {
+						_, _ = s.database.SqlDB.Exec(`
+							INSERT INTO device_traffic_rollups (device_id, record_date, bytes_in, bytes_out)
+							VALUES (?, ?, ?, ?)
+						`, devID, today, bytesIn, bytesOut)
+					}
+				}
 
-			// Attribute to owning user if exists
-			var userID *int
-			_ = s.database.SqlDB.QueryRow("SELECT user_id FROM devices WHERE id = ?", devID).Scan(&userID)
-			if userID != nil {
-				_, _ = s.database.SqlDB.Exec(`
-					INSERT INTO traffic_rollups (user_id, record_date, bytes_in, bytes_out)
-					VALUES (?, ?, ?, ?)
-					ON CONFLICT(user_id, record_date) DO UPDATE SET
-						bytes_in = bytes_in + excluded.bytes_in,
-						bytes_out = bytes_out + excluded.bytes_out;
-				`, *userID, today, bytesIn, bytesOut)
+				// Update device_traffic_buckets (15-min)
+				bRes, bErr := s.database.SqlDB.Exec(`
+					UPDATE device_traffic_buckets
+					SET bytes_in = bytes_in + ?, bytes_out = bytes_out + ?
+					WHERE device_id = ? AND bucket_start = ?
+				`, bytesIn, bytesOut, devID, bucketStart)
+				if bErr == nil {
+					if aff, _ := bRes.RowsAffected(); aff == 0 {
+						_, _ = s.database.SqlDB.Exec(`
+							INSERT INTO device_traffic_buckets (device_id, bucket_start, bytes_in, bytes_out)
+							VALUES (?, ?, ?, ?)
+						`, devID, bucketStart, bytesIn, bytesOut)
+					}
+				}
+
+				// Attribute to user if assigned
+				var userID *int
+				_ = s.database.SqlDB.QueryRow("SELECT user_id FROM devices WHERE id = ?", devID).Scan(&userID)
+				if userID != nil {
+					uRes, uErr := s.database.SqlDB.Exec(`
+						UPDATE traffic_rollups
+						SET bytes_in = bytes_in + ?, bytes_out = bytes_out + ?
+						WHERE user_id = ? AND record_date = ?
+					`, bytesIn, bytesOut, *userID, today)
+					if uErr == nil {
+						if aff, _ := uRes.RowsAffected(); aff == 0 {
+							_, _ = s.database.SqlDB.Exec(`
+								INSERT INTO traffic_rollups (user_id, record_date, bytes_in, bytes_out)
+								VALUES (?, ?, ?, ?)
+							`, *userID, today, bytesIn, bytesOut)
+						}
+					}
+
+					ubRes, ubErr := s.database.SqlDB.Exec(`
+						UPDATE user_traffic_buckets
+						SET bytes_in = bytes_in + ?, bytes_out = bytes_out + ?
+						WHERE user_id = ? AND bucket_start = ?
+					`, bytesIn, bytesOut, *userID, bucketStart)
+					if ubErr == nil {
+						if aff, _ := ubRes.RowsAffected(); aff == 0 {
+							_, _ = s.database.SqlDB.Exec(`
+								INSERT INTO user_traffic_buckets (user_id, bucket_start, bytes_in, bytes_out)
+								VALUES (?, ?, ?, ?)
+							`, *userID, bucketStart, bytesIn, bytesOut)
+						}
+					}
+				}
+			} else if parts[2] == "self" {
+				isUp := parts[3] == "up"
+				var bytesIn, bytesOut int64
+				if isUp {
+					bytesOut = delta
+				} else {
+					bytesIn = delta
+				}
+
+				sRes, sErr := s.database.SqlDB.Exec(`
+					UPDATE router_self_traffic_rollups
+					SET bytes_in = bytes_in + ?, bytes_out = bytes_out + ?
+					WHERE router_id = ? AND record_date = ?
+				`, bytesIn, bytesOut, routerID, today)
+				if sErr == nil {
+					if aff, _ := sRes.RowsAffected(); aff == 0 {
+						_, _ = s.database.SqlDB.Exec(`
+							INSERT INTO router_self_traffic_rollups (router_id, record_date, bytes_in, bytes_out)
+							VALUES (?, ?, ?, ?)
+						`, routerID, today, bytesIn, bytesOut)
+					}
+				}
 			}
 		}
 	}
@@ -251,6 +489,7 @@ func (s *TrafficService) StartBackgroundLoop(ctx context.Context, interval time.
 				for _, r := range routers {
 					if r.IsActive {
 						tCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+						_ = s.SyncCounterRules(tCtx, r.ID)
 						_ = s.ReconcileQueues(tCtx, r.ID)
 						_ = s.AccountingPass(tCtx, r.ID)
 						cancel()

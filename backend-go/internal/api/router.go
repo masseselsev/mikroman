@@ -135,6 +135,8 @@ func NewRouter(rc RouterConfig) http.Handler {
 		// Analytics
 		api.Route("/analytics", func(an chi.Router) {
 			an.Get("/traffic", analyticsH.GetTrafficOverview)
+			an.Get("/billing-cycle", analyticsH.GetBillingCycle)
+			an.Post("/billing-cycle", analyticsH.SaveBillingCycle)
 			an.Get("/quota", analyticsH.GetQuota)
 			an.Post("/quota", analyticsH.SaveQuota)
 			an.Get("/users/{id}/traffic-history", analyticsH.UserHistory)
