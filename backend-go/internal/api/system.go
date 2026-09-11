@@ -108,3 +108,32 @@ func (h *SystemHandler) Reboot(w http.ResponseWriter, r *http.Request) {
 
 	WriteJSON(w, http.StatusOK, map[string]string{"message": "Reboot command sent to router"})
 }
+
+// AlertDTO models system alert logs for the frontend.
+type AlertDTO struct {
+	ID              int                    `json:"id"`
+	AlertType       string                 `json:"alert_type"`
+	Message         string                 `json:"message"`
+	MetadataPayload map[string]interface{} `json:"metadata_payload,omitempty"`
+	CreatedAt       string                 `json:"created_at"`
+}
+
+// GetAlerts returns recent alert log items.
+func (h *SystemHandler) GetAlerts(w http.ResponseWriter, r *http.Request) {
+	rows, err := h.database.SqlDB.Query("SELECT id, alert_type, message, created_at FROM alert_logs ORDER BY created_at DESC LIMIT 50")
+	if err != nil {
+		WriteJSON(w, http.StatusOK, []AlertDTO{})
+		return
+	}
+	defer rows.Close()
+
+	alerts := make([]AlertDTO, 0)
+	for rows.Next() {
+		var a AlertDTO
+		if err := rows.Scan(&a.ID, &a.AlertType, &a.Message, &a.CreatedAt); err == nil {
+			alerts = append(alerts, a)
+		}
+	}
+
+	WriteJSON(w, http.StatusOK, alerts)
+}

@@ -18,7 +18,7 @@ RUN export GOARM=$(echo "${TARGETVARIANT}" | sed 's/^v//') && \
 
 # Stage 3: Minimal Alpine Runtime Container (< 30 MB)
 FROM alpine:3.20
-RUN apk --no-cache add ca-certificates tzdata
+RUN apk --no-cache add ca-certificates tzdata mailcap
 WORKDIR /app
 
 COPY --from=go-builder /mikroman /app/mikroman

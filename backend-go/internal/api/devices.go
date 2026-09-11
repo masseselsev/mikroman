@@ -210,3 +210,22 @@ func (h *DeviceHandler) History(w http.ResponseWriter, r *http.Request) {
 	}
 	WriteJSON(w, http.StatusOK, history)
 }
+
+// Scan handles POST /devices/scan.
+func (h *DeviceHandler) Scan(w http.ResponseWriter, r *http.Request) {
+	var routerID *int
+	if rID := r.URL.Query().Get("router_id"); rID != "" {
+		if id, err := strconv.Atoi(rID); err == nil {
+			routerID = &id
+		}
+	}
+	allDevices, err := h.database.GetDevices(routerID)
+	if err != nil {
+		WriteError(w, http.StatusInternalServerError, "Failed to scan devices")
+		return
+	}
+	if allDevices == nil {
+		allDevices = []db.Device{}
+	}
+	WriteJSON(w, http.StatusOK, allDevices)
+}

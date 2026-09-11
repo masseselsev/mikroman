@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -28,7 +29,7 @@ func setupTestServer(t *testing.T) (http.Handler, *db.DB, *crypto.Fernet) {
 	}
 
 	cfg := &config.Config{
-		AppVersion:    "0.3.0-test",
+		AppVersion:    "0.3.1-test",
 		AdminPassword: "SecretAdminPassword123",
 		AuthEnabled:   true,
 	}
@@ -150,5 +151,177 @@ func TestAuthStatusAndLoginFlow(t *testing.T) {
 	_ = json.NewDecoder(wMutate.Body).Decode(&resp)
 	if !resp.Success {
 		t.Fatalf("expected success: true, got %+v", resp)
+	}
+}
+
+func TestCORSBehavior(t *testing.T) {
+	handler, database, _ := setupTestServer(t)
+	defer database.Close()
+
+	// 1. Request with Origin header
+	reqWithOrigin := httptest.NewRequest(http.MethodGet, "/api/v1/health", nil)
+	reqWithOrigin.Header.Set("Origin", "http://192.168.123.1:1928")
+	wWithOrigin := httptest.NewRecorder()
+	handler.ServeHTTP(wWithOrigin, reqWithOrigin)
+
+	if wWithOrigin.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", wWithOrigin.Code)
+	}
+	if got := wWithOrigin.Header().Get("Access-Control-Allow-Origin"); got != "http://192.168.123.1:1928" {
+		t.Errorf("expected reflected origin, got %q", got)
+	}
+	if got := wWithOrigin.Header().Get("Access-Control-Allow-Credentials"); got != "true" {
+		t.Errorf("expected Allow-Credentials true, got %q", got)
+	}
+	if got := wWithOrigin.Header().Get("Vary"); got != "Origin" {
+		t.Errorf("expected Vary Origin, got %q", got)
+	}
+
+	// 2. Request WITHOUT Origin header: MUST NOT return wildcard '*' with Allow-Credentials 'true'
+	reqNoOrigin := httptest.NewRequest(http.MethodGet, "/api/v1/health", nil)
+	wNoOrigin := httptest.NewRecorder()
+	handler.ServeHTTP(wNoOrigin, reqNoOrigin)
+
+	if wNoOrigin.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", wNoOrigin.Code)
+	}
+	if wNoOrigin.Header().Get("Access-Control-Allow-Origin") == "*" && wNoOrigin.Header().Get("Access-Control-Allow-Credentials") == "true" {
+		t.Fatalf("CORS violation: Access-Control-Allow-Origin: * combined with Access-Control-Allow-Credentials: true")
+	}
+}
+
+func TestSPAServingAndAssets(t *testing.T) {
+	tempDist := t.TempDir()
+	assetsDir := filepath.Join(tempDist, "assets")
+
+	// Create test index.html
+	indexPath := filepath.Join(tempDist, "index.html")
+	if err := os.WriteFile(indexPath, []byte("<!DOCTYPE html><html><body><div id=\"root\"></div></body></html>"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create test assets
+	if err := os.MkdirAll(assetsDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	jsPath := filepath.Join(assetsDir, "bundle-test.js")
+	if err := os.WriteFile(jsPath, []byte("console.log('test');"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	tempDB := filepath.Join(t.TempDir(), "spa.db")
+	database, err := db.Open(tempDB, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+
+	handler := NewRouter(RouterConfig{
+		Config:  &config.Config{AuthEnabled: false},
+		DB:      database,
+		DistDir: tempDist,
+	})
+
+	// 1. Root / returns index.html with no-cache headers
+	reqRoot := httptest.NewRequest(http.MethodGet, "/", nil)
+	wRoot := httptest.NewRecorder()
+	handler.ServeHTTP(wRoot, reqRoot)
+	if wRoot.Code != http.StatusOK {
+		t.Fatalf("expected 200 for /, got %d", wRoot.Code)
+	}
+	if cc := wRoot.Header().Get("Cache-Control"); cc != "no-cache, no-store, must-revalidate" {
+		t.Errorf("expected no-cache headers for index.html, got %q", cc)
+	}
+
+	// 2. Existing asset returns 200 with immutable cache and no CORS headers
+	reqAsset := httptest.NewRequest(http.MethodGet, "/assets/bundle-test.js", nil)
+	wAsset := httptest.NewRecorder()
+	handler.ServeHTTP(wAsset, reqAsset)
+	if wAsset.Code != http.StatusOK {
+		t.Fatalf("expected 200 for /assets/bundle-test.js, got %d", wAsset.Code)
+	}
+	if cc := wAsset.Header().Get("Cache-Control"); cc != "public, max-age=31536000, immutable" {
+		t.Errorf("expected immutable cache for asset, got %q", cc)
+	}
+	if cors := wAsset.Header().Get("Access-Control-Allow-Origin"); cors != "" {
+		t.Errorf("expected no CORS on static asset, got %q", cors)
+	}
+
+	// 3. Missing asset returns 404 Not Found (NOT 200 index.html!)
+	reqMissingAsset := httptest.NewRequest(http.MethodGet, "/assets/non-existent.js", nil)
+	wMissingAsset := httptest.NewRecorder()
+	handler.ServeHTTP(wMissingAsset, reqMissingAsset)
+	if wMissingAsset.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for missing asset, got %d", wMissingAsset.Code)
+	}
+
+	// 4. Client-side route fallback to index.html with no-cache
+	reqRoute := httptest.NewRequest(http.MethodGet, "/users/123", nil)
+	wRoute := httptest.NewRecorder()
+	handler.ServeHTTP(wRoute, reqRoute)
+	if wRoute.Code != http.StatusOK {
+		t.Fatalf("expected 200 for client-side route, got %d", wRoute.Code)
+	}
+	if cc := wRoute.Header().Get("Cache-Control"); cc != "no-cache, no-store, must-revalidate" {
+		t.Errorf("expected no-cache headers for SPA route, got %q", cc)
+	}
+
+	// 5. API 404 does NOT serve index.html
+	reqAPI404 := httptest.NewRequest(http.MethodGet, "/api/v1/does-not-exist", nil)
+	wAPI404 := httptest.NewRecorder()
+	handler.ServeHTTP(wAPI404, reqAPI404)
+	if wAPI404.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for missing API route, got %d", wAPI404.Code)
+	}
+}
+
+func TestAlertsAndScanEndpoints(t *testing.T) {
+	handler, database, _ := setupTestServer(t)
+	defer database.Close()
+
+	// Login to obtain session
+	goodBody := bytes.NewBufferString(`{"password": "SecretAdminPassword123"}`)
+	reqGood := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", goodBody)
+	wGood := httptest.NewRecorder()
+	handler.ServeHTTP(wGood, reqGood)
+
+	var sessionCookie *http.Cookie
+	for _, c := range wGood.Result().Cookies() {
+		if c.Name == SessionCookie {
+			sessionCookie = c
+			break
+		}
+	}
+
+	// 1. GET /api/v1/system/alerts
+	reqAlerts := httptest.NewRequest(http.MethodGet, "/api/v1/system/alerts", nil)
+	reqAlerts.AddCookie(sessionCookie)
+	wAlerts := httptest.NewRecorder()
+	handler.ServeHTTP(wAlerts, reqAlerts)
+	if wAlerts.Code != http.StatusOK {
+		t.Fatalf("expected 200 for alerts, got %d", wAlerts.Code)
+	}
+
+	// 2. POST /api/v1/devices/scan
+	// Fetch CSRF
+	reqStatus := httptest.NewRequest(http.MethodGet, "/api/v1/auth/status", nil)
+	wStatus := httptest.NewRecorder()
+	handler.ServeHTTP(wStatus, reqStatus)
+	var csrfCookie *http.Cookie
+	for _, c := range wStatus.Result().Cookies() {
+		if c.Name == CSRFCookie {
+			csrfCookie = c
+			break
+		}
+	}
+
+	reqScan := httptest.NewRequest(http.MethodPost, "/api/v1/devices/scan", nil)
+	reqScan.AddCookie(sessionCookie)
+	reqScan.AddCookie(csrfCookie)
+	reqScan.Header.Set(CSRFHeader, csrfCookie.Value)
+	wScan := httptest.NewRecorder()
+	handler.ServeHTTP(wScan, reqScan)
+	if wScan.Code != http.StatusOK {
+		t.Fatalf("expected 200 for scan, got %d", wScan.Code)
 	}
 }
