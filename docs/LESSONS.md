@@ -56,6 +56,9 @@ within 0–3 seconds. That is RouterOS ageing out its own REST session; the
 session is keyed by source address and user, not by TCP connection, so it
 neither reflects nor responds to client-side pooling.
 
+**[2026-09-11] Problem:** RouterOS 7 REST API returns disabled and dynamic fields as JSON booleans (`false`/`true`) while some endpoints or versions return strings (`"false"`/`"true"`/`"yes"`/`"no"`). Strict Go string types caused JSON unmarshal failures and HTTP 400 Bad Request on mangle rule sync, causing device traffic accounting to fail silently and live speed tests to display 0 bps. Multi-router client reuse also caused cross-router rule pruning collisions.
+**→ Solution:** Introduce a custom `FlexibleBool` unmarshaler supporting both JSON booleans and string variants, and isolate RouterOS client pools per router ID with immediate sync reconciliation on startup.
+
 ## Connection handling
 
 **[2026-08-31] Problem:** `RouterManager.get_client()` consulted its client cache

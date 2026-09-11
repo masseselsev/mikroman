@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"time"
@@ -246,3 +247,179 @@ func (h *DeviceHandler) Scan(w http.ResponseWriter, r *http.Request) {
 	}
 	WriteJSON(w, http.StatusOK, allDevices)
 }
+
+type DeviceLinkRequest struct {
+	PrimaryDeviceID int `json:"primary_device_id"`
+}
+
+type DeviceMergeRequest struct {
+	TargetDeviceID int    `json:"target_device_id"`
+	Note           string `json:"note"`
+}
+
+type DeviceSplitRequest struct {
+	MacAddress string `json:"mac_address"`
+}
+
+type DeviceSuggestionDTO struct {
+	UnassignedDeviceID      int     `json:"unassigned_device_id"`
+	SuggestedTargetDeviceID int     `json:"suggested_target_device_id"`
+	SuggestedUserID         int     `json:"suggested_user_id"`
+	SuggestedUserName       string  `json:"suggested_user_name"`
+	TargetDeviceName        string  `json:"target_device_name"`
+	Confidence              float64 `json:"confidence"`
+	Reason                  string  `json:"reason"`
+}
+
+type LinkSuggestion struct {
+	DeviceID          int     `json:"device_id"`
+	PrimaryDeviceID   int     `json:"primary_device_id"`
+	DeviceName        string  `json:"device_name"`
+	PrimaryDeviceName string  `json:"primary_device_name"`
+	DeviceConnection  *string `json:"device_connection,omitempty"`
+	PrimaryConnection *string `json:"primary_connection,omitempty"`
+	Confidence        float64 `json:"confidence"`
+	Reason            string  `json:"reason"`
+}
+
+func (h *DeviceHandler) Link(w http.ResponseWriter, r *http.Request) {
+	idStr := chi.URLParam(r, "id")
+	deviceID, _ := strconv.Atoi(idStr)
+
+	var payload DeviceLinkRequest
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		WriteError(w, http.StatusBadRequest, "Invalid link payload")
+		return
+	}
+
+	primaryID := payload.PrimaryDeviceID
+	// Follow primary to head of its group
+	var existingHead *int
+	_ = h.database.SqlDB.QueryRow("SELECT linked_to_device_id FROM devices WHERE id = ?", primaryID).Scan(&existingHead)
+	if existingHead != nil && *existingHead > 0 {
+		primaryID = *existingHead
+	}
+
+	if deviceID == primaryID {
+		WriteError(w, http.StatusBadRequest, "A device cannot be linked to itself")
+		return
+	}
+
+	primary, err := h.database.GetDevice(primaryID)
+	if err != nil || primary == nil {
+		WriteError(w, http.StatusNotFound, "Primary device not found")
+		return
+	}
+
+	device, err := h.database.GetDevice(deviceID)
+	if err != nil || device == nil {
+		WriteError(w, http.StatusNotFound, "Device not found")
+		return
+	}
+
+	// Move anything already linked to this device up to primary
+	_, _ = h.database.SqlDB.Exec("UPDATE devices SET linked_to_device_id = ? WHERE linked_to_device_id = ?", primaryID, deviceID)
+
+	// Link device to primary and inherit owner user_id
+	if primary.UserID != nil {
+		_, _ = h.database.SqlDB.Exec("UPDATE devices SET linked_to_device_id = ?, user_id = ? WHERE id = ?", primaryID, *primary.UserID, deviceID)
+	} else {
+		_, _ = h.database.SqlDB.Exec("UPDATE devices SET linked_to_device_id = ? WHERE id = ?", primaryID, deviceID)
+	}
+
+	// Record in device_history
+	_, _ = h.database.SqlDB.Exec(`
+		INSERT INTO device_history (device_id, mac_address, hostname, ip_address, event_type, details, created_at)
+		VALUES (?, ?, ?, ?, 'linked', ?, CURRENT_TIMESTAMP)
+	`, deviceID, device.MacAddress, device.Hostname.String, device.IPAddress.String, fmt.Sprintf("Linked as adapter of device %d", primaryID))
+
+	updated, _ := h.database.GetDevice(deviceID)
+	WriteJSON(w, http.StatusOK, updated)
+}
+
+func (h *DeviceHandler) Unlink(w http.ResponseWriter, r *http.Request) {
+	idStr := chi.URLParam(r, "id")
+	deviceID, _ := strconv.Atoi(idStr)
+
+	device, err := h.database.GetDevice(deviceID)
+	if err != nil || device == nil {
+		WriteError(w, http.StatusNotFound, "Device not found")
+		return
+	}
+
+	_, _ = h.database.SqlDB.Exec("UPDATE devices SET linked_to_device_id = NULL WHERE id = ?", deviceID)
+
+	_, _ = h.database.SqlDB.Exec(`
+		INSERT INTO device_history (device_id, mac_address, hostname, ip_address, event_type, details, created_at)
+		VALUES (?, ?, ?, ?, 'unlinked', 'Detached adapter into standalone device', CURRENT_TIMESTAMP)
+	`, deviceID, device.MacAddress, device.Hostname.String, device.IPAddress.String)
+
+	updated, _ := h.database.GetDevice(deviceID)
+	WriteJSON(w, http.StatusOK, updated)
+}
+
+func (h *DeviceHandler) Merge(w http.ResponseWriter, r *http.Request) {
+	idStr := chi.URLParam(r, "id")
+	sourceID, _ := strconv.Atoi(idStr)
+
+	var payload DeviceMergeRequest
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		WriteError(w, http.StatusBadRequest, "Invalid merge payload")
+		return
+	}
+
+	if sourceID == payload.TargetDeviceID {
+		WriteError(w, http.StatusBadRequest, "Cannot merge device into itself")
+		return
+	}
+
+	source, err := h.database.GetDevice(sourceID)
+	if err != nil || source == nil {
+		WriteError(w, http.StatusNotFound, "Source device not found")
+		return
+	}
+
+	target, err := h.database.GetDevice(payload.TargetDeviceID)
+	if err != nil || target == nil {
+		WriteError(w, http.StatusNotFound, "Target device not found")
+		return
+	}
+
+	// Soft-delete source device
+	_, _ = h.database.SqlDB.Exec("UPDATE devices SET is_deleted = 1 WHERE id = ?", sourceID)
+
+	// Record in history
+	note := payload.Note
+	if note == "" {
+		note = fmt.Sprintf("Merged from device %d (%s)", sourceID, source.MacAddress)
+	}
+	_, _ = h.database.SqlDB.Exec(`
+		INSERT INTO device_history (device_id, mac_address, hostname, ip_address, event_type, details, created_at)
+		VALUES (?, ?, ?, ?, 'merged', ?, CURRENT_TIMESTAMP)
+	`, target.ID, source.MacAddress, source.Hostname.String, source.IPAddress.String, note)
+
+	updated, _ := h.database.GetDevice(target.ID)
+	WriteJSON(w, http.StatusOK, updated)
+}
+
+func (h *DeviceHandler) Split(w http.ResponseWriter, r *http.Request) {
+	idStr := chi.URLParam(r, "id")
+	deviceID, _ := strconv.Atoi(idStr)
+
+	device, err := h.database.GetDevice(deviceID)
+	if err != nil || device == nil {
+		WriteError(w, http.StatusNotFound, "Device not found")
+		return
+	}
+
+	WriteJSON(w, http.StatusOK, device)
+}
+
+func (h *DeviceHandler) GetMergeSuggestions(w http.ResponseWriter, r *http.Request) {
+	WriteJSON(w, http.StatusOK, []DeviceSuggestionDTO{})
+}
+
+func (h *DeviceHandler) GetLinkSuggestions(w http.ResponseWriter, r *http.Request) {
+	WriteJSON(w, http.StatusOK, []LinkSuggestion{})
+}
+

@@ -388,6 +388,30 @@ func (d *DB) GetDeviceByMAC(mac string) (*Device, error) {
 	return &dev, nil
 }
 
+func (d *DB) GetDevice(id int) (*Device, error) {
+	var dev Device
+	err := d.SqlDB.QueryRow(`
+		SELECT id, user_id, router_id, mac_address, ip_address, hostname, custom_name,
+		       vendor, last_interface, last_wifi_signal, is_active, is_hidden, is_deleted,
+		       linked_to_device_id, connection_kind, is_container, speed_limit, is_paused,
+		       priority, last_seen
+		FROM devices WHERE id = ? LIMIT 1
+	`, id).Scan(
+		&dev.ID, &dev.UserID, &dev.RouterID, &dev.MacAddress, &dev.IPAddress, &dev.Hostname,
+		&dev.CustomName, &dev.Vendor, &dev.LastInterface, &dev.LastWifiSignal, &dev.IsActive,
+		&dev.IsHidden, &dev.IsDeleted, &dev.LinkedToDeviceID, &dev.ConnectionKind, &dev.IsContainer,
+		&dev.SpeedLimit, &dev.IsPaused, &dev.Priority, &dev.LastSeen,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	dev.IsRandomizedMac = IsRandomizedMAC(dev.MacAddress)
+	return &dev, nil
+}
+
 // VolumeStats holds aggregated traffic volumes across multiple time horizons.
 type VolumeStats struct {
 	TotalIn  int64

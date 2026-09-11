@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/masseselsev/mikroman/internal/db"
@@ -17,23 +18,73 @@ import (
 type TrafficService struct {
 	database *db.DB
 	client   *routeros.Client
+	mu       sync.Mutex
+	clients  map[int]*routeros.Client
 
 	// Previous counter state: routerID -> ruleID -> cumulativeBytes
 	prevCounters map[int]map[string]int64
 }
 
 func NewTrafficService(database *db.DB, client *routeros.Client) *TrafficService {
+	clients := make(map[int]*routeros.Client)
+	if client != nil {
+		if def, err := database.GetDefaultRouter(); err == nil && def != nil {
+			clients[def.ID] = client
+		}
+	}
 	return &TrafficService{
 		database:     database,
 		client:       client,
+		clients:      clients,
 		prevCounters: make(map[int]map[string]int64),
 	}
 }
 
+func (s *TrafficService) getClient(routerID int) (*routeros.Client, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if c, ok := s.clients[routerID]; ok && c != nil {
+		return c, nil
+	}
+
+	defaultRouter, _ := s.database.GetDefaultRouter()
+	if (defaultRouter == nil || defaultRouter.ID == routerID) && s.client != nil {
+		s.clients[routerID] = s.client
+		return s.client, nil
+	}
+
+	router, err := s.database.GetRouter(routerID)
+	if err != nil {
+		return nil, err
+	}
+	if router == nil {
+		return nil, fmt.Errorf("router %d not found", routerID)
+	}
+
+	newClient, err := routeros.NewClient(routeros.Config{
+		Host:      router.Host,
+		Port:      router.Port,
+		Username:  router.Username,
+		Password:  router.Password,
+		UseSSL:    router.UseSSL,
+		SSLVerify: router.SSLVerify,
+		CACert:    router.CACert.String,
+		Timeout:   5 * time.Second,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	s.clients[routerID] = newClient
+	return newClient, nil
+}
+
 // ReconcileQueues ensures Simple Queues match active user limits and assignments.
 func (s *TrafficService) ReconcileQueues(ctx context.Context, routerID int) error {
-	if s.client == nil {
-		return nil
+	client, err := s.getClient(routerID)
+	if err != nil || client == nil {
+		return err
 	}
 
 	users, err := s.database.GetUsers(&routerID)
@@ -46,7 +97,7 @@ func (s *TrafficService) ReconcileQueues(ctx context.Context, routerID int) erro
 		return err
 	}
 
-	existingQueues, err := s.client.GetSimpleQueues(ctx)
+	existingQueues, err := client.GetSimpleQueues(ctx)
 	if err != nil {
 		return err
 	}
@@ -70,7 +121,7 @@ func (s *TrafficService) ReconcileQueues(ctx context.Context, routerID int) erro
 		if len(ips) == 0 {
 			// No active IPs for user
 			if q, exists := queueByName[qName]; exists {
-				_ = s.client.DeleteSimpleQueue(ctx, q.ID)
+				_ = client.DeleteSimpleQueue(ctx, q.ID)
 			}
 			continue
 		}
@@ -84,12 +135,12 @@ func (s *TrafficService) ReconcileQueues(ctx context.Context, routerID int) erro
 				Name:     qName,
 				Target:   target,
 				MaxLimit: maxLimit,
-				Disabled: "false",
+				Disabled: false,
 				Comment:  fmt.Sprintf("mikroman:user_%d", u.ID),
 			}
-			_ = s.client.CreateSimpleQueue(ctx, &newQ)
+			_ = client.CreateSimpleQueue(ctx, &newQ)
 		} else if existing.Target != target || existing.MaxLimit != maxLimit {
-			_ = s.client.UpdateSimpleQueue(ctx, existing.ID, map[string]interface{}{
+			_ = client.UpdateSimpleQueue(ctx, existing.ID, map[string]interface{}{
 				"target":    target,
 				"max-limit": maxLimit,
 			})
@@ -97,7 +148,7 @@ func (s *TrafficService) ReconcileQueues(ctx context.Context, routerID int) erro
 	}
 
 	// Ensure pause rules safely
-	_ = s.client.EnsurePauseRules(ctx)
+	_ = client.EnsurePauseRules(ctx)
 
 	// Reconcile mikroman_blocked address list
 	userPaused := make(map[int]bool)
@@ -117,7 +168,7 @@ func (s *TrafficService) ReconcileQueues(ctx context.Context, routerID int) erro
 		}
 	}
 
-	currentBlocked, _ := s.client.GetAddressList(ctx, "mikroman_blocked")
+	currentBlocked, _ := client.GetAddressList(ctx, "mikroman_blocked")
 	currentMap := make(map[string]string)
 	for _, item := range currentBlocked {
 		currentMap[item.Address] = item.ID
@@ -125,13 +176,13 @@ func (s *TrafficService) ReconcileQueues(ctx context.Context, routerID int) erro
 
 	for ip, comment := range targetBlockedIPs {
 		if _, exists := currentMap[ip]; !exists {
-			_ = s.client.AddToAddressList(ctx, "mikroman_blocked", ip, comment)
+			_ = client.AddToAddressList(ctx, "mikroman_blocked", ip, comment)
 		}
 	}
 
 	for ip, id := range currentMap {
 		if _, needed := targetBlockedIPs[ip]; !needed {
-			_ = s.client.RemoveFromAddressList(ctx, id)
+			_ = client.RemoveFromAddressList(ctx, id)
 		}
 	}
 
@@ -152,8 +203,9 @@ func formatRate(limit string) string {
 
 // SyncCounterRules ensures RouterOS has mangle accounting rules for all accountable devices and self-traffic.
 func (s *TrafficService) SyncCounterRules(ctx context.Context, routerID int) error {
-	if s.client == nil {
-		return nil
+	client, err := s.getClient(routerID)
+	if err != nil || client == nil {
+		return err
 	}
 
 	devices, err := s.database.GetDevices(&routerID)
@@ -212,7 +264,7 @@ func (s *TrafficService) SyncCounterRules(ctx context.Context, routerID int) err
 			Action:      "passthrough",
 			InInterface: wan,
 			Comment:     downComment,
-			Disabled:    "false",
+			Disabled:    false,
 		}
 		upComment := fmt.Sprintf("mikroman:acct:self:up:%s", wan)
 		desired[upComment] = routeros.MangleRule{
@@ -220,7 +272,7 @@ func (s *TrafficService) SyncCounterRules(ctx context.Context, routerID int) err
 			Action:       "passthrough",
 			OutInterface: wan,
 			Comment:      upComment,
-			Disabled:     "false",
+			Disabled:     false,
 		}
 	}
 
@@ -238,7 +290,7 @@ func (s *TrafficService) SyncCounterRules(ctx context.Context, routerID int) err
 				SrcAddress:   dev.IPAddress.String,
 				OutInterface: wan,
 				Comment:      upComment,
-				Disabled:     "false",
+				Disabled:     false,
 			}
 			downComment := fmt.Sprintf("mikroman:acct:dev_%d:down", dev.ID)
 			desired[downComment] = routeros.MangleRule{
@@ -247,7 +299,7 @@ func (s *TrafficService) SyncCounterRules(ctx context.Context, routerID int) err
 				DstAddress:  dev.IPAddress.String,
 				InInterface: wan,
 				Comment:     downComment,
-				Disabled:    "false",
+				Disabled:    false,
 			}
 		}
 	} else {
@@ -260,7 +312,7 @@ func (s *TrafficService) SyncCounterRules(ctx context.Context, routerID int) err
 					SrcAddress:   dev.IPAddress.String,
 					OutInterface: wan,
 					Comment:      upComment,
-					Disabled:     "false",
+					Disabled:     false,
 				}
 				downComment := fmt.Sprintf("mikroman:acct:dev_%d:down:%s", dev.ID, wan)
 				desired[downComment] = routeros.MangleRule{
@@ -269,13 +321,13 @@ func (s *TrafficService) SyncCounterRules(ctx context.Context, routerID int) err
 					DstAddress:  dev.IPAddress.String,
 					InInterface: wan,
 					Comment:     downComment,
-					Disabled:    "false",
+					Disabled:    false,
 				}
 			}
 		}
 	}
 
-	rules, err := s.client.GetMangleRules(ctx)
+	rules, err := client.GetMangleRules(ctx)
 	if err != nil {
 		return err
 	}
@@ -291,7 +343,9 @@ func (s *TrafficService) SyncCounterRules(ctx context.Context, routerID int) err
 	for comment, spec := range desired {
 		ruleCopy := spec
 		if existingRule, ok := existing[comment]; !ok {
-			_ = s.client.CreateMangleRule(ctx, &ruleCopy)
+			if err := client.CreateMangleRule(ctx, &ruleCopy); err != nil {
+				slog.Warn("Failed to create mangle rule", "comment", comment, "router_id", routerID, "error", err)
+			}
 		} else {
 			updates := make(map[string]interface{})
 			if existingRule.SrcAddress != spec.SrcAddress {
@@ -307,7 +361,9 @@ func (s *TrafficService) SyncCounterRules(ctx context.Context, routerID int) err
 				updates["out-interface"] = spec.OutInterface
 			}
 			if len(updates) > 0 {
-				_ = s.client.UpdateMangleRule(ctx, existingRule.ID, updates)
+				if err := client.UpdateMangleRule(ctx, existingRule.ID, updates); err != nil {
+					slog.Warn("Failed to update mangle rule", "comment", comment, "router_id", routerID, "error", err)
+				}
 			}
 		}
 	}
@@ -315,7 +371,9 @@ func (s *TrafficService) SyncCounterRules(ctx context.Context, routerID int) err
 	// Prune rules no longer desired
 	for comment, r := range existing {
 		if _, needed := desired[comment]; !needed {
-			_ = s.client.DeleteMangleRule(ctx, r.ID)
+			if err := client.DeleteMangleRule(ctx, r.ID); err != nil {
+				slog.Warn("Failed to delete mangle rule", "comment", comment, "router_id", routerID, "error", err)
+			}
 		}
 	}
 
@@ -324,13 +382,14 @@ func (s *TrafficService) SyncCounterRules(ctx context.Context, routerID int) err
 
 // AccountingPass computes byte deltas from mangle rules and stores rollups.
 func (s *TrafficService) AccountingPass(ctx context.Context, routerID int) error {
-	if s.client == nil {
-		return nil
+	client, err := s.getClient(routerID)
+	if err != nil || client == nil {
+		return err
 	}
 
 	_ = s.SyncCounterRules(ctx, routerID)
 
-	rules, err := s.client.GetMangleRules(ctx)
+	rules, err := client.GetMangleRules(ctx)
 	if err != nil {
 		return err
 	}
@@ -343,18 +402,26 @@ func (s *TrafficService) AccountingPass(ctx context.Context, routerID int) error
 		}
 	}
 
+	s.mu.Lock()
 	prevMap := s.prevCounters[routerID]
 	if prevMap == nil {
 		s.prevCounters[routerID] = currentMap
+		s.mu.Unlock()
 		return nil
 	}
+	prevCopy := make(map[string]int64, len(prevMap))
+	for k, v := range prevMap {
+		prevCopy[k] = v
+	}
+	s.prevCounters[routerID] = currentMap
+	s.mu.Unlock()
 
 	now := time.Now()
 	today := now.Format("2006-01-02")
 	bucketStart := now.Truncate(15 * time.Minute).Format("2006-01-02 15:04:05")
 
 	for comment, currentBytes := range currentMap {
-		prevBytes := prevMap[comment]
+		prevBytes := prevCopy[comment]
 		if currentBytes < prevBytes {
 			prevBytes = 0
 		}
@@ -468,12 +535,31 @@ func (s *TrafficService) AccountingPass(ctx context.Context, routerID int) error
 		}
 	}
 
-	s.prevCounters[routerID] = currentMap
 	return nil
 }
 
 func (s *TrafficService) StartBackgroundLoop(ctx context.Context, interval time.Duration) {
+	runPass := func() {
+		routers, err := s.database.GetRouters()
+		if err != nil {
+			return
+		}
+		for _, r := range routers {
+			if r.IsActive {
+				tCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+				_ = s.SyncCounterRules(tCtx, r.ID)
+				_ = s.ReconcileQueues(tCtx, r.ID)
+				_ = s.AccountingPass(tCtx, r.ID)
+				cancel()
+			}
+		}
+		slog.Debug("Completed traffic accounting pass")
+	}
+
 	go func() {
+		// Run immediate reconciliation and counter setup on startup
+		runPass()
+
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 
@@ -482,20 +568,7 @@ func (s *TrafficService) StartBackgroundLoop(ctx context.Context, interval time.
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				routers, err := s.database.GetRouters()
-				if err != nil {
-					continue
-				}
-				for _, r := range routers {
-					if r.IsActive {
-						tCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-						_ = s.SyncCounterRules(tCtx, r.ID)
-						_ = s.ReconcileQueues(tCtx, r.ID)
-						_ = s.AccountingPass(tCtx, r.ID)
-						cancel()
-					}
-				}
-				slog.Debug("Completed traffic accounting pass")
+				runPass()
 			}
 		}
 	}()
