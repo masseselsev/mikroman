@@ -5,13 +5,20 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
+	"time"
+
+	"github.com/gorilla/websocket"
 
 	"github.com/masseselsev/mikroman/internal/config"
 	"github.com/masseselsev/mikroman/internal/crypto"
 	"github.com/masseselsev/mikroman/internal/db"
+	"github.com/masseselsev/mikroman/internal/routeros"
 )
 
 func setupTestServer(t *testing.T) (http.Handler, *db.DB, *crypto.Fernet) {
@@ -29,7 +36,7 @@ func setupTestServer(t *testing.T) (http.Handler, *db.DB, *crypto.Fernet) {
 	}
 
 	cfg := &config.Config{
-		AppVersion:    "0.3.3-test",
+		AppVersion:    "0.3.4-test",
 		AdminPassword: "SecretAdminPassword123",
 		AuthEnabled:   true,
 	}
@@ -536,5 +543,287 @@ func TestBillingCycleAndTrafficAnalytics(t *testing.T) {
 	}
 	if int(tData["billing_anchor_day"].(float64)) != 18 {
 		t.Fatalf("expected billing_anchor_day 18 in traffic analytics, got %v", tData["billing_anchor_day"])
+	}
+}
+
+func TestMetricsEndpoints(t *testing.T) {
+	handler, database, _ := setupTestServer(t)
+	defer database.Close()
+
+	// 1. Obtain session
+	goodBody := bytes.NewBufferString(`{"password": "SecretAdminPassword123"}`)
+	reqLogin := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", goodBody)
+	wLogin := httptest.NewRecorder()
+	handler.ServeHTTP(wLogin, reqLogin)
+	var sessionCookie *http.Cookie
+	for _, c := range wLogin.Result().Cookies() {
+		if c.Name == SessionCookie {
+			sessionCookie = c
+			break
+		}
+	}
+
+	// 2. Insert test system_metrics and interface_metrics
+	_, _ = database.SqlDB.Exec(`
+		INSERT INTO routers (id, name, host, is_default, is_active)
+		VALUES (1, 'MainRouter', '127.0.0.1', 1, 1)
+	`)
+	_, _ = database.SqlDB.Exec(`
+		INSERT INTO system_metrics (router_id, cpu_load, memory_used_bytes, memory_total_bytes, memory_usage_pct, temperature, voltage, timestamp)
+		VALUES (1, 12.5, 524288000, 1073741824, 48.8, 42.0, 24.1, datetime('now', '-5 minutes'))
+	`)
+	_, _ = database.SqlDB.Exec(`
+		INSERT INTO interface_metrics (router_id, interface_name, rx_rate_bps, tx_rate_bps, rx_bytes_total, tx_bytes_total, timestamp)
+		VALUES (1, 'ether1', 2500000.0, 1500000.0, 1000000, 500000, datetime('now', '-5 minutes'))
+	`)
+
+	// 3. GET /api/v1/metrics/system
+	reqSys := httptest.NewRequest(http.MethodGet, "/api/v1/metrics/system?range=1h&router_id=1", nil)
+	reqSys.AddCookie(sessionCookie)
+	wSys := httptest.NewRecorder()
+	handler.ServeHTTP(wSys, reqSys)
+	if wSys.Code != http.StatusOK {
+		t.Fatalf("expected 200 for system metrics, got %d: %s", wSys.Code, wSys.Body.String())
+	}
+	var sysResp APIResponse
+	if err := json.NewDecoder(wSys.Body).Decode(&sysResp); err != nil {
+		t.Fatalf("failed to decode system metrics: %v", err)
+	}
+	sysData := sysResp.Data.(map[string]interface{})
+	if sysData["range"] != "1h" {
+		t.Fatalf("expected range 1h, got %v", sysData["range"])
+	}
+	pts, ok := sysData["points"].([]interface{})
+	if !ok || len(pts) == 0 {
+		t.Fatalf("expected points in system metrics, got %v", sysData["points"])
+	}
+	if sysData["current_cpu"] == nil {
+		t.Fatalf("expected current_cpu to be populated")
+	}
+
+	// 4. GET /api/v1/metrics/interfaces
+	reqIface := httptest.NewRequest(http.MethodGet, "/api/v1/metrics/interfaces?range=1h&interfaces=ether1&router_id=1", nil)
+	reqIface.AddCookie(sessionCookie)
+	wIface := httptest.NewRecorder()
+	handler.ServeHTTP(wIface, reqIface)
+	if wIface.Code != http.StatusOK {
+		t.Fatalf("expected 200 for interface metrics, got %d: %s", wIface.Code, wIface.Body.String())
+	}
+	var ifaceResp APIResponse
+	if err := json.NewDecoder(wIface.Body).Decode(&ifaceResp); err != nil {
+		t.Fatalf("failed to decode interface metrics: %v", err)
+	}
+	ifaceData := ifaceResp.Data.(map[string]interface{})
+	if pts, ok := ifaceData["points"].([]interface{}); !ok || len(pts) == 0 {
+		t.Fatalf("expected points in interface metrics, got %v", ifaceData["points"])
+	}
+	if ifaceData["current_rx_bps"].(float64) <= 0 {
+		t.Fatalf("expected current_rx_bps > 0, got %v", ifaceData["current_rx_bps"])
+	}
+
+	// 5. GET /api/v1/metrics/interfaces with empty interfaces param -> empty points
+	reqEmpty := httptest.NewRequest(http.MethodGet, "/api/v1/metrics/interfaces?range=1h&interfaces=&router_id=1", nil)
+	reqEmpty.AddCookie(sessionCookie)
+	wEmpty := httptest.NewRecorder()
+	handler.ServeHTTP(wEmpty, reqEmpty)
+	if wEmpty.Code != http.StatusOK {
+		t.Fatalf("expected 200 for empty interface metrics, got %d", wEmpty.Code)
+	}
+	var emptyResp APIResponse
+	_ = json.NewDecoder(wEmpty.Body).Decode(&emptyResp)
+	emptyData := emptyResp.Data.(map[string]interface{})
+	if pts, ok := emptyData["points"].([]interface{}); !ok || len(pts) != 0 {
+		t.Fatalf("expected 0 points when interfaces is empty, got %d", len(pts))
+	}
+}
+
+func TestConnectionsEndpoints(t *testing.T) {
+	mockMux := http.NewServeMux()
+	mockMux.HandleFunc("/rest/ip/firewall/connection", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode([]routeros.FirewallConnection{
+			{
+				ID:         "*1",
+				Protocol:   "tcp",
+				SrcAddress: "192.0.2.100:54321",
+				DstAddress: "198.51.100.1:443",
+				OrigBytes:  500,
+				ReplBytes:  1200,
+				OrigRate:   100,
+				ReplRate:   200,
+				TCPState:   "established",
+			},
+		})
+	})
+	mockMux.HandleFunc("/rest/ip/firewall/connection/*1", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodDelete {
+			w.WriteHeader(http.StatusOK)
+		}
+	})
+	mockServer := httptest.NewServer(mockMux)
+	defer mockServer.Close()
+
+	u, _ := url.Parse(mockServer.URL)
+	port, _ := strconv.Atoi(u.Port())
+	mockClient, err := routeros.NewClient(routeros.Config{
+		Host:    u.Hostname(),
+		Port:    port,
+		Timeout: 2 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("failed to create routeros client: %v", err)
+	}
+
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "test.db")
+	fernet, _ := crypto.NewFernet("cw_z4pYJ2-8_9V18R5v6R1XbJ9i9w9G1R1XbJ9i9w9E=")
+	database, _ := db.Open(dbPath, fernet)
+	defer database.Close()
+
+	cfg := &config.Config{
+		AppVersion:    "0.3.4-test",
+		AdminPassword: "SecretAdminPassword123",
+		AuthEnabled:   true,
+	}
+
+	handler := NewRouter(RouterConfig{
+		Config: cfg,
+		DB:     database,
+		Fernet: fernet,
+		Client: mockClient,
+		Hub:    NewHub(),
+	})
+
+	goodBody := bytes.NewBufferString(`{"password": "SecretAdminPassword123"}`)
+	reqLogin := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", goodBody)
+	wLogin := httptest.NewRecorder()
+	handler.ServeHTTP(wLogin, reqLogin)
+	var sessionCookie *http.Cookie
+	for _, c := range wLogin.Result().Cookies() {
+		if c.Name == SessionCookie {
+			sessionCookie = c
+			break
+		}
+	}
+
+	// 1. GET /api/v1/connections
+	reqConns := httptest.NewRequest(http.MethodGet, "/api/v1/connections", nil)
+	reqConns.AddCookie(sessionCookie)
+	wConns := httptest.NewRecorder()
+	handler.ServeHTTP(wConns, reqConns)
+	if wConns.Code != http.StatusOK {
+		t.Fatalf("expected 200 for connections, got %d: %s", wConns.Code, wConns.Body.String())
+	}
+	var connResp APIResponse
+	if err := json.NewDecoder(wConns.Body).Decode(&connResp); err != nil {
+		t.Fatalf("failed to decode connections: %v", err)
+	}
+	connData := connResp.Data.(map[string]interface{})
+	items := connData["items"].([]interface{})
+	if len(items) != 1 {
+		t.Fatalf("expected 1 connection item, got %d", len(items))
+	}
+	item0 := items[0].(map[string]interface{})
+	if item0["id"] != "*1" || item0["protocol"] != "tcp" {
+		t.Fatalf("unexpected connection item: %v", item0)
+	}
+
+	// 2. POST /api/v1/connections/*1/kill
+	reqStatus := httptest.NewRequest(http.MethodGet, "/api/v1/auth/status", nil)
+	wStatus := httptest.NewRecorder()
+	handler.ServeHTTP(wStatus, reqStatus)
+	var csrfCookie *http.Cookie
+	for _, c := range wStatus.Result().Cookies() {
+		if c.Name == CSRFCookie {
+			csrfCookie = c
+			break
+		}
+	}
+
+	reqKill := httptest.NewRequest(http.MethodPost, "/api/v1/connections/*1/kill", bytes.NewBufferString(`{}`))
+	reqKill.AddCookie(sessionCookie)
+	if csrfCookie != nil {
+		reqKill.AddCookie(csrfCookie)
+		reqKill.Header.Set(CSRFHeader, csrfCookie.Value)
+	}
+	wKill := httptest.NewRecorder()
+	handler.ServeHTTP(wKill, reqKill)
+	if wKill.Code != http.StatusOK {
+		t.Fatalf("expected 200 for kill connection, got %d: %s", wKill.Code, wKill.Body.String())
+	}
+}
+
+func TestHubRouterScoping(t *testing.T) {
+	hub := NewHub()
+	server := httptest.NewServer(http.HandlerFunc(hub.HandleWS))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+
+	// Connect client 1 for router 1
+	c1, _, err := websocket.DefaultDialer.Dial(wsURL+"?router_id=1", nil)
+	if err != nil {
+		t.Fatalf("failed to connect ws client 1: %v", err)
+	}
+	defer c1.Close()
+
+	var initMsg1 map[string]interface{}
+	_ = c1.ReadJSON(&initMsg1)
+	if initMsg1["type"] != "connected" {
+		t.Fatalf("expected connected event on c1, got %v", initMsg1)
+	}
+
+	// Connect client 2 for router 2
+	c2, _, err := websocket.DefaultDialer.Dial(wsURL+"?router_id=2", nil)
+	if err != nil {
+		t.Fatalf("failed to connect ws client 2: %v", err)
+	}
+	defer c2.Close()
+	var initMsg2 map[string]interface{}
+	_ = c2.ReadJSON(&initMsg2)
+
+	// Broadcast for router 1 (isDefault: true)
+	hub.BroadcastRouter(1, true, map[string]interface{}{
+		"type":      "telemetry_tick",
+		"router_id": 1,
+		"bps":       5000,
+	})
+
+	// Client 1 MUST receive it
+	var tick1 map[string]interface{}
+	_ = c1.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if err := c1.ReadJSON(&tick1); err != nil {
+		t.Fatalf("c1 failed to receive router 1 frame: %v", err)
+	}
+	if int(tick1["router_id"].(float64)) != 1 {
+		t.Fatalf("expected router_id 1 on c1, got %v", tick1["router_id"])
+	}
+
+	// Client 2 MUST NOT receive router 1 frame
+	_ = c2.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+	var leakMsg map[string]interface{}
+	if err := c2.ReadJSON(&leakMsg); err == nil {
+		t.Fatalf("c2 leaked message from router 1: %v", leakMsg)
+	}
+
+	// Client 4 connects for router 1 -> MUST immediately receive the cached frame!
+	c4, _, err := websocket.DefaultDialer.Dial(wsURL+"?router_id=1", nil)
+	if err != nil {
+		t.Fatalf("failed to connect c4: %v", err)
+	}
+	defer c4.Close()
+
+	var initMsg4 map[string]interface{}
+	_ = c4.ReadJSON(&initMsg4)
+	if initMsg4["type"] != "connected" {
+		t.Fatalf("expected connected on c4, got %v", initMsg4)
+	}
+
+	var replayMsg map[string]interface{}
+	_ = c4.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if err := c4.ReadJSON(&replayMsg); err != nil {
+		t.Fatalf("c4 failed to receive immediate replay: %v", err)
+	}
+	if replayMsg["type"] != "telemetry_tick" || int(replayMsg["router_id"].(float64)) != 1 {
+		t.Fatalf("c4 received unexpected replay: %v", replayMsg)
 	}
 }

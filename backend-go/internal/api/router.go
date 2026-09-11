@@ -87,6 +87,8 @@ func NewRouter(rc RouterConfig) http.Handler {
 			m.Get("/config", metricsH.GetMonitoredInterfacesConfig)
 			m.Post("/config", metricsH.SaveMonitoredInterfacesConfig)
 			m.Get("/interfaces/list", metricsH.ListAvailableInterfaces)
+			m.Get("/system", metricsH.GetSystemMetrics)
+			m.Get("/interfaces", metricsH.GetInterfaceMetrics)
 		})
 
 		// Routers
@@ -149,6 +151,13 @@ func NewRouter(rc RouterConfig) http.Handler {
 			l.Get("/", logH.GetLogs)
 			l.Get("/stats", logH.GetLogStats)
 			l.Delete("/", logH.ClearLogs)
+		})
+
+		// Connections
+		connH := NewConnectionsHandler(rc.DB, rc.Client)
+		api.Route("/connections", func(c chi.Router) {
+			c.Get("/", connH.GetLiveConnections)
+			c.Post("/{id}/kill", connH.KillConnection)
 		})
 	})
 

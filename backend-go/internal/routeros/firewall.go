@@ -141,3 +141,18 @@ func (c *Client) EnsurePauseRules(ctx context.Context) error {
 
 	return nil
 }
+
+// GetFirewallConnections reads /ip/firewall/connection
+func (c *Client) GetFirewallConnections(ctx context.Context) ([]FirewallConnection, error) {
+	var conns []FirewallConnection
+	if err := c.Get(ctx, "/ip/firewall/connection", &conns); err != nil {
+		return nil, err
+	}
+	return conns, nil
+}
+
+// DeleteFirewallConnection removes an active connection via DELETE /ip/firewall/connection/{id}
+func (c *Client) DeleteFirewallConnection(ctx context.Context, id string) error {
+	path := fmt.Sprintf("/ip/firewall/connection/%s", id)
+	return c.Delete(ctx, path)
+}
