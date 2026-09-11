@@ -11,6 +11,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -127,7 +128,7 @@ func (c *Client) GetImmuneIPs() map[string]bool {
 	if !c.immuneDetected {
 		c.immuneIPs[c.cfg.Host] = true
 		// UDP connect probe to find our outbound local IP towards router
-		if conn, err := net.Dial("udp", fmt.Sprintf("%s:%d", c.cfg.Host, c.cfg.Port)); err == nil {
+		if conn, err := net.Dial("udp", net.JoinHostPort(c.cfg.Host, strconv.Itoa(c.cfg.Port))); err == nil {
 			if localAddr, ok := conn.LocalAddr().(*net.UDPAddr); ok {
 				c.immuneIPs[localAddr.IP.String()] = true
 			}

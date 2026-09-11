@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -353,7 +354,11 @@ func (d *DB) GetDevices(routerID *int) ([]Device, error) {
 		); err != nil {
 			return nil, err
 		}
+		dev.IsRandomizedMac = IsRandomizedMAC(dev.MacAddress)
 		devices = append(devices, dev)
+	}
+	if devices == nil {
+		devices = []Device{}
 	}
 	return devices, rows.Err()
 }
@@ -379,7 +384,122 @@ func (d *DB) GetDeviceByMAC(mac string) (*Device, error) {
 	if err != nil {
 		return nil, err
 	}
+	dev.IsRandomizedMac = IsRandomizedMAC(dev.MacAddress)
 	return &dev, nil
+}
+
+// VolumeStats holds aggregated traffic volumes across multiple time horizons.
+type VolumeStats struct {
+	TotalIn  int64
+	TotalOut int64
+	CycleIn  int64
+	CycleOut int64
+	TodayIn  int64
+	TodayOut int64
+}
+
+// GetDeviceVolumeStats computes all-time, cycle, and today volume totals per device.
+func (d *DB) GetDeviceVolumeStats(cycleStartDate, today string) (map[int]VolumeStats, error) {
+	rows, err := d.SqlDB.Query(`
+		SELECT device_id,
+		       COALESCE(SUM(bytes_in), 0) AS total_in,
+		       COALESCE(SUM(bytes_out), 0) AS total_out,
+		       COALESCE(SUM(CASE WHEN record_date >= ? THEN bytes_in ELSE 0 END), 0) AS cycle_in,
+		       COALESCE(SUM(CASE WHEN record_date >= ? THEN bytes_out ELSE 0 END), 0) AS cycle_out,
+		       COALESCE(SUM(CASE WHEN record_date = ? THEN bytes_in ELSE 0 END), 0) AS today_in,
+		       COALESCE(SUM(CASE WHEN record_date = ? THEN bytes_out ELSE 0 END), 0) AS today_out
+		FROM device_traffic_rollups
+		GROUP BY device_id
+	`, cycleStartDate, cycleStartDate, today, today)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	res := make(map[int]VolumeStats)
+	for rows.Next() {
+		var devID int
+		var s VolumeStats
+		if err := rows.Scan(&devID, &s.TotalIn, &s.TotalOut, &s.CycleIn, &s.CycleOut, &s.TodayIn, &s.TodayOut); err == nil {
+			res[devID] = s
+		}
+	}
+	return res, rows.Err()
+}
+
+// GetUserVolumeStats computes all-time, cycle, and today volume totals per user.
+func (d *DB) GetUserVolumeStats(cycleStartDate, today string) (map[int]VolumeStats, error) {
+	rows, err := d.SqlDB.Query(`
+		SELECT user_id,
+		       COALESCE(SUM(bytes_in), 0) AS total_in,
+		       COALESCE(SUM(bytes_out), 0) AS total_out,
+		       COALESCE(SUM(CASE WHEN record_date >= ? THEN bytes_in ELSE 0 END), 0) AS cycle_in,
+		       COALESCE(SUM(CASE WHEN record_date >= ? THEN bytes_out ELSE 0 END), 0) AS cycle_out,
+		       COALESCE(SUM(CASE WHEN record_date = ? THEN bytes_in ELSE 0 END), 0) AS today_in,
+		       COALESCE(SUM(CASE WHEN record_date = ? THEN bytes_out ELSE 0 END), 0) AS today_out
+		FROM traffic_rollups
+		GROUP BY user_id
+	`, cycleStartDate, cycleStartDate, today, today)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	res := make(map[int]VolumeStats)
+	for rows.Next() {
+		var userID int
+		var s VolumeStats
+		if err := rows.Scan(&userID, &s.TotalIn, &s.TotalOut, &s.CycleIn, &s.CycleOut, &s.TodayIn, &s.TodayOut); err == nil {
+			res[userID] = s
+		}
+	}
+	return res, rows.Err()
+}
+
+// CalculateBillingCycleStart returns YYYY-MM-DD for the current cycle start date.
+func CalculateBillingCycleStart(anchorDay int, ref time.Time) string {
+	if anchorDay < 1 {
+		anchorDay = 1
+	} else if anchorDay > 31 {
+		anchorDay = 31
+	}
+
+	year, month, day := ref.Date()
+	var cycleYear int
+	var cycleMonth time.Month
+
+	if day >= anchorDay {
+		cycleYear = year
+		cycleMonth = month
+	} else {
+		if month == time.January {
+			cycleYear = year - 1
+			cycleMonth = time.December
+		} else {
+			cycleYear = year
+			cycleMonth = month - 1
+		}
+	}
+
+	lastDay := time.Date(cycleYear, cycleMonth+1, 0, 0, 0, 0, 0, time.UTC).Day()
+	actualDay := anchorDay
+	if actualDay > lastDay {
+		actualDay = lastDay
+	}
+
+	return fmt.Sprintf("%04d-%02d-%02d", cycleYear, int(cycleMonth), actualDay)
+}
+
+// GetBillingAnchorDay reads isp_billing_cycle_anchor_day from app_settings, default 1.
+func (d *DB) GetBillingAnchorDay() int {
+	val, err := d.GetSetting("isp_billing_cycle_anchor_day")
+	if err != nil || val == "" {
+		val, _ = d.GetSetting("isp_monthly_quota_anchor_day")
+	}
+	if day, err := strconv.Atoi(val); err == nil && day >= 1 && day <= 31 {
+		return day
+	}
+	return 1
 }
 
 func migrateColumns(db *sql.DB) error {

@@ -2,6 +2,16 @@
  * Formatting utilities for network speeds, byte sizes, and timestamps.
  */
 
+export function safeStr(val, fallback = '') {
+  if (val == null) return fallback;
+  if (typeof val === 'object') {
+    if (val.String !== undefined) return val.Valid ? val.String : fallback;
+    if (val.value !== undefined) return val.value || fallback;
+    return fallback;
+  }
+  return String(val) || fallback;
+}
+
 export function formatBytes(bytes) {
   if (!bytes || bytes === 0) return '0 B';
   const k = 1024;

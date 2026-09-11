@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -37,8 +38,24 @@ func (h *DeviceHandler) List(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	now := time.Now()
+	today := now.Format("2006-01-02")
+	anchorDay := h.database.GetBillingAnchorDay()
+	cycleStart := db.CalculateBillingCycleStart(anchorDay, now)
+
+	devStats, _ := h.database.GetDeviceVolumeStats(cycleStart, today)
+
 	var filtered []db.Device
 	for _, dev := range allDevices {
+		if s, ok := devStats[dev.ID]; ok {
+			dev.BytesTotalIn = s.TotalIn
+			dev.BytesTotalOut = s.TotalOut
+			dev.BytesCycleIn = s.CycleIn
+			dev.BytesCycleOut = s.CycleOut
+			dev.BytesTodayIn = s.TodayIn
+			dev.BytesTodayOut = s.TodayOut
+		}
+
 		if unassignedOnly && dev.UserID != nil {
 			continue
 		}

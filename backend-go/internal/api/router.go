@@ -70,11 +70,23 @@ func NewRouter(rc RouterConfig) http.Handler {
 		sysH := NewSystemHandler(rc.Config, rc.DB, rc.Client)
 		api.Route("/system", func(s chi.Router) {
 			s.Get("/health", sysH.GetHealth)
+			s.Get("/status", sysH.GetSystemStatus)
 			s.Get("/diagnostics", sysH.GetDiagnostics)
+			s.Get("/interfaces", sysH.GetInterfaces)
 			s.Get("/settings", sysH.GetSettings)
 			s.Post("/settings", sysH.SaveSettings)
+			s.Get("/ip-lookup", sysH.GetIpLookup)
+			s.Post("/ip-lookup", sysH.SaveIpLookup)
 			s.Post("/reboot", sysH.Reboot)
 			s.Get("/alerts", sysH.GetAlerts)
+		})
+
+		// Metrics
+		metricsH := NewMetricsHandler(rc.DB, rc.Client)
+		api.Route("/metrics", func(m chi.Router) {
+			m.Get("/config", metricsH.GetMonitoredInterfacesConfig)
+			m.Post("/config", metricsH.SaveMonitoredInterfacesConfig)
+			m.Get("/interfaces/list", metricsH.ListAvailableInterfaces)
 		})
 
 		// Routers
@@ -133,6 +145,7 @@ func NewRouter(rc RouterConfig) http.Handler {
 		logH := NewLogHandler(rc.DB)
 		api.Route("/logs", func(l chi.Router) {
 			l.Get("/", logH.GetLogs)
+			l.Get("/stats", logH.GetLogStats)
 			l.Delete("/", logH.ClearLogs)
 		})
 	})

@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useI18n } from '../context/I18nContext';
 import { api } from '../api/client';
 import { DeviceModal } from './DeviceModal';
-import { formatBytes, formatRelativeTime } from '../utils/formatters';
+import { formatBytes, formatRelativeTime, safeStr } from '../utils/formatters';
 
 import { RefreshCw, UserPlus, Laptop, Smartphone, Wifi, Tag, History, Link, X, Clock, ShieldAlert, Sliders, Pause, Play, EyeOff, Eye, BarChart2 } from 'lucide-react';
 
@@ -297,7 +297,7 @@ export function DeviceInbox({ devices = [], users = [], activeRouterId, onAssign
                       </div>
                       <div>
                         <div style={{ fontWeight: 700, fontSize: 'var(--fs-md)', display: 'flex', alignItems: 'center', gap: 6 }}>
-                          <span>{device.custom_name || device.hostname || 'Unknown Device'}</span>
+                          <span>{safeStr(device.custom_name) || safeStr(device.hostname) || 'Unknown Device'}</span>
                           {device.is_hidden && (
                             <span
                               className="badge"
@@ -314,7 +314,7 @@ export function DeviceInbox({ devices = [], users = [], activeRouterId, onAssign
                           )}
                         </div>
                         <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
-                          {device.vendor || 'Generic Device'}
+                          {safeStr(device.vendor, 'Generic Device')}
                         </div>
                       </div>
                     </div>
@@ -335,7 +335,7 @@ export function DeviceInbox({ devices = [], users = [], activeRouterId, onAssign
                   }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                       <span style={{ color: 'var(--text-muted)' }}>{t('ip_address')}:</span>
-                      <span className="font-mono" style={{ fontWeight: 600 }}>{device.ip_address || 'N/A'}</span>
+                      <span className="font-mono" style={{ fontWeight: 600 }}>{safeStr(device.ip_address, 'N/A')}</span>
                     </div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                       <span style={{ color: 'var(--text-muted)' }}>{t('mac_address')}:</span>
