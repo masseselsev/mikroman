@@ -1,6 +1,8 @@
 package db
 
 import (
+	"database/sql"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -136,3 +138,37 @@ func TestExistingDatabaseRead(t *testing.T) {
 
 	t.Logf("Successfully read %d router(s) from existing production backup DB!", len(routers))
 }
+
+func TestNullSerialization(t *testing.T) {
+	type Sample struct {
+		Name  NullString `json:"name"`
+		Count NullInt64  `json:"count"`
+	}
+
+	// 1. Valid values
+	s1 := Sample{
+		Name:  NullString{sql.NullString{String: "Router1", Valid: true}},
+		Count: NullInt64{sql.NullInt64{Int64: 42, Valid: true}},
+	}
+	b1, err := json.Marshal(s1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b1) != `{"name":"Router1","count":42}` {
+		t.Fatalf("expected raw values, got %s", string(b1))
+	}
+
+	// 2. Invalid (null) values
+	s2 := Sample{
+		Name:  NullString{sql.NullString{Valid: false}},
+		Count: NullInt64{sql.NullInt64{Valid: false}},
+	}
+	b2, err := json.Marshal(s2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b2) != `{"name":null,"count":null}` {
+		t.Fatalf("expected nulls, got %s", string(b2))
+	}
+}
+

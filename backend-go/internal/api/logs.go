@@ -70,3 +70,61 @@ func (h *LogHandler) ClearLogs(w http.ResponseWriter, r *http.Request) {
 	}
 	WriteJSON(w, http.StatusOK, map[string]string{"message": "Logs cleared"})
 }
+
+// RouterLogStatsDTO models log severity breakdowns.
+type RouterLogStatsDTO struct {
+	RouterID          int   `json:"router_id"`
+	TotalLogs         int64 `json:"total_logs"`
+	CriticalCount     int64 `json:"critical_count"`
+	ErrorCount        int64 `json:"error_count"`
+	WarningCount      int64 `json:"warning_count"`
+	AuthFailuresCount int64 `json:"auth_failures_count"`
+}
+
+// GetLogStats returns log statistics.
+func (h *LogHandler) GetLogStats(w http.ResponseWriter, r *http.Request) {
+	rID := 0
+	if idStr := r.URL.Query().Get("router_id"); idStr != "" {
+		rID, _ = strconv.Atoi(idStr)
+	}
+
+	var stats RouterLogStatsDTO
+	stats.RouterID = rID
+
+	var query string
+	var args []interface{}
+	if rID > 0 {
+		query = `
+			SELECT
+				COUNT(*),
+				COALESCE(SUM(CASE WHEN severity = 'critical' THEN 1 ELSE 0 END), 0),
+				COALESCE(SUM(CASE WHEN severity = 'error' THEN 1 ELSE 0 END), 0),
+				COALESCE(SUM(CASE WHEN severity = 'warning' THEN 1 ELSE 0 END), 0),
+				COALESCE(SUM(CASE WHEN category = 'auth' AND severity IN ('critical', 'error') THEN 1 ELSE 0 END), 0)
+			FROM router_logs
+			WHERE router_id = ?
+		`
+		args = append(args, rID)
+	} else {
+		query = `
+			SELECT
+				COUNT(*),
+				COALESCE(SUM(CASE WHEN severity = 'critical' THEN 1 ELSE 0 END), 0),
+				COALESCE(SUM(CASE WHEN severity = 'error' THEN 1 ELSE 0 END), 0),
+				COALESCE(SUM(CASE WHEN severity = 'warning' THEN 1 ELSE 0 END), 0),
+				COALESCE(SUM(CASE WHEN category = 'auth' AND severity IN ('critical', 'error') THEN 1 ELSE 0 END), 0)
+			FROM router_logs
+		`
+	}
+
+	_ = h.database.SqlDB.QueryRow(query, args...).Scan(
+		&stats.TotalLogs,
+		&stats.CriticalCount,
+		&stats.ErrorCount,
+		&stats.WarningCount,
+		&stats.AuthFailuresCount,
+	)
+
+	WriteJSON(w, http.StatusOK, stats)
+}
+

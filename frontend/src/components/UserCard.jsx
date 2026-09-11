@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useI18n } from '../context/I18nContext';
 import { api } from '../api/client';
-import { formatSpeed, formatSpeedShort, formatBytes, formatBytesCompact, formatGbWhole, formatRelativeTime, formatLastActive, formatDateTime, parseUtcDate } from '../utils/formatters';
+import { formatSpeed, formatSpeedShort, formatBytes, formatBytesCompact, formatGbWhole, formatRelativeTime, formatLastActive, formatDateTime, parseUtcDate, safeStr } from '../utils/formatters';
 import { displayVendor } from '../utils/deviceLabels';
 import { DeviceModal } from './DeviceModal';
 import {
@@ -197,8 +197,8 @@ function DeviceRow({ group, t, lang, grandTotal = 0, onOpen, onUpdate, onViewTra
   // The randomization marker is not shown as a chip: nearly every phone uses a
   // private MAC, so it annotates the norm and only costs width. It stays in the
   // row tooltip and the device modal.
-  const vendorLabel = displayVendor(d.vendor);
-  const deviceName = d.custom_name || d.hostname || d.vendor || 'Device';
+  const vendorLabel = displayVendor(safeStr(d.vendor));
+  const deviceName = safeStr(d.custom_name) || safeStr(d.hostname) || vendorLabel || 'Device';
 
   // Compact volume readout shown on the row: Today / All-Time / Share% in compact units.
   const volToday = group.bytesIn + group.bytesOut;
@@ -337,7 +337,7 @@ function DeviceRow({ group, t, lang, grandTotal = 0, onOpen, onUpdate, onViewTra
                     <span className="badge badge-chip drow-adapter-primary">{t('primary_adapter')}</span>
                   )}
                   <span className="drow-adapter-meta font-mono">
-                    {a.ip_address || '—'}{a.last_interface ? ` · ${a.last_interface}` : ''}
+                    {safeStr(a.ip_address, '—')}{safeStr(a.last_interface) ? ` · ${safeStr(a.last_interface)}` : ''}
                   </span>
                 </span>
                 {isPrimary ? (
@@ -363,7 +363,7 @@ function DeviceRow({ group, t, lang, grandTotal = 0, onOpen, onUpdate, onViewTra
       <div className="drow-sub">
         {/* One greedy run: IP, vendor, hidden flag. It truncates. */}
         <span className="drow-facts">
-          <span className="font-mono">{d.ip_address || d.mac_address}</span>
+          <span className="font-mono">{safeStr(d.ip_address) || safeStr(d.mac_address)}</span>
           {vendorLabel && <> · {vendorLabel}</>}
           {d.is_hidden && <> · {t('hidden_badge')}</>}
         </span>

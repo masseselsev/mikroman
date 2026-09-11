@@ -1,9 +1,12 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"runtime"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/masseselsev/mikroman/internal/config"
@@ -136,4 +139,200 @@ func (h *SystemHandler) GetAlerts(w http.ResponseWriter, r *http.Request) {
 	}
 
 	WriteJSON(w, http.StatusOK, alerts)
+}
+
+// InterfaceDTO represents a network interface on the router.
+type InterfaceDTO struct {
+	ID        string `json:"id,omitempty"`
+	Name      string `json:"name"`
+	Type      string `json:"type,omitempty"`
+	Running   bool   `json:"running"`
+	Disabled  bool   `json:"disabled"`
+	Comment   string `json:"comment,omitempty"`
+	RxByte    int64  `json:"rx_byte"`
+	TxByte    int64  `json:"tx_byte"`
+	ActualMTU string `json:"actual_mtu,omitempty"`
+}
+
+// GetInterfaces returns interface statistics from the connected router.
+func (h *SystemHandler) GetInterfaces(w http.ResponseWriter, r *http.Request) {
+	if h.client == nil {
+		WriteJSON(w, http.StatusOK, []InterfaceDTO{})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	rawIfaces, err := h.client.GetInterfaces(ctx)
+	if err != nil {
+		WriteJSON(w, http.StatusOK, []InterfaceDTO{})
+		return
+	}
+
+	dtos := make([]InterfaceDTO, 0, len(rawIfaces))
+	for _, iface := range rawIfaces {
+		rx, _ := strconv.ParseInt(iface.RxByte, 10, 64)
+		tx, _ := strconv.ParseInt(iface.TxByte, 10, 64)
+		dtos = append(dtos, InterfaceDTO{
+			ID:        iface.ID,
+			Name:      iface.Name,
+			Type:      iface.Type,
+			Running:   iface.Running == "true",
+			Disabled:  iface.Disabled == "true",
+			Comment:   iface.Comment,
+			RxByte:    rx,
+			TxByte:    tx,
+			ActualMTU: iface.ActualMTU,
+		})
+	}
+
+	WriteJSON(w, http.StatusOK, dtos)
+}
+
+// GetSystemStatus fetches hardware status, RouterBOARD info, and health sensors.
+func (h *SystemHandler) GetSystemStatus(w http.ResponseWriter, r *http.Request) {
+	if h.client == nil {
+		WriteJSON(w, http.StatusOK, map[string]interface{}{
+			"connected": false,
+			"error":     "No active router connected",
+		})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	res, err := h.client.GetSystemResource(ctx)
+	if err != nil {
+		WriteJSON(w, http.StatusOK, map[string]interface{}{
+			"connected": false,
+			"error":     err.Error(),
+		})
+		return
+	}
+
+	health, _ := h.client.GetSystemHealth(ctx)
+	rb, _ := h.client.GetRouterBoard(ctx)
+
+	var temp, volt *float64
+	for _, item := range health {
+		if strings.EqualFold(item.Name, "temperature") {
+			if v, err := strconv.ParseFloat(item.Value, 64); err == nil {
+				temp = &v
+			}
+		}
+		if strings.EqualFold(item.Name, "voltage") {
+			if v, err := strconv.ParseFloat(item.Value, 64); err == nil {
+				volt = &v
+			}
+		}
+	}
+
+	rbModel := ""
+	rbSerial := ""
+	currentFw := ""
+	upgradeFw := ""
+	if rb != nil {
+		rbModel = rb.Model
+		rbSerial = rb.SerialNumber
+		currentFw = rb.CurrentFirmware
+		upgradeFw = rb.UpgradeFirmware
+	}
+
+	freeMem, _ := strconv.ParseInt(res.FreeMemory, 10, 64)
+	totalMem, _ := strconv.ParseInt(res.TotalMemory, 10, 64)
+	cpuLoad, _ := strconv.Atoi(res.CPULoad)
+	cpuCount, _ := strconv.Atoi(res.CPUCount)
+	cpuFreq, _ := strconv.Atoi(res.CPUFrequency)
+
+	WriteJSON(w, http.StatusOK, map[string]interface{}{
+		"connected": true,
+		"resource": map[string]interface{}{
+			"board_name":        res.BoardName,
+			"version":           res.Version,
+			"cpu_load":          cpuLoad,
+			"free_memory":       freeMem,
+			"total_memory":      totalMem,
+			"uptime":            res.Uptime,
+			"cpu":               res.ArchitectureName,
+			"cpu_count":         cpuCount,
+			"cpu_frequency":     cpuFreq,
+			"architecture_name": res.ArchitectureName,
+		},
+		"routerboard": map[string]interface{}{
+			"is_routerboard":   rb != nil,
+			"model":            rbModel,
+			"serial_number":    rbSerial,
+			"current_firmware": currentFw,
+			"upgrade_firmware": upgradeFw,
+		},
+		"cpu_model":       res.BoardName,
+		"cpu_model_exact": true,
+		"health": map[string]interface{}{
+			"temperature": temp,
+			"voltage":     volt,
+		},
+		"app_version": h.cfg.AppVersion,
+	})
+}
+
+// IpLookupService represents a selectable third-party lookup provider.
+type IpLookupService struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	URLTemplate string `json:"url_template"`
+	Builtin     bool   `json:"builtin"`
+}
+
+// IpLookupConfigDTO models configured external IP lookup services.
+type IpLookupConfigDTO struct {
+	Services  []IpLookupService `json:"services"`
+	DefaultID string            `json:"default_id"`
+}
+
+var defaultLookupServices = []IpLookupService{
+	{ID: "2ip", Name: "2ip.io", URLTemplate: "https://2ip.io/ip/{ip}/", Builtin: true},
+	{ID: "ipinfo", Name: "IPinfo", URLTemplate: "https://ipinfo.io/{ip}", Builtin: true},
+	{ID: "whatismyip", Name: "WhatIsMyIPAddress", URLTemplate: "https://whatismyipaddress.com/ip/{ip}", Builtin: true},
+	{ID: "abuseipdb", Name: "AbuseIPDB", URLTemplate: "https://www.abuseipdb.com/check/{ip}", Builtin: true},
+	{ID: "shodan", Name: "Shodan", URLTemplate: "https://www.shodan.io/host/{ip}", Builtin: true},
+	{ID: "bgp_he", Name: "BGP Toolkit", URLTemplate: "https://bgp.he.net/ip/{ip}", Builtin: true},
+}
+
+// GetIpLookup retrieves the saved IP lookup configuration or defaults.
+func (h *SystemHandler) GetIpLookup(w http.ResponseWriter, r *http.Request) {
+	val, err := h.database.GetSetting("ip_lookup_config")
+	if err == nil && val != "" {
+		var cfg IpLookupConfigDTO
+		if err := json.Unmarshal([]byte(val), &cfg); err == nil && len(cfg.Services) > 0 {
+			WriteJSON(w, http.StatusOK, cfg)
+			return
+		}
+	}
+
+	WriteJSON(w, http.StatusOK, IpLookupConfigDTO{
+		Services:  defaultLookupServices,
+		DefaultID: "2ip",
+	})
+}
+
+// SaveIpLookup saves external IP lookup configuration.
+func (h *SystemHandler) SaveIpLookup(w http.ResponseWriter, r *http.Request) {
+	var payload IpLookupConfigDTO
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		WriteError(w, http.StatusBadRequest, "Invalid IP lookup payload")
+		return
+	}
+
+	if payload.DefaultID == "" {
+		payload.DefaultID = "2ip"
+	}
+	if len(payload.Services) == 0 {
+		payload.Services = defaultLookupServices
+	}
+
+	raw, _ := json.Marshal(payload)
+	_ = h.database.SetSetting("ip_lookup_config", string(raw), "Configured external IP lookup services")
+	WriteJSON(w, http.StatusOK, payload)
 }

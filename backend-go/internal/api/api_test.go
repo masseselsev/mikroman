@@ -29,7 +29,7 @@ func setupTestServer(t *testing.T) (http.Handler, *db.DB, *crypto.Fernet) {
 	}
 
 	cfg := &config.Config{
-		AppVersion:    "0.3.1-test",
+		AppVersion:    "0.3.2-test",
 		AdminPassword: "SecretAdminPassword123",
 		AuthEnabled:   true,
 	}
@@ -325,3 +325,102 @@ func TestAlertsAndScanEndpoints(t *testing.T) {
 		t.Fatalf("expected 200 for scan, got %d", wScan.Code)
 	}
 }
+
+func TestNewDashboardEndpoints(t *testing.T) {
+	handler, database, _ := setupTestServer(t)
+	defer database.Close()
+
+	// 1. Obtain session & csrf
+	reqStatus := httptest.NewRequest(http.MethodGet, "/api/v1/auth/status", nil)
+	wStatus := httptest.NewRecorder()
+	handler.ServeHTTP(wStatus, reqStatus)
+	var csrfCookie *http.Cookie
+	for _, c := range wStatus.Result().Cookies() {
+		if c.Name == CSRFCookie {
+			csrfCookie = c
+			break
+		}
+	}
+
+	goodBody := bytes.NewBufferString(`{"password": "SecretAdminPassword123"}`)
+	reqLogin := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", goodBody)
+	wLogin := httptest.NewRecorder()
+	handler.ServeHTTP(wLogin, reqLogin)
+	var sessionCookie *http.Cookie
+	for _, c := range wLogin.Result().Cookies() {
+		if c.Name == SessionCookie {
+			sessionCookie = c
+			break
+		}
+	}
+
+	// 2. GET /api/v1/system/interfaces
+	reqIfaces := httptest.NewRequest(http.MethodGet, "/api/v1/system/interfaces", nil)
+	reqIfaces.AddCookie(sessionCookie)
+	wIfaces := httptest.NewRecorder()
+	handler.ServeHTTP(wIfaces, reqIfaces)
+	if wIfaces.Code != http.StatusOK {
+		t.Fatalf("expected 200 for interfaces, got %d", wIfaces.Code)
+	}
+
+	// 3. GET /api/v1/system/ip-lookup
+	reqIP := httptest.NewRequest(http.MethodGet, "/api/v1/system/ip-lookup", nil)
+	reqIP.AddCookie(sessionCookie)
+	wIP := httptest.NewRecorder()
+	handler.ServeHTTP(wIP, reqIP)
+	if wIP.Code != http.StatusOK {
+		t.Fatalf("expected 200 for ip-lookup, got %d", wIP.Code)
+	}
+
+	// 4. POST /api/v1/system/ip-lookup
+	ipCfgJSON := []byte(`{"default_id":"shodan","services":[{"id":"shodan","name":"Shodan","url_template":"https://shodan.io/host/{ip}","builtin":true}]}`)
+	reqSaveIP := httptest.NewRequest(http.MethodPost, "/api/v1/system/ip-lookup", bytes.NewReader(ipCfgJSON))
+	reqSaveIP.AddCookie(sessionCookie)
+	reqSaveIP.AddCookie(csrfCookie)
+	reqSaveIP.Header.Set(CSRFHeader, csrfCookie.Value)
+	wSaveIP := httptest.NewRecorder()
+	handler.ServeHTTP(wSaveIP, reqSaveIP)
+	if wSaveIP.Code != http.StatusOK {
+		t.Fatalf("expected 200 for save ip-lookup, got %d", wSaveIP.Code)
+	}
+
+	// 5. GET /api/v1/metrics/config
+	reqMCfg := httptest.NewRequest(http.MethodGet, "/api/v1/metrics/config", nil)
+	reqMCfg.AddCookie(sessionCookie)
+	wMCfg := httptest.NewRecorder()
+	handler.ServeHTTP(wMCfg, reqMCfg)
+	if wMCfg.Code != http.StatusOK {
+		t.Fatalf("expected 200 for metrics config, got %d", wMCfg.Code)
+	}
+
+	// 6. POST /api/v1/metrics/config
+	mCfgJSON := []byte(`{"selected_interfaces":["ether1"]}`)
+	reqSaveM := httptest.NewRequest(http.MethodPost, "/api/v1/metrics/config", bytes.NewReader(mCfgJSON))
+	reqSaveM.AddCookie(sessionCookie)
+	reqSaveM.AddCookie(csrfCookie)
+	reqSaveM.Header.Set(CSRFHeader, csrfCookie.Value)
+	wSaveM := httptest.NewRecorder()
+	handler.ServeHTTP(wSaveM, reqSaveM)
+	if wSaveM.Code != http.StatusOK {
+		t.Fatalf("expected 200 for save metrics config, got %d", wSaveM.Code)
+	}
+
+	// 7. GET /api/v1/logs/stats
+	reqLogStats := httptest.NewRequest(http.MethodGet, "/api/v1/logs/stats", nil)
+	reqLogStats.AddCookie(sessionCookie)
+	wLogStats := httptest.NewRecorder()
+	handler.ServeHTTP(wLogStats, reqLogStats)
+	if wLogStats.Code != http.StatusOK {
+		t.Fatalf("expected 200 for log stats, got %d", wLogStats.Code)
+	}
+
+	// 8. GET /api/v1/users (returns enriched user list)
+	reqUsers := httptest.NewRequest(http.MethodGet, "/api/v1/users", nil)
+	reqUsers.AddCookie(sessionCookie)
+	wUsers := httptest.NewRecorder()
+	handler.ServeHTTP(wUsers, reqUsers)
+	if wUsers.Code != http.StatusOK {
+		t.Fatalf("expected 200 for users, got %d", wUsers.Code)
+	}
+}
+

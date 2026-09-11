@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -33,19 +34,74 @@ func (h *UserHandler) List(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	now := time.Now()
+	today := now.Format("2006-01-02")
+	anchorDay := h.database.GetBillingAnchorDay()
+	cycleStart := db.CalculateBillingCycleStart(anchorDay, now)
+
+	devStats, _ := h.database.GetDeviceVolumeStats(cycleStart, today)
+	userStats, _ := h.database.GetUserVolumeStats(cycleStart, today)
+
 	allDevices, _ := h.database.GetDevices(routerID)
 	devMap := make(map[int][]db.Device)
 	for _, dev := range allDevices {
 		if dev.UserID != nil {
+			if s, ok := devStats[dev.ID]; ok {
+				dev.BytesTotalIn = s.TotalIn
+				dev.BytesTotalOut = s.TotalOut
+				dev.BytesCycleIn = s.CycleIn
+				dev.BytesCycleOut = s.CycleOut
+				dev.BytesTodayIn = s.TodayIn
+				dev.BytesTodayOut = s.TodayOut
+			}
 			devMap[*dev.UserID] = append(devMap[*dev.UserID], dev)
 		}
 	}
 
 	for i := range users {
-		users[i].Devices = devMap[users[i].ID]
-		if users[i].Devices == nil {
-			users[i].Devices = []db.Device{}
+		u := &users[i]
+		u.Devices = devMap[u.ID]
+		if u.Devices == nil {
+			u.Devices = []db.Device{}
 		}
+
+		var uTotIn, uTotOut, uCycIn, uCycOut, uTodIn, uTodOut int64
+		var maxSeen *time.Time
+
+		for _, d := range u.Devices {
+			uTotIn += d.BytesTotalIn
+			uTotOut += d.BytesTotalOut
+			uCycIn += d.BytesCycleIn
+			uCycOut += d.BytesCycleOut
+			uTodIn += d.BytesTodayIn
+			uTodOut += d.BytesTodayOut
+
+			if !d.LastSeen.IsZero() {
+				if maxSeen == nil || d.LastSeen.After(*maxSeen) {
+					t := d.LastSeen
+					maxSeen = &t
+				}
+			}
+		}
+
+		if len(u.Devices) == 0 {
+			if s, ok := userStats[u.ID]; ok {
+				uTotIn = s.TotalIn
+				uTotOut = s.TotalOut
+				uCycIn = s.CycleIn
+				uCycOut = s.CycleOut
+				uTodIn = s.TodayIn
+				uTodOut = s.TodayOut
+			}
+		}
+
+		u.BytesTotalIn = uTotIn
+		u.BytesTotalOut = uTotOut
+		u.BytesCycleIn = uCycIn
+		u.BytesCycleOut = uCycOut
+		u.BytesTodayIn = uTodIn
+		u.BytesTodayOut = uTodOut
+		u.LastSeen = maxSeen
 	}
 
 	if users == nil {
@@ -68,15 +124,66 @@ func (h *UserHandler) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	now := time.Now()
+	today := now.Format("2006-01-02")
+	anchorDay := h.database.GetBillingAnchorDay()
+	cycleStart := db.CalculateBillingCycleStart(anchorDay, now)
+
+	devStats, _ := h.database.GetDeviceVolumeStats(cycleStart, today)
+	userStats, _ := h.database.GetUserVolumeStats(cycleStart, today)
+
 	allDevices, _ := h.database.GetDevices(user.RouterID)
+	var maxSeen *time.Time
+	var uTotIn, uTotOut, uCycIn, uCycOut, uTodIn, uTodOut int64
+
 	for _, dev := range allDevices {
 		if dev.UserID != nil && *dev.UserID == user.ID {
+			if s, ok := devStats[dev.ID]; ok {
+				dev.BytesTotalIn = s.TotalIn
+				dev.BytesTotalOut = s.TotalOut
+				dev.BytesCycleIn = s.CycleIn
+				dev.BytesCycleOut = s.CycleOut
+				dev.BytesTodayIn = s.TodayIn
+				dev.BytesTodayOut = s.TodayOut
+			}
+			uTotIn += dev.BytesTotalIn
+			uTotOut += dev.BytesTotalOut
+			uCycIn += dev.BytesCycleIn
+			uCycOut += dev.BytesCycleOut
+			uTodIn += dev.BytesTodayIn
+			uTodOut += dev.BytesTodayOut
+
+			if !dev.LastSeen.IsZero() {
+				if maxSeen == nil || dev.LastSeen.After(*maxSeen) {
+					t := dev.LastSeen
+					maxSeen = &t
+				}
+			}
 			user.Devices = append(user.Devices, dev)
 		}
 	}
 	if user.Devices == nil {
 		user.Devices = []db.Device{}
 	}
+
+	if len(user.Devices) == 0 {
+		if s, ok := userStats[user.ID]; ok {
+			uTotIn = s.TotalIn
+			uTotOut = s.TotalOut
+			uCycIn = s.CycleIn
+			uCycOut = s.CycleOut
+			uTodIn = s.TodayIn
+			uTodOut = s.TodayOut
+		}
+	}
+
+	user.BytesTotalIn = uTotIn
+	user.BytesTotalOut = uTotOut
+	user.BytesCycleIn = uCycIn
+	user.BytesCycleOut = uCycOut
+	user.BytesTodayIn = uTodIn
+	user.BytesTodayOut = uTodOut
+	user.LastSeen = maxSeen
 
 	WriteJSON(w, http.StatusOK, user)
 }
