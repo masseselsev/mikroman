@@ -20,28 +20,79 @@ type TelemetryService struct {
 	client          *routeros.Client
 	hub             *api.Hub
 	mu              sync.Mutex
-	prevIfaces      map[string][2]int64
-	prevTime        time.Time
-	prevDeviceBytes map[int][2]int64
-	prevMangleTime  time.Time
+	clients         map[int]*routeros.Client
+	prevIfaces      map[int]map[string][2]int64
+	prevTime        map[int]time.Time
+	prevDeviceBytes map[int]map[int][2]int64
+	prevMangleTime  map[int]time.Time
 }
 
 func NewTelemetryService(database *db.DB, client *routeros.Client, hub *api.Hub) *TelemetryService {
+	clients := make(map[int]*routeros.Client)
+	if client != nil {
+		if def, err := database.GetDefaultRouter(); err == nil && def != nil {
+			clients[def.ID] = client
+		}
+	}
 	return &TelemetryService{
 		database:        database,
 		client:          client,
 		hub:             hub,
-		prevIfaces:      make(map[string][2]int64),
-		prevDeviceBytes: make(map[int][2]int64),
+		clients:         clients,
+		prevIfaces:      make(map[int]map[string][2]int64),
+		prevTime:        make(map[int]time.Time),
+		prevDeviceBytes: make(map[int]map[int][2]int64),
+		prevMangleTime:  make(map[int]time.Time),
 	}
 }
 
-func (s *TelemetryService) Collect(ctx context.Context, routerID int) error {
-	if s.client == nil {
-		return nil
+func (s *TelemetryService) getClient(routerID int) (*routeros.Client, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if c, ok := s.clients[routerID]; ok && c != nil {
+		return c, nil
 	}
 
-	res, err := s.client.GetSystemResource(ctx)
+	defaultRouter, _ := s.database.GetDefaultRouter()
+	if (defaultRouter == nil || defaultRouter.ID == routerID) && s.client != nil {
+		s.clients[routerID] = s.client
+		return s.client, nil
+	}
+
+	router, err := s.database.GetRouter(routerID)
+	if err != nil {
+		return nil, err
+	}
+	if router == nil {
+		return nil, fmt.Errorf("router %d not found", routerID)
+	}
+
+	newClient, err := routeros.NewClient(routeros.Config{
+		Host:      router.Host,
+		Port:      router.Port,
+		Username:  router.Username,
+		Password:  router.Password,
+		UseSSL:    router.UseSSL,
+		SSLVerify: router.SSLVerify,
+		CACert:    router.CACert.String,
+		Timeout:   5 * time.Second,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	s.clients[routerID] = newClient
+	return newClient, nil
+}
+
+func (s *TelemetryService) Collect(ctx context.Context, routerID int) error {
+	client, err := s.getClient(routerID)
+	if err != nil || client == nil {
+		return err
+	}
+
+	res, err := client.GetSystemResource(ctx)
 	if err != nil {
 		return err
 	}
@@ -64,22 +115,21 @@ func (s *TelemetryService) Collect(ctx context.Context, routerID int) error {
 	`, routerID, cpuLoad, usedMem, totalMem, memPct)
 
 	// Fetch interfaces
-	ifaces, _ := s.client.GetInterfaces(ctx)
+	ifaces, _ := client.GetInterfaces(ctx)
 	now := time.Now()
 
 	s.mu.Lock()
-	dt := now.Sub(s.prevTime).Seconds()
+	pTime := s.prevTime[routerID]
+	var dt float64
+	if !pTime.IsZero() {
+		dt = now.Sub(pTime).Seconds()
+	}
 	currentIfaces := make(map[string][2]int64)
 
 	for _, iface := range ifaces {
 		rx, _ := strconv.ParseInt(iface.RxByte, 10, 64)
 		tx, _ := strconv.ParseInt(iface.TxByte, 10, 64)
 		currentIfaces[iface.Name] = [2]int64{rx, tx}
-
-		_, _ = s.database.SqlDB.Exec(`
-			INSERT INTO interface_metrics (router_id, interface_name, rx_bytes_total, tx_bytes_total, timestamp)
-			VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-		`, routerID, iface.Name, rx, tx)
 	}
 
 	// Read monitored interfaces configuration
@@ -96,44 +146,75 @@ func (s *TelemetryService) Collect(ctx context.Context, routerID int) error {
 		monitoredList = []string{}
 	}
 
-	// Calculate WAN rates across monitored interfaces
-	var wanRxBps, wanTxBps float64
+	pIfaces := s.prevIfaces[routerID]
+	ifacesRatesMap := make(map[string][2]float64)
+
+	// Fetch live rates from RouterOS monitor-traffic for monitored interfaces
 	if len(monitoredList) > 0 {
-		rates, err := s.client.MonitorInterfaceTraffic(ctx, monitoredList)
+		rates, err := client.MonitorInterfaceTraffic(ctx, monitoredList)
 		if err == nil && len(rates) > 0 {
 			for _, r := range rates {
-				wanRxBps += r.RxBitsPerSecond
-				wanTxBps += r.TxBitsPerSecond
+				ifacesRatesMap[r.Name] = [2]float64{r.RxBitsPerSecond, r.TxBitsPerSecond}
 			}
-		} else if dt > 0.1 && len(s.prevIfaces) > 0 {
-			monMap := make(map[string]bool)
-			for _, m := range monitoredList {
-				monMap[m] = true
-			}
-			for name, curr := range currentIfaces {
-				if monMap[name] {
-					if prev, ok := s.prevIfaces[name]; ok {
-						dRx := curr[0] - prev[0]
-						dTx := curr[1] - prev[1]
-						if dRx > 0 {
-							wanRxBps += float64(dRx*8) / dt
-						}
-						if dTx > 0 {
-							wanTxBps += float64(dTx*8) / dt
-						}
+		}
+	}
+
+	// For any interface without monitor-traffic, compute from byte deltas
+	if dt > 0.1 && len(pIfaces) > 0 {
+		for name, curr := range currentIfaces {
+			if _, ok := ifacesRatesMap[name]; !ok {
+				if prev, exists := pIfaces[name]; exists {
+					dRx := curr[0] - prev[0]
+					dTx := curr[1] - prev[1]
+					var rRx, rTx float64
+					if dRx > 0 {
+						rRx = float64(dRx*8) / dt
 					}
+					if dTx > 0 {
+						rTx = float64(dTx*8) / dt
+					}
+					ifacesRatesMap[name] = [2]float64{rRx, rTx}
 				}
 			}
 		}
 	}
 
-	s.prevIfaces = currentIfaces
-	s.prevTime = now
+	// Calculate WAN rates across monitored interfaces & record interface_metrics
+	var wanRxBps, wanTxBps float64
+	monMap := make(map[string]bool)
+	for _, m := range monitoredList {
+		monMap[m] = true
+	}
+
+	for _, iface := range ifaces {
+		rx, _ := strconv.ParseInt(iface.RxByte, 10, 64)
+		tx, _ := strconv.ParseInt(iface.TxByte, 10, 64)
+		rate := ifacesRatesMap[iface.Name]
+
+		if monMap[iface.Name] {
+			wanRxBps += rate[0]
+			wanTxBps += rate[1]
+		}
+
+		_, _ = s.database.SqlDB.Exec(`
+			INSERT INTO interface_metrics (router_id, interface_name, rx_rate_bps, tx_rate_bps, rx_bytes_total, tx_bytes_total, timestamp)
+			VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+		`, routerID, iface.Name, rate[0], rate[1], rx, tx)
+	}
+
+	if s.prevIfaces == nil {
+		s.prevIfaces = make(map[int]map[string][2]int64)
+	}
+	s.prevIfaces[routerID] = currentIfaces
+	if s.prevTime == nil {
+		s.prevTime = make(map[int]time.Time)
+	}
+	s.prevTime[routerID] = now
 	s.mu.Unlock()
 
 	// Resolve WAN IP & Public IP
 	var wanIP string
-	ipAddrs, _ := s.client.GetIPAddresses(ctx)
+	ipAddrs, _ := client.GetIPAddresses(ctx)
 	for _, entry := range ipAddrs {
 		clean := strings.Split(entry.Address, "/")[0]
 		if clean == "" || strings.HasPrefix(clean, "127.") {
@@ -154,11 +235,11 @@ func (s *TelemetryService) Collect(ctx context.Context, routerID int) error {
 			wanIP = clean
 		}
 	}
-	publicIP, _ := s.client.GetCloudPublicAddress(ctx)
+	publicIP, _ := client.GetCloudPublicAddress(ctx)
 	clockStr := now.Format("15:04:05")
 
 	// Differentiate mangle rules for live per-device rates
-	mangleRules, _ := s.client.GetMangleRules(ctx)
+	mangleRules, _ := client.GetMangleRules(ctx)
 	currentDevBytes := make(map[int][2]int64)
 	for _, r := range mangleRules {
 		if !strings.HasPrefix(r.Comment, "mikroman:acct:dev_") {
@@ -171,7 +252,7 @@ func (s *TelemetryService) Collect(ctx context.Context, routerID int) error {
 			if err != nil {
 				continue
 			}
-			bVal, _ := strconv.ParseInt(r.Bytes, 10, 64)
+			bVal := r.Bytes.Int64()
 			cur := currentDevBytes[devID]
 			if parts[3] == "up" {
 				cur[1] += bVal
@@ -184,10 +265,15 @@ func (s *TelemetryService) Collect(ctx context.Context, routerID int) error {
 
 	devRates := make(map[int][2]int64)
 	s.mu.Lock()
-	mDt := now.Sub(s.prevMangleTime).Seconds()
-	if mDt > 0.1 && s.prevDeviceBytes != nil && len(s.prevDeviceBytes) > 0 {
+	prevDevs := s.prevDeviceBytes[routerID]
+	pMTime := s.prevMangleTime[routerID]
+	var mDt float64
+	if !pMTime.IsZero() {
+		mDt = now.Sub(pMTime).Seconds()
+	}
+	if mDt > 0.1 && prevDevs != nil && len(prevDevs) > 0 {
 		for devID, cur := range currentDevBytes {
-			prev, ok := s.prevDeviceBytes[devID]
+			prev, ok := prevDevs[devID]
 			if !ok {
 				continue
 			}
@@ -210,13 +296,19 @@ func (s *TelemetryService) Collect(ctx context.Context, routerID int) error {
 			devRates[devID] = [2]int64{rxBps, txBps}
 		}
 	}
-	s.prevDeviceBytes = currentDevBytes
-	s.prevMangleTime = now
+	if s.prevDeviceBytes == nil {
+		s.prevDeviceBytes = make(map[int]map[int][2]int64)
+	}
+	s.prevDeviceBytes[routerID] = currentDevBytes
+	if s.prevMangleTime == nil {
+		s.prevMangleTime = make(map[int]time.Time)
+	}
+	s.prevMangleTime[routerID] = now
 	s.mu.Unlock()
 
 	// Fetch health & hardware
-	health, _ := s.client.GetSystemHealth(ctx)
-	rb, _ := s.client.GetRouterBoard(ctx)
+	health, _ := client.GetSystemHealth(ctx)
+	rb, _ := client.GetRouterBoard(ctx)
 
 	var temp, volt *float64
 	for _, item := range health {
@@ -327,12 +419,15 @@ func (s *TelemetryService) Collect(ctx context.Context, routerID int) error {
 		})
 	}
 
-	// Broadcast full structure to frontend
+	// Broadcast router-scoped structure to frontend
 	if s.hub != nil {
-		s.hub.Broadcast(map[string]interface{}{
+		defaultRouter, _ := s.database.GetDefaultRouter()
+		isDefault := (defaultRouter != nil && defaultRouter.ID == routerID)
+		s.hub.BroadcastRouter(routerID, isDefault, map[string]interface{}{
 			"type":      "telemetry_tick",
 			"timestamp": float64(now.Unix()),
 			"router": map[string]interface{}{
+				"id":                   routerID,
 				"board_name":           res.BoardName,
 				"version":              res.Version,
 				"cpu_load":             cpuLoad,

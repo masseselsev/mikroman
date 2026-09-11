@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     )
 
     APP_NAME: str = "MikroMan"
-    APP_VERSION: str = "0.3.3"
+    APP_VERSION: str = "0.3.4"
     DEBUG: bool = False
 
     # Database

@@ -338,7 +338,7 @@ func (s *TrafficService) AccountingPass(ctx context.Context, routerID int) error
 	currentMap := make(map[string]int64)
 	for _, r := range rules {
 		if strings.HasPrefix(r.Comment, "mikroman:acct:") {
-			bytesVal, _ := strconv.ParseInt(r.Bytes, 10, 64)
+			bytesVal := r.Bytes.Int64()
 			currentMap[r.Comment] = bytesVal
 		}
 	}

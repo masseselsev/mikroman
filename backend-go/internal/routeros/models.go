@@ -1,5 +1,40 @@
 package routeros
 
+import (
+	"strconv"
+	"strings"
+)
+
+// FlexibleInt64 unmarshals both string numbers ("12345") and JSON numeric numbers (12345).
+type FlexibleInt64 int64
+
+func (f *FlexibleInt64) UnmarshalJSON(b []byte) error {
+	s := strings.Trim(string(b), "\"")
+	if s == "" || s == "null" {
+		*f = 0
+		return nil
+	}
+	v, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		*f = 0
+		return nil
+	}
+	*f = FlexibleInt64(v)
+	return nil
+}
+
+func (f FlexibleInt64) MarshalJSON() ([]byte, error) {
+	return []byte(strconv.FormatInt(int64(f), 10)), nil
+}
+
+func (f FlexibleInt64) Int64() int64 {
+	return int64(f)
+}
+
+func (f FlexibleInt64) String() string {
+	return strconv.FormatInt(int64(f), 10)
+}
+
 // Resource represents /system/resource
 type Resource struct {
 	Uptime           string  `json:"uptime"`
@@ -100,19 +135,35 @@ type SimpleQueue struct {
 
 // MangleRule represents /ip/firewall/mangle
 type MangleRule struct {
-	ID             string `json:".id,omitempty"`
-	Chain          string `json:"chain"`
-	Action         string `json:"action"`
-	SrcAddress     string `json:"src-address,omitempty"`
-	DstAddress     string `json:"dst-address,omitempty"`
-	SrcAddressList string `json:"src-address-list,omitempty"`
-	DstAddressList string `json:"dst-address-list,omitempty"`
-	InInterface    string `json:"in-interface,omitempty"`
-	OutInterface   string `json:"out-interface,omitempty"`
-	Comment        string `json:"comment,omitempty"`
-	Bytes          string `json:"bytes,omitempty"`
-	Packets        string `json:"packets,omitempty"`
-	Disabled       string `json:"disabled"`
+	ID             string        `json:".id,omitempty"`
+	Chain          string        `json:"chain"`
+	Action         string        `json:"action"`
+	SrcAddress     string        `json:"src-address,omitempty"`
+	DstAddress     string        `json:"dst-address,omitempty"`
+	SrcAddressList string        `json:"src-address-list,omitempty"`
+	DstAddressList string        `json:"dst-address-list,omitempty"`
+	InInterface    string        `json:"in-interface,omitempty"`
+	OutInterface   string        `json:"out-interface,omitempty"`
+	Comment        string        `json:"comment,omitempty"`
+	Bytes          FlexibleInt64 `json:"bytes,omitempty"`
+	Packets        FlexibleInt64 `json:"packets,omitempty"`
+	Disabled       string        `json:"disabled"`
+}
+
+// FirewallConnection represents an entry in /ip/firewall/connection
+type FirewallConnection struct {
+	ID              string        `json:".id"`
+	Protocol        string        `json:"protocol"`
+	SrcAddress      string        `json:"src-address"`
+	DstAddress      string        `json:"dst-address"`
+	ReplySrcAddress string        `json:"reply-src-address,omitempty"`
+	ReplyDstAddress string        `json:"reply-dst-address,omitempty"`
+	TCPState        string        `json:"tcp-state,omitempty"`
+	OrigRate        FlexibleInt64 `json:"orig-rate,omitempty"`
+	ReplRate        FlexibleInt64 `json:"repl-rate,omitempty"`
+	OrigBytes       FlexibleInt64 `json:"orig-bytes,omitempty"`
+	ReplBytes       FlexibleInt64 `json:"repl-bytes,omitempty"`
+	Timeout         string        `json:"timeout,omitempty"`
 }
 
 // FilterRule represents /ip/firewall/filter
