@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"mime"
 	"net/http"
 	"os"
 	"os/signal"
@@ -21,6 +22,12 @@ import (
 )
 
 func main() {
+	_ = mime.AddExtensionType(".js", "text/javascript; charset=utf-8")
+	_ = mime.AddExtensionType(".mjs", "text/javascript; charset=utf-8")
+	_ = mime.AddExtensionType(".css", "text/css; charset=utf-8")
+	_ = mime.AddExtensionType(".svg", "image/svg+xml")
+	_ = mime.AddExtensionType(".json", "application/json")
+
 	distDirFlag := flag.String("dist-dir", "../frontend/dist", "Path to frontend dist directory")
 	dataDirFlag := flag.String("data-dir", "", "Path to data directory")
 	portFlag := flag.Int("port", 0, "HTTP server port (overrides PORT env)")

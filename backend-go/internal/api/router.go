@@ -33,17 +33,26 @@ func NewRouter(rc RouterConfig) http.Handler {
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP)
 	r.Use(middleware.Recoverer)
-	r.Use(CORSMiddleware)
-	r.Use(AuthMiddleware(rc.Config, rc.Fernet))
+
+	// WebSocket Telemetry endpoint for frontend (/ws/telemetry)
+	if rc.Hub != nil {
+		r.With(CORSMiddleware).Get("/ws/telemetry", rc.Hub.HandleWS)
+	}
+
+	// Analytics handler used across subrouters
+	analyticsH := NewAnalyticsHandler(rc.DB)
 
 	// API v1 Subrouter
 	r.Route("/api/v1", func(api chi.Router) {
+		api.Use(CORSMiddleware)
+		api.Use(AuthMiddleware(rc.Config, rc.Fernet))
+
 		// Public health check
 		api.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 			WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 		})
 
-		// WebSocket
+		// WebSocket alternative endpoint
 		if rc.Hub != nil {
 			api.Get("/ws", rc.Hub.HandleWS)
 		}
@@ -65,6 +74,7 @@ func NewRouter(rc RouterConfig) http.Handler {
 			s.Get("/settings", sysH.GetSettings)
 			s.Post("/settings", sysH.SaveSettings)
 			s.Post("/reboot", sysH.Reboot)
+			s.Get("/alerts", sysH.GetAlerts)
 		})
 
 		// Routers
@@ -82,11 +92,13 @@ func NewRouter(rc RouterConfig) http.Handler {
 		devH := NewDeviceHandler(rc.DB)
 		api.Route("/devices", func(d chi.Router) {
 			d.Get("/", devH.List)
+			d.Post("/scan", devH.Scan)
 			d.Patch("/{id}", devH.Update)
 			d.Delete("/{id}", devH.Delete)
 			d.Post("/{id}/pause", devH.Pause)
 			d.Post("/{id}/limit", devH.Limit)
 			d.Get("/{id}/history", devH.History)
+			d.Get("/{id}/traffic-history", analyticsH.DeviceHistory)
 		})
 
 		// Users
@@ -98,6 +110,7 @@ func NewRouter(rc RouterConfig) http.Handler {
 			u.Get("/{id}", userH.Get)
 			u.Patch("/{id}", userH.Update)
 			u.Delete("/{id}", userH.Delete)
+			u.Get("/{id}/traffic-history", analyticsH.UserHistory)
 		})
 
 		// Traffic
@@ -108,7 +121,6 @@ func NewRouter(rc RouterConfig) http.Handler {
 		})
 
 		// Analytics
-		analyticsH := NewAnalyticsHandler(rc.DB)
 		api.Route("/analytics", func(an chi.Router) {
 			an.Get("/traffic", analyticsH.GetTrafficOverview)
 			an.Get("/quota", analyticsH.GetQuota)
@@ -139,9 +151,22 @@ func serveSPA(r chi.Router, distDir string) {
 	r.Get("/*", func(w http.ResponseWriter, req *http.Request) {
 		path := req.URL.Path
 
-		// Do not intercept API requests
-		if strings.HasPrefix(path, "/api/") {
+		// Do not intercept API or WebSocket requests
+		if strings.HasPrefix(path, "/api/") || strings.HasPrefix(path, "/ws/") {
 			http.NotFound(w, req)
+			return
+		}
+
+		// Strictly return 404 for missing assets rather than falling back to index.html
+		if strings.HasPrefix(path, "/assets/") {
+			fullPath := filepath.Join(distDir, filepath.Clean(path))
+			info, err := os.Stat(fullPath)
+			if err != nil || info.IsDir() {
+				http.NotFound(w, req)
+				return
+			}
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+			fileServer.ServeHTTP(w, req)
 			return
 		}
 
@@ -153,6 +178,10 @@ func serveSPA(r chi.Router, distDir string) {
 		}
 
 		// Fallback to index.html for client-side routing
+		// Ensure index.html is NEVER cached so new releases load immediately
+		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+		w.Header().Set("Pragma", "no-cache")
+		w.Header().Set("Expires", "0")
 		http.ServeFile(w, req, filepath.Join(distDir, "index.html"))
 	})
 }
