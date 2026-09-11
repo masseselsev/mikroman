@@ -2,6 +2,7 @@ import React from 'react';
 import { render } from '@testing-library/react';
 import { I18nProvider } from '../context/I18nContext';
 import { ThemeProvider } from '../context/ThemeContext';
+import { SpeedUnitProvider } from '../context/SpeedUnitContext';
 
 /**
  * Render a component inside the providers it expects.
@@ -14,7 +15,9 @@ import { ThemeProvider } from '../context/ThemeContext';
 export function renderWithProviders(ui, options = {}) {
   const Wrapper = ({ children }) => (
     <ThemeProvider>
-      <I18nProvider>{children}</I18nProvider>
+      <SpeedUnitProvider>
+        <I18nProvider>{children}</I18nProvider>
+      </SpeedUnitProvider>
     </ThemeProvider>
   );
   return render(ui, { wrapper: Wrapper, ...options });

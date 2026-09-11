@@ -34,6 +34,7 @@ type RouterCreateRequest struct {
 }
 
 type RouterTestRequest struct {
+	RouterID  *int   `json:"router_id,omitempty"`
 	Host      string `json:"host"`
 	Port      int    `json:"port"`
 	UseSSL    bool   `json:"use_ssl"`
@@ -110,6 +111,21 @@ func (h *RouterHandler) TestConnection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if req.Password == "" && req.RouterID != nil && *req.RouterID > 0 {
+		if existing, err := h.database.GetRouter(*req.RouterID); err == nil && existing != nil {
+			req.Password = existing.Password
+			if req.Username == "" {
+				req.Username = existing.Username
+			}
+			if req.Host == "" {
+				req.Host = existing.Host
+			}
+			if req.Port == 0 {
+				req.Port = existing.Port
+			}
+		}
+	}
+
 	client, err := routeros.NewClient(routeros.Config{
 		Host:      req.Host,
 		Port:      req.Port,
@@ -134,12 +150,14 @@ func (h *RouterHandler) TestConnection(w http.ResponseWriter, r *http.Request) {
 	}
 
 	WriteJSON(w, http.StatusOK, map[string]interface{}{
-		"success":  true,
-		"platform": res.Platform,
-		"board":    res.BoardName,
-		"version":  res.Version,
-		"cpu":      res.CPULoad + "%",
-		"uptime":   res.Uptime,
+		"success":     true,
+		"platform":    res.Platform,
+		"board":       res.BoardName,
+		"board_name":  res.BoardName,
+		"version":     res.Version,
+		"ros_version": res.Version,
+		"cpu":         res.CPULoad + "%",
+		"uptime":      res.Uptime,
 	})
 }
 

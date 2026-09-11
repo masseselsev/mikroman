@@ -252,4 +252,17 @@ describe('RouterLogsModal hide-own-logins toggle', () => {
       expect(screen.getByText("MikroMan's own log, kept in the data directory")).toBeInTheDocument();
     });
   });
+
+  it('sends hide_container_logs when checked and remembers choice', async () => {
+    open();
+    await waitFor(() => expect(api.getLogs).toHaveBeenCalled());
+    expect(api.getLogs.mock.calls[0][0].hide_container_logs).toBeUndefined();
+
+    fireEvent.click(screen.getByText('log_hide_container'));
+
+    await waitFor(() => {
+      const last = api.getLogs.mock.calls[api.getLogs.mock.calls.length - 1][0];
+      expect(last.hide_container_logs).toBe(true);
+    });
+  });
 });

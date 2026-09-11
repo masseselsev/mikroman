@@ -14,6 +14,11 @@ type NullString struct {
 	sql.NullString
 }
 
+// NewNullString creates a valid NullString if s is not empty.
+func NewNullString(s string) NullString {
+	return NullString{sql.NullString{String: s, Valid: s != ""}}
+}
+
 // MarshalJSON returns the string value or null if invalid.
 func (ns NullString) MarshalJSON() ([]byte, error) {
 	if !ns.Valid {
@@ -278,4 +283,22 @@ type RouterBackup struct {
 	OSVersion      NullString `json:"os_version"`
 	ErrorMessage   NullString `json:"error_message"`
 	DurationMS     int        `json:"duration_ms"`
+}
+
+// SpeedTestResult tracks Ookla WAN speed test results run via container on RouterOS.
+type SpeedTestResult struct {
+	ID            int        `json:"id"`
+	RouterID      int        `json:"router_id"`
+	CreatedAt     time.Time  `json:"created_at"`
+	DownloadMbps  *float64   `json:"download_mbps"`
+	UploadMbps    *float64   `json:"upload_mbps"`
+	PingMs        *float64   `json:"ping_ms"`
+	JitterMs      *float64   `json:"jitter_ms"`
+	PacketLossPct *float64   `json:"packet_loss_pct"`
+	ServerName    NullString `json:"server_name"`
+	ISP           NullString `json:"isp"`
+	ResultURL     NullString `json:"result_url"`
+	Status        string     `json:"status"`
+	Error         NullString `json:"error"`
+	RawOutput     string     `json:"raw_output"`
 }

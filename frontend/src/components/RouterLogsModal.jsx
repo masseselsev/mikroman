@@ -91,6 +91,13 @@ export function RouterLogsModal({ isOpen, onClose, routerId = null, routerName =
       return false;
     }
   });
+  const [hideContainerLogs, setHideContainerLogs] = useState(() => {
+    try {
+      return localStorage.getItem('mikroman:logs-hide-container') === 'true';
+    } catch {
+      return false;
+    }
+  });
   const [isStreaming, setIsStreaming] = useState(true);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -115,6 +122,7 @@ export function RouterLogsModal({ isOpen, onClose, routerId = null, routerName =
         if (routerId) params.router_id = routerId;
         if (category !== 'all') params.category = category;
         if (hideSelfApi) params.hide_self_api = true;
+        if (hideContainerLogs) params.hide_container_logs = true;
       }
       if (search.trim()) params.search = search.trim();
       const res = await api.getLogs(params);
@@ -125,7 +133,7 @@ export function RouterLogsModal({ isOpen, onClose, routerId = null, routerName =
     } finally {
       if (showLoading) setLoading(false);
     }
-  }, [source, category, search, routerId, hideSelfApi]);
+  }, [source, category, search, routerId, hideSelfApi, hideContainerLogs]);
 
   const toggleHideSelfApi = () => {
     setHideSelfApi(prev => {
@@ -135,6 +143,18 @@ export function RouterLogsModal({ isOpen, onClose, routerId = null, routerName =
       } catch {
         // Best-effort only - a private-browsing tab losing the preference
         // on close is not worth surfacing an error over.
+      }
+      return next;
+    });
+  };
+
+  const toggleHideContainerLogs = () => {
+    setHideContainerLogs(prev => {
+      const next = !prev;
+      try {
+        localStorage.setItem('mikroman:logs-hide-container', String(next));
+      } catch {
+        // Best-effort
       }
       return next;
     });
@@ -433,6 +453,20 @@ export function RouterLogsModal({ isOpen, onClose, routerId = null, routerName =
               />
               <span className="footnote" title={t('log_hide_self_api_hint')}>
                 {t('log_hide_self_api')}
+              </span>
+            </label>
+
+            <label
+              style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', cursor: 'pointer' }}
+            >
+              <input
+                type="checkbox"
+                checked={hideContainerLogs}
+                onChange={toggleHideContainerLogs}
+                style={{ width: 13, height: 13, accentColor: 'var(--color-primary)', cursor: 'pointer' }}
+              />
+              <span className="footnote" title={t('log_hide_container_hint')}>
+                {t('log_hide_container')}
               </span>
             </label>
           </div>

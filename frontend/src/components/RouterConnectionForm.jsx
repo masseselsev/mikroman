@@ -62,24 +62,26 @@ export function RouterConnectionForm({ initial, mode = 'create', onSubmit, onCan
    * password field at all — so an edit form cannot pre-fill it, and a blank box
    * means "keep whatever is already saved".
    *
-   * That makes testing a special case. Sending the form as-is would test with
-   * an empty password, which the router records as a failed login for the named
-   * user. Enough of those look exactly like a brute-force attempt and can get
-   * this machine blacklisted by an anti-bruteforce rule, so the button simply
-   * refuses to fire until a password is typed.
+   * In edit mode for an already saved router, if the password is left blank,
+   * the backend uses the securely stored password from the database, allowing
+   * operators to verify connection without typing the password again.
    */
-  const canTest = form.host && form.username && form.password;
+  const canTest = Boolean(form.host && form.username && (form.password || (isEdit && initial?.id)));
 
   const handleTest = async () => {
     setTesting(true);
     setTestResult(null);
     try {
-      const res = await api.testRouterConnection(form);
+      const payload = { ...form };
+      if (isEdit && initial?.id) {
+        payload.router_id = initial.id;
+      }
+      const res = await api.testRouterConnection(payload);
       const data = res.data;
       if (data?.success) {
         setTestResult({
           ok: true,
-          msg: `${t('router_test_connected')} ${data.board_name || 'MikroTik'}${data.ros_version ? ` (ROS ${data.ros_version})` : ''}`
+          msg: `${t('router_test_connected')} ${data.board_name || data.board || 'MikroTik'}${data.ros_version || data.version ? ` (ROS ${data.ros_version || data.version})` : ''}`
         });
       } else {
         // A failed probe often knows the right answer already — the router

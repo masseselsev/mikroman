@@ -936,6 +936,26 @@ func TestQuotaEndpoints(t *testing.T) {
 		t.Fatalf("expected 400 for bad portal url, got %d", wBad.Code)
 	}
 
+	// 4b. Router isolation: GET quota for another router (router_id=999) must NOT inherit router 1's quota!
+	reqGetRouter2 := httptest.NewRequest(http.MethodGet, "/api/v1/analytics/quota?router_id=999", nil)
+	reqGetRouter2.AddCookie(sessionCookie)
+	wGetRouter2 := httptest.NewRecorder()
+	handler.ServeHTTP(wGetRouter2, reqGetRouter2)
+	if wGetRouter2.Code != http.StatusOK {
+		t.Fatalf("expected 200 for router 999 quota, got %d", wGetRouter2.Code)
+	}
+	var respR2 APIResponse
+	if err := json.NewDecoder(wGetRouter2.Body).Decode(&respR2); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	quotaMapR2 := respR2.Data.(map[string]interface{})
+	if quotaMapR2["configured"].(bool) {
+		t.Fatalf("expected router 999 quota to NOT be configured")
+	}
+	if quotaMapR2["enabled"].(bool) {
+		t.Fatalf("expected router 999 quota to NOT be enabled (should not inherit router 1's quota)")
+	}
+
 	// 5. GET user destinations
 	reqDest := httptest.NewRequest(http.MethodGet, "/api/v1/analytics/users/1/destinations", nil)
 	reqDest.AddCookie(sessionCookie)

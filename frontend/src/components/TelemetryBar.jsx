@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useI18n } from '../context/I18nContext';
+import { useSpeedUnit } from '../context/SpeedUnitContext';
 import { SpeedTestBadge } from './SpeedTestBadge';
 import { api } from '../api/client';
 import { formatFrequency, formatSpeed } from '../utils/formatters';
@@ -175,6 +176,7 @@ export function TelemetryBar({ router, activeRouter, interfaces = [], onNavigate
   // The speed test acts on a specific router record, not on the telemetry frame.
   const activeRouterId = activeRouter?.id;
   const { t } = useI18n();
+  const { speedUnit } = useSpeedUnit();
   const [modalOpen, setModalOpen] = useState(false);
   const [availableIfaces, setAvailableIfaces] = useState([]);
   const [selectedIfaces, setSelectedIfaces] = useState([]);
@@ -454,7 +456,7 @@ export function TelemetryBar({ router, activeRouter, interfaces = [], onNavigate
         <Tile
           icon={<ArrowDown size={15} />}
           tone={wanTone || 'var(--color-success)'}
-          value={formatSpeed(router.wan_rx_bps)}
+          value={formatSpeed(router.wan_rx_bps, speedUnit)}
           sub={wanSub}
           history={rxHistory}
           onClick={openConfigModal}
@@ -464,7 +466,7 @@ export function TelemetryBar({ router, activeRouter, interfaces = [], onNavigate
         <Tile
           icon={<ArrowUp size={15} />}
           tone={wanTone || 'var(--color-primary)'}
-          value={formatSpeed(router.wan_tx_bps)}
+          value={formatSpeed(router.wan_tx_bps, speedUnit)}
           sub={wanSub}
           history={txHistory}
           onClick={openConfigModal}

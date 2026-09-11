@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useI18n } from '../context/I18nContext';
+import { useSpeedUnit } from '../context/SpeedUnitContext';
 import { api } from '../api/client';
 import { formatBytes, formatSpeed } from '../utils/formatters';
 import { smoothAreaPath, smoothBandPath, smoothLinePath } from '../utils/sparkline';
@@ -463,6 +464,7 @@ function ChartCard({
 
 export function MetricCharts({ activeRouterId }) {
   const { t } = useI18n();
+  const { speedUnit } = useSpeedUnit();
   const [range, setRange] = useState('1h');
   const [healthMetric, setHealthMetric] = useState('temp'); // 'temp' | 'voltage'
   const [systemMetrics, setSystemMetrics] = useState(null);
@@ -742,11 +744,11 @@ export function MetricCharts({ activeRouterId }) {
               <div style={{ display: 'flex', gap: 12, fontSize: 'var(--fs-sm)' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 4, color: '#10b981', fontWeight: 700 }}>
                   <ArrowDown size={14} />
-                  <span>{formatSpeed(ifaceMetrics?.current_rx_bps || 0)}</span>
+                  <span>{formatSpeed(ifaceMetrics?.current_rx_bps || 0, speedUnit)}</span>
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 4, color: '#ec4899', fontWeight: 700 }}>
                   <ArrowUp size={14} />
-                  <span>{formatSpeed(ifaceMetrics?.current_tx_bps || 0)}</span>
+                  <span>{formatSpeed(ifaceMetrics?.current_tx_bps || 0, speedUnit)}</span>
                 </div>
               </div>
             ) : null
@@ -754,8 +756,8 @@ export function MetricCharts({ activeRouterId }) {
           yMin={0}
           yMax={maxBps}
           yTicks={[
-            { val: maxBps, label: formatSpeed(maxBps) },
-            { val: maxBps / 2, label: formatSpeed(maxBps / 2) },
+            { val: maxBps, label: formatSpeed(maxBps, speedUnit) },
+            { val: maxBps / 2, label: formatSpeed(maxBps / 2, speedUnit) },
             { val: 0, label: '0' }
           ]}
           series={[
@@ -765,7 +767,7 @@ export function MetricCharts({ activeRouterId }) {
               color: '#10b981',
               label: 'RX (Down)',
               gradientId: 'rxGrad',
-              formatVal: (val) => formatSpeed(val || 0)
+              formatVal: (val) => formatSpeed(val || 0, speedUnit)
             },
             {
               key: 'tx_rate_bps',
@@ -773,7 +775,7 @@ export function MetricCharts({ activeRouterId }) {
               color: '#ec4899',
               label: 'TX (Up)',
               gradientId: 'txGrad',
-              formatVal: (val) => formatSpeed(val || 0)
+              formatVal: (val) => formatSpeed(val || 0, speedUnit)
             }
           ]}
         />

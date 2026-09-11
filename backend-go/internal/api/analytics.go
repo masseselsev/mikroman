@@ -707,6 +707,7 @@ type QuotaConfigDTO struct {
 }
 
 type QuotaStatusDTO struct {
+	Configured           bool    `json:"configured"`
 	LimitBytes           int64   `json:"limit_bytes"`
 	UsedBytes            int64   `json:"used_bytes"`
 	RemainingBytes       int64   `json:"remaining_bytes"`
@@ -757,38 +758,58 @@ func parseThresholds(raw string) []int {
 }
 
 func (h *AnalyticsHandler) buildQuotaStatus(routerID *int) QuotaStatusDTO {
-	getSetting := func(base string) string {
-		if routerID != nil {
-			if val, _ := h.database.GetSetting(fmt.Sprintf("%s_%d", base, *routerID)); val != "" {
-				return val
-			}
+	var limitStr string
+	var threshStr string
+	var notifyStr string
+	var portalURLStr string
+	var portalLabelStr string
+	isConfigured := false
+
+	if routerID != nil {
+		// Strictly router-scoped: do not fall back to global settings so that
+		// router 2 never inherits router 1's quota, alerts, or modem portal link!
+		limitKey := fmt.Sprintf("quota_limit_bytes_%d", *routerID)
+		legacyLimitKey := fmt.Sprintf("isp_monthly_quota_bytes_%d", *routerID)
+		if val, _ := h.database.GetSetting(limitKey); val != "" {
+			limitStr = val
+			isConfigured = true
+		} else if val, _ := h.database.GetSetting(legacyLimitKey); val != "" {
+			limitStr = val
+			isConfigured = true
 		}
-		val, _ := h.database.GetSetting(base)
-		return val
+		threshStr, _ = h.database.GetSetting(fmt.Sprintf("quota_alert_thresholds_%d", *routerID))
+		notifyStr, _ = h.database.GetSetting(fmt.Sprintf("quota_notify_telegram_%d", *routerID))
+		portalURLStr, _ = h.database.GetSetting(fmt.Sprintf("isp_portal_url_%d", *routerID))
+		portalLabelStr, _ = h.database.GetSetting(fmt.Sprintf("isp_portal_label_%d", *routerID))
+	} else {
+		limitStr, _ = h.database.GetSetting("quota_limit_bytes")
+		if limitStr == "" {
+			limitStr, _ = h.database.GetSetting("isp_monthly_quota_bytes")
+		}
+		if limitStr != "" {
+			isConfigured = true
+		}
+		threshStr, _ = h.database.GetSetting("quota_alert_thresholds")
+		notifyStr, _ = h.database.GetSetting("quota_notify_telegram")
+		portalURLStr, _ = h.database.GetSetting("isp_portal_url")
+		portalLabelStr, _ = h.database.GetSetting("isp_portal_label")
 	}
 
-	limitStr := getSetting("quota_limit_bytes")
-	if limitStr == "" {
-		limitStr = getSetting("isp_monthly_quota_bytes")
-	}
 	limitBytes, _ := strconv.ParseInt(limitStr, 10, 64)
 	if limitBytes < 0 {
 		limitBytes = 0
 	}
 
-	threshStr := getSetting("quota_alert_thresholds")
 	thresholds := parseThresholds(threshStr)
-
-	notifyStr := getSetting("quota_notify_telegram")
 	notifyTelegram := notifyStr == "" || !strings.EqualFold(notifyStr, "false")
 
-	portalURLStr := strings.TrimSpace(getSetting("isp_portal_url"))
+	portalURLStr = strings.TrimSpace(portalURLStr)
 	var portalURL *string
 	if portalURLStr != "" {
 		portalURL = &portalURLStr
 	}
 
-	portalLabelStr := strings.TrimSpace(getSetting("isp_portal_label"))
+	portalLabelStr = strings.TrimSpace(portalLabelStr)
 	var portalLabel *string
 	if portalLabelStr != "" {
 		portalLabel = &portalLabelStr
@@ -968,6 +989,7 @@ func (h *AnalyticsHandler) buildQuotaStatus(routerID *int) QuotaStatusDTO {
 	}
 
 	return QuotaStatusDTO{
+		Configured:           isConfigured,
 		LimitBytes:           limitBytes,
 		UsedBytes:            usedBytes,
 		RemainingBytes:       remainingBytes,
@@ -1087,14 +1109,14 @@ func (h *AnalyticsHandler) SaveQuota(w http.ResponseWriter, r *http.Request) {
 		_ = h.database.SetSetting(fmt.Sprintf("quota_notify_telegram_%d", *routerID), notifyVal, "Notify Telegram")
 		_ = h.database.SetSetting(fmt.Sprintf("isp_portal_url_%d", *routerID), portalURLVal, "ISP portal link")
 		_ = h.database.SetSetting(fmt.Sprintf("isp_portal_label_%d", *routerID), portalLabelVal, "ISP portal label")
+	} else {
+		// Only set global settings when no router is specified
+		_ = h.database.SetSetting("quota_limit_bytes", limitVal, "ISP data limit in bytes")
+		_ = h.database.SetSetting("quota_alert_thresholds", threshStr, "Alert thresholds")
+		_ = h.database.SetSetting("quota_notify_telegram", notifyVal, "Notify Telegram")
+		_ = h.database.SetSetting("isp_portal_url", portalURLVal, "ISP portal link")
+		_ = h.database.SetSetting("isp_portal_label", portalLabelVal, "ISP portal label")
 	}
-
-	// Always maintain global fallbacks as well
-	_ = h.database.SetSetting("quota_limit_bytes", limitVal, "ISP data limit in bytes")
-	_ = h.database.SetSetting("quota_alert_thresholds", threshStr, "Alert thresholds")
-	_ = h.database.SetSetting("quota_notify_telegram", notifyVal, "Notify Telegram")
-	_ = h.database.SetSetting("isp_portal_url", portalURLVal, "ISP portal link")
-	_ = h.database.SetSetting("isp_portal_label", portalLabelVal, "ISP portal label")
 
 	status := h.buildQuotaStatus(routerID)
 	WriteJSON(w, http.StatusOK, status)

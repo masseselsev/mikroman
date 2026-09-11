@@ -157,6 +157,10 @@ func (s *DiscoveryService) SyncDevices(ctx context.Context, routerID int) (int, 
 			continue
 		}
 
+		if info.IP != "" {
+			info.IP = strings.TrimSpace(strings.Split(info.IP, "/")[0])
+		}
+
 		if existing == nil {
 			// Insert new device
 			res, err := s.database.SqlDB.Exec(`
@@ -178,13 +182,14 @@ func (s *DiscoveryService) SyncDevices(ctx context.Context, routerID int) (int, 
 			// Update existing device
 			_, _ = s.database.SqlDB.Exec(`
 				UPDATE devices SET
+					router_id = coalesce(?, router_id),
 					ip_address = coalesce(?, ip_address),
 					hostname = coalesce(nullif(?, ''), hostname),
 					last_interface = coalesce(nullif(?, ''), last_interface),
 					is_active = 1,
 					last_seen = CURRENT_TIMESTAMP
 				WHERE id = ?
-			`, nullIfEmpty(info.IP), nullIfEmpty(info.Hostname), nullIfEmpty(info.Interface), existing.ID)
+			`, routerID, nullIfEmpty(info.IP), nullIfEmpty(info.Hostname), nullIfEmpty(info.Interface), existing.ID)
 		}
 	}
 

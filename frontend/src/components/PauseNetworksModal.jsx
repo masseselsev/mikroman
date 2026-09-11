@@ -93,28 +93,28 @@ export function PauseNetworksModal({ isOpen, onClose, currentNetworks = '', onSa
       <div
         className="modal-content"
         onClick={e => e.stopPropagation()}
-        style={{ maxWidth: 520 }}
+        style={{ maxWidth: 560, width: '100%', borderRadius: 'var(--radius-lg, 12px)' }}
       >
-        <div className="modal-header">
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <div className="modal-header" style={{ padding: '16px 20px', borderBottom: '1px solid var(--border-color)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
             <div style={{
-              width: 32,
-              height: 32,
+              width: 36,
+              height: 36,
               borderRadius: 'var(--radius-md)',
-              background: 'var(--color-primary-light)',
+              background: 'var(--color-primary-light, rgba(99, 102, 241, 0.12))',
               color: 'var(--color-primary)',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
               flexShrink: 0
             }}>
-              <Network size={18} />
+              <Network size={20} />
             </div>
             <div>
-              <h2 style={{ fontSize: 'var(--fs-md)', fontWeight: 700 }}>
+              <h2 style={{ fontSize: 'var(--fs-md)', fontWeight: 700, margin: 0 }}>
                 {t('pause_networks_modal_title')}
               </h2>
-              <div style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)' }}>
+              <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginTop: 2 }}>
                 {t('pause_networks_modal_desc')}
               </div>
             </div>
@@ -124,7 +124,7 @@ export function PauseNetworksModal({ isOpen, onClose, currentNetworks = '', onSa
           </button>
         </div>
 
-        <div className="modal-body" style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+        <div className="modal-body" style={{ padding: '18px 20px', display: 'flex', flexDirection: 'column', gap: 16 }}>
           {/* List of configured networks */}
           <div>
             <div style={{
@@ -135,12 +135,14 @@ export function PauseNetworksModal({ isOpen, onClose, currentNetworks = '', onSa
               justifyContent: 'space-between',
               alignItems: 'center'
             }}>
-              <span>{t('pause_networks_title')} ({networks.length})</span>
+              <span style={{ color: 'var(--text-secondary)' }}>
+                {t('pause_networks_title')} ({networks.length})
+              </span>
               <button
                 type="button"
                 className="btn btn-secondary btn-sm"
                 onClick={handleReset}
-                style={{ fontSize: 'var(--fs-2xs)', padding: '2px 8px', height: 24 }}
+                style={{ fontSize: 'var(--fs-2xs)', padding: '2px 8px', height: 24, display: 'inline-flex', alignItems: 'center' }}
                 title={t('reset_to_defaults')}
               >
                 <RotateCcw size={11} style={{ marginRight: 4 }} />
@@ -149,52 +151,86 @@ export function PauseNetworksModal({ isOpen, onClose, currentNetworks = '', onSa
             </div>
 
             {networks.length === 0 ? (
-              <div className="alert alert-warning" style={{ fontSize: 'var(--fs-xs)' }}>
-                <AlertCircle size={14} style={{ marginRight: 6 }} />
-                {t('no_networks_configured')}
+              <div className="alert alert-warning" style={{ fontSize: 'var(--fs-xs)', padding: '10px 14px' }}>
+                <AlertCircle size={14} style={{ marginRight: 6, flexShrink: 0 }} />
+                <span>{t('no_networks_configured')}</span>
               </div>
             ) : (
-              <div className="list-box" style={{ maxHeight: 180, overflowY: 'auto' }}>
-                {networks.map(net => (
-                  <div
-                    key={net}
-                    className="list-row"
-                    style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 10px' }}
-                  >
-                    <span className="font-mono" style={{ fontSize: 'var(--fs-sm)', fontWeight: 600, color: 'var(--text-primary)' }}>
-                      {net}
-                    </span>
-                    <button
-                      type="button"
-                      className="btn-icon"
-                      onClick={() => handleRemove(net)}
-                      style={{ width: 22, height: 22, color: 'var(--color-danger)' }}
-                      title={t('delete')}
+              <div
+                className="list-box"
+                style={{
+                  maxHeight: 220,
+                  overflowY: 'auto',
+                  border: '1px solid var(--border-color)',
+                  borderRadius: 'var(--radius-sm)',
+                  background: 'var(--bg-secondary)'
+                }}
+              >
+                {networks.map((net, idx) => {
+                  const parts = net.split('/');
+                  const mask = parts.length > 1 ? `/${parts[1]}` : '/32';
+                  return (
+                    <div
+                      key={net}
+                      className="list-row"
+                      style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        padding: '8px 12px',
+                        borderBottom: idx < networks.length - 1 ? '1px solid var(--border-color)' : 'none'
+                      }}
                     >
-                      <Trash2 size={12} />
-                    </button>
-                  </div>
-                ))}
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <Network size={13} style={{ color: 'var(--color-primary)', opacity: 0.8 }} />
+                        <span className="font-mono" style={{ fontSize: 'var(--fs-sm)', fontWeight: 600, color: 'var(--text-primary)' }}>
+                          {net}
+                        </span>
+                        <span
+                          style={{
+                            fontSize: '10px',
+                            fontWeight: 600,
+                            padding: '1px 5px',
+                            borderRadius: 'var(--radius-xs, 4px)',
+                            background: 'var(--bg-tertiary, rgba(255,255,255,0.06))',
+                            color: 'var(--text-muted)'
+                          }}
+                        >
+                          {mask}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        className="btn-icon"
+                        onClick={() => handleRemove(net)}
+                        style={{ width: 26, height: 26, color: 'var(--color-danger)', borderRadius: 'var(--radius-xs)' }}
+                        title={t('delete')}
+                      >
+                        <Trash2 size={13} />
+                      </button>
+                    </div>
+                  );
+                })}
               </div>
             )}
           </div>
 
           {/* Add new subnet input */}
           <form onSubmit={handleAdd}>
-            <div style={{ display: 'flex', gap: 8 }}>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
               <input
                 type="text"
                 className="form-input font-mono"
                 placeholder={t('add_network_placeholder')}
                 value={newSubnet}
                 onChange={e => setNewSubnet(e.target.value)}
-                style={{ fontSize: 'var(--fs-sm)' }}
+                style={{ fontSize: 'var(--fs-sm)', flex: 1, height: 36 }}
               />
               <button
                 type="submit"
                 className="btn btn-secondary btn-sm"
                 disabled={!newSubnet.trim()}
-                style={{ flexShrink: 0 }}
+                style={{ flexShrink: 0, height: 36, padding: '0 14px', display: 'inline-flex', alignItems: 'center' }}
               >
                 <Plus size={14} style={{ marginRight: 4 }} />
                 {t('add')}
@@ -203,14 +239,14 @@ export function PauseNetworksModal({ isOpen, onClose, currentNetworks = '', onSa
           </form>
 
           {error && (
-            <div className="alert alert-danger" style={{ fontSize: 'var(--fs-xs)' }}>
-              <AlertCircle size={14} style={{ marginRight: 6 }} />
-              {error}
+            <div className="alert alert-danger" style={{ fontSize: 'var(--fs-xs)', padding: '8px 12px' }}>
+              <AlertCircle size={14} style={{ marginRight: 6, flexShrink: 0 }} />
+              <span>{error}</span>
             </div>
           )}
         </div>
 
-        <div className="modal-footer" style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+        <div className="modal-footer" style={{ padding: '14px 20px', borderTop: '1px solid var(--border-color)', display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
           <button type="button" className="btn btn-secondary" onClick={onClose} disabled={isSaving}>
             {t('cancel')}
           </button>
