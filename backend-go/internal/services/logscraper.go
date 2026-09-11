@@ -96,12 +96,14 @@ func (s *LogScraperService) Scrape(ctx context.Context, routerID int) error {
 		return err
 	}
 
+	now := time.Now().UTC()
 	for _, l := range logs {
-		// Dedup by router_id, external_id and message
+		sev, cat := routeros.CategorizeLog(l.Topics, l.Message)
+		tStamp := routeros.ParseLogTimestamp(l.Time, now)
 		_, _ = s.database.SqlDB.Exec(`
-			INSERT OR IGNORE INTO router_logs (router_id, external_id, timestamp, topics, message, created_at)
-			VALUES (?, ?, CURRENT_TIMESTAMP, ?, ?, CURRENT_TIMESTAMP)
-		`, routerID, l.ID, l.Topics, l.Message)
+			INSERT OR IGNORE INTO router_logs (router_id, external_id, timestamp, topics, message, severity, category, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+		`, routerID, l.ID, tStamp.Format("2006-01-02 15:04:05"), l.Topics, l.Message, sev, cat)
 	}
 
 	// Prune logs according to configured retention days (default 14)

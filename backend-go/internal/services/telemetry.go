@@ -260,24 +260,44 @@ func (s *TelemetryService) Collect(ctx context.Context, routerID int) error {
 	// Resolve WAN IP & Public IP
 	var wanIP string
 	ipAddrs, _ := client.GetIPAddresses(ctx)
-	for _, entry := range ipAddrs {
-		clean := strings.Split(entry.Address, "/")[0]
-		if clean == "" || strings.HasPrefix(clean, "127.") {
-			continue
-		}
-		if len(monitoredList) > 0 {
+	if len(monitoredList) > 0 {
+		for _, entry := range ipAddrs {
+			clean := strings.TrimSpace(strings.Split(entry.Address, "/")[0])
+			if clean == "" || strings.HasPrefix(clean, "127.") {
+				continue
+			}
 			for _, m := range monitoredList {
 				if entry.Interface == m {
 					wanIP = clean
 					break
 				}
 			}
+			if wanIP != "" {
+				break
+			}
 		}
-		if wanIP != "" {
+	}
+	if wanIP == "" {
+		for _, entry := range ipAddrs {
+			clean := strings.TrimSpace(strings.Split(entry.Address, "/")[0])
+			if clean == "" || strings.HasPrefix(clean, "127.") {
+				continue
+			}
+			ifaceLower := strings.ToLower(entry.Interface)
+			if strings.Contains(ifaceLower, "bridge") || strings.Contains(ifaceLower, "veth") || strings.Contains(ifaceLower, "docker") {
+				continue
+			}
+			wanIP = clean
 			break
 		}
-		if wanIP == "" {
-			wanIP = clean
+		if wanIP == "" && len(ipAddrs) > 0 {
+			for _, entry := range ipAddrs {
+				clean := strings.TrimSpace(strings.Split(entry.Address, "/")[0])
+				if clean != "" && !strings.HasPrefix(clean, "127.") {
+					wanIP = clean
+					break
+				}
+			}
 		}
 	}
 	publicIP, _ := client.GetCloudPublicAddress(ctx)

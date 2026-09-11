@@ -2,6 +2,7 @@ import React from 'react';
 import { useTheme } from '../context/ThemeContext';
 import { useI18n } from '../context/I18nContext';
 import { useAuth } from '../context/AuthContext';
+import { useSpeedUnit } from '../context/SpeedUnitContext';
 import { RouterSelector } from './RouterSelector';
 import { RouterCommentBar } from './RouterCommentBar';
 import { Sun, Moon, Settings as SettingsIcon, Activity, Clock, Terminal, Archive, Package, LogOut } from 'lucide-react';
@@ -134,6 +135,7 @@ export function Navbar({
   const { theme, toggleTheme } = useTheme();
   const { t, lang, setLang } = useI18n();
   const { authEnabled, isAuthenticated, logout } = useAuth();
+  const { speedUnit, toggleSpeedUnit } = useSpeedUnit();
 
   return (
     <header style={{
@@ -271,11 +273,7 @@ export function Navbar({
           {/* Router's own local time, left of the language switcher */}
           <RouterClock clock={routerInfo?.clock} />
 
-          {/* Language Switcher: one button showing the *current* language's
-              flag; clicking it switches to the other one. Two flags side by
-              side were tried first, but with only two languages a toggle
-              needs half the width and the current language is still obvious
-              without hovering - it is the flag showing. */}
+          {/* Language Switcher */}
           <button
             type="button"
             className="lang-switch-toggle"
@@ -284,6 +282,17 @@ export function Navbar({
             aria-label={lang === 'en' ? 'Переключить на русский' : 'Switch to English'}
           >
             {lang === 'en' ? <FlagGB size={18} /> : <FlagRU size={18} />}
+          </button>
+
+          {/* Speed Unit Toggle (Mbps vs MB/s) */}
+          <button
+            type="button"
+            className="btn btn-secondary btn-sm font-mono"
+            onClick={toggleSpeedUnit}
+            title={speedUnit === 'bits' ? t('switch_to_bytes_hint') : t('switch_to_bits_hint')}
+            style={{ fontSize: 'var(--fs-2xs)', fontWeight: 700, padding: '0 8px', height: 'var(--control-h-sm)' }}
+          >
+            {speedUnit === 'bits' ? 'Mbps' : 'MB/s'}
           </button>
 
           {/* Theme Toggle */}

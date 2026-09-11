@@ -99,7 +99,7 @@ func NewRouter(rc RouterConfig) http.Handler {
 		// Routers
 		routerH := NewRouterHandler(rc.DB)
 		containerH := NewContainerHandler(rc.DB, rc.Client)
-		speedtestH := NewSpeedTestHandler(rc.DB)
+		speedtestH := NewSpeedTestHandler(rc.DB, rc.Client)
 		firmwareH := NewFirmwareHandler(rc.DB, rc.Client)
 		backupH := NewBackupHandler(rc.DB)
 
@@ -215,7 +215,11 @@ func NewRouter(rc RouterConfig) http.Handler {
 		})
 
 		// Logs
-		logH := NewLogHandler(rc.DB)
+		var dataDir string
+		if rc.Config != nil {
+			dataDir = rc.Config.DataDir
+		}
+		logH := NewLogHandler(rc.DB, rc.Client, dataDir)
 		api.Route("/logs", func(l chi.Router) {
 			l.Get("/", logH.GetLogs)
 			l.Get("/stats", logH.GetLogStats)

@@ -275,4 +275,5 @@ CREATE INDEX IF NOT EXISTS ix_interface_metrics_router_time ON interface_metrics
 CREATE INDEX IF NOT EXISTS ix_interface_metrics_name_time ON interface_metrics (interface_name, timestamp);
 CREATE INDEX IF NOT EXISTS ix_router_logs_router_id ON router_logs (router_id);
 CREATE INDEX IF NOT EXISTS ix_router_logs_timestamp ON router_logs (timestamp);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_router_logs_entry ON router_logs (router_id, external_id, message);
 `

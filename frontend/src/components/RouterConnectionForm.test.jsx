@@ -82,16 +82,39 @@ describe('editing an existing router', () => {
   });
 });
 
+const renderNew = (onSubmit = vi.fn()) => {
+  renderWithProviders(
+    <RouterConnectionForm mode="add" onSubmit={onSubmit} onCancel={() => {}} />
+  );
+  return onSubmit;
+};
+
 describe('testing the connection', () => {
-  it('refuses to fire with a blank password', () => {
-    // The saved password cannot be read back, so testing as-is would send an
-    // empty one and the router would log a failed login for that user.
-    renderEdit();
+  it('refuses to fire with a blank password for a new router', () => {
+    renderNew();
+    fireEvent.change(screen.getByPlaceholderText(/192.168|router.lan/i), {
+      target: { value: '192.0.2.1' },
+    });
+    fireEvent.change(screen.getByPlaceholderText(/username/i), {
+      target: { value: 'admin' },
+    });
     expect(screen.getByRole('button', { name: /test/i })).toBeDisabled();
   });
 
-  it('becomes available once a password is supplied', () => {
+  it('allows testing an existing router using the saved password', () => {
     renderEdit();
+    // In edit mode with an existing router ID, password is saved on backend
+    expect(screen.getByRole('button', { name: /test/i })).toBeEnabled();
+  });
+
+  it('becomes available once a password is supplied for a new router', () => {
+    renderNew();
+    fireEvent.change(screen.getByPlaceholderText(/192.168|router.lan/i), {
+      target: { value: '192.0.2.1' },
+    });
+    fireEvent.change(screen.getByPlaceholderText(/username/i), {
+      target: { value: 'admin' },
+    });
     fireEvent.change(document.querySelector('input[type="password"]'), {
       target: { value: 'secret' },
     });

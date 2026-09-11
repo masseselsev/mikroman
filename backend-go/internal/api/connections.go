@@ -15,6 +15,7 @@ import (
 
 	"github.com/masseselsev/mikroman/internal/db"
 	"github.com/masseselsev/mikroman/internal/routeros"
+	"github.com/masseselsev/mikroman/internal/services"
 )
 
 type ConnectionsHandler struct {
@@ -104,10 +105,12 @@ type LiveConnectionItem struct {
 	UserID      *int    `json:"user_id"`
 	UserName    *string `json:"user_name"`
 	Domain      *string `json:"domain"`
-	CountryCode *string `json:"country_code"`
-	CountryName *string `json:"country_name"`
-	FlagEmoji   *string `json:"flag_emoji"`
-	TCPState    *string `json:"tcp_state"`
+	CountryCode *string  `json:"country_code"`
+	CountryName *string  `json:"country_name"`
+	FlagEmoji   *string  `json:"flag_emoji"`
+	Lat         *float64 `json:"lat,omitempty"`
+	Lng         *float64 `json:"lng,omitempty"`
+	TCPState    *string  `json:"tcp_state"`
 	OrigRate    int64   `json:"orig_rate"`
 	ReplRate    int64   `json:"repl_rate"`
 	OrigBytes   int64   `json:"orig_bytes"`
@@ -285,27 +288,30 @@ func (h *ConnectionsHandler) GetLiveConnections(w http.ResponseWriter, r *http.R
 		}
 
 		// Remote endpoint resolution & geo classification
-		countryCode := "LOCAL"
-		countryName := "Local Network"
-		flagEmoji := "🏠"
-
 		remoteIP := dstIP
 		if !isPrivateOrLocalIP(dstIP) {
 			remoteIP = dstIP
-			countryCode = "??"
-			countryName = "External"
-			flagEmoji = "🌐"
 		} else if !isPrivateOrLocalIP(srcIP) {
 			remoteIP = srcIP
-			countryCode = "??"
-			countryName = "External"
-			flagEmoji = "🌐"
+		}
+
+		geo := services.LookupGeoIP(remoteIP)
+		countryCode := geo.CountryCode
+		countryName := geo.CountryName
+		flagEmoji := geo.FlagEmoji
+		var lat, lng *float64
+		if !geo.IsLocal {
+			latVal := geo.Lat
+			lngVal := geo.Lng
+			lat = &latVal
+			lng = &lngVal
 		}
 
 		if searchFilter != "" {
-			haystack := strings.ToLower(fmt.Sprintf("%s %s %s %s %s",
+			haystack := strings.ToLower(fmt.Sprintf("%s %s %s %s %s %s %s",
 				srcIP, dstIP, remoteIP,
 				derefStr(devName), derefStr(userName),
+				countryCode, countryName,
 			))
 			if !strings.Contains(haystack, searchFilter) {
 				continue
@@ -357,6 +363,8 @@ func (h *ConnectionsHandler) GetLiveConnections(w http.ResponseWriter, r *http.R
 			CountryCode: &countryCode,
 			CountryName: &countryName,
 			FlagEmoji:   &flagEmoji,
+			Lat:         lat,
+			Lng:         lng,
 			TCPState:    tcpState,
 			OrigRate:    origRate,
 			ReplRate:    replRate,

@@ -57,10 +57,15 @@
   * Pre-upgrade safety invariant: mandatory automated pinned backup and strict router name confirmation gate before upgrade dispatch.
   * Autonomous 4-stage reboot reconnection state machine.
 
-* **🌐 Real-Time Observability & Centralized Logs**:
-  * Real-time `/ip/firewall/connection` tracker with device attribution and safe socket termination.
-  * In-memory offline GeoIP engine resolving destination countries without external API dependencies.
-  * Centralized terminal log viewer with regex event classification (auth, interface, DHCP, wireless, firewall, system).
+* **🌐 Real-Time Observability, GeoIP World Map & Centralized Logs**:
+  * Real-time `/ip/firewall/connection` tracker with device attribution, live socket termination, and country flag indicators.
+  * Interactive **SVG World Connections Map** plotting active remote endpoints across an equirectangular projection with pulsating nodes, transfer rates, socket counts, and nation-level bandwidth rollups.
+  * In-memory offline GeoIP engine (`geoip.go`) resolving destination countries, coordinates, and emoji flags without external API latency or rate limits.
+  * Centralized terminal log viewer with regex event classification (auth, interface, DHCP, wireless, firewall, system), SQLite history storage, configurable retention depth, and dedicated `Hide container logs` filtering.
+  * Router-native **Speed Test Runner** running single-shot Ookla tests via lightweight RouterOS container (`quay.io/tangent/speedtest-cli:latest`), streaming download/upload/ping metrics into history without external tooling.
+  * Configurable bandwidth display unit toggle (`Mbps`/`Kbps` vs `MB/s`/`KB/s`) persisting across the application.
+  * Multi-router ISP quota isolation: quotas are strictly scoped per-router with unmetered defaults and a first-connect setup prompt.
+  * Hardened WAN IP and subnet rotation resilience, preventing rule duplication and protecting loopback/immune targets against malformed masks.
   * The live telemetry stream is built to be cheap on the router, not just on the browser: a frame requests only the firewall counters it differentiates and loads only the columns it renders, the socket closes while the tab is hidden so a backgrounded page stops polling once a second, and a page never holds two connections at once. A short frame cache collapses concurrent open tabs into a single shared REST/SQL evaluation, hardware sensor reads are paced at 5 s, today's rollup lookups are cached for 10 s, and interface lists are throttled to 30 s while collapsed. Each frame and broadcast pass is timed in `GET /api/v1/system/diagnostics` (`ws.telemetry_tick`, `ws.broadcast`).
   * 1-click RouterOS `/system/logging` topic management.
   * The log scraper copies the ring every minute — nothing older survives that long on a busy box — while the work it used to share the tick with runs on its own schedule: destination history every three minutes, management-port audit every five. Each sub-pass is timed separately and shows up in `/api/v1/system/diagnostics`, so the cost of a 17-second tick is attributable instead of guessed.

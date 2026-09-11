@@ -50,8 +50,15 @@ export function formatBytesCompact(bytes) {
   return `${formatted}${sizes[i]}`;
 }
 
-export function formatSpeed(bps) {
-  if (!bps || bps === 0) return '0 bps';
+export function formatSpeed(bps, unit = 'bits') {
+  if (!bps || bps === 0) return unit === 'bytes' ? '0 B/s' : '0 bps';
+  if (unit === 'bytes') {
+    const B = bps / 8;
+    if (B < 1000) return `${Math.round(B)} B/s`;
+    if (B < 1000000) return `${(B / 1000).toFixed(1)} KB/s`;
+    if (B < 1000000000) return `${(B / 1000000).toFixed(1)} MB/s`;
+    return `${(B / 1000000000).toFixed(2)} GB/s`;
+  }
   if (bps < 1000) return `${bps} bps`;
   if (bps < 1000000) return `${(bps / 1000).toFixed(1)} Kbps`;
   if (bps < 1000000000) return `${(bps / 1000000).toFixed(1)} Mbps`;
@@ -64,14 +71,15 @@ export function formatSpeed(bps) {
  * The unit is a single letter and there is no "bps" suffix - the arrow next to
  * it already says it is a rate.
  */
-export function formatSpeedShort(bps) {
+export function formatSpeedShort(bps, unit = 'bits') {
   if (!bps || bps < 1) return '0';
-  if (bps < 1000) return `${Math.round(bps)}`;
+  const val = unit === 'bytes' ? bps / 8 : bps;
+  if (val < 1000) return `${Math.round(val)}`;
   // One decimal below 100 of the unit ("12.4M", "39.5K"), none above ("250K",
   // "340M") where the fraction is noise on a row this size.
-  if (bps < 1e6) return `${(bps / 1e3).toFixed(bps < 1e5 ? 1 : 0)}K`;
-  if (bps < 1e9) return `${(bps / 1e6).toFixed(bps < 1e8 ? 1 : 0)}M`;
-  return `${(bps / 1e9).toFixed(1)}G`;
+  if (val < 1e6) return `${(val / 1e3).toFixed(val < 1e5 ? 1 : 0).replace(/\.0$/, '')}K`;
+  if (val < 1e9) return `${(val / 1e6).toFixed(val < 1e8 ? 1 : 0).replace(/\.0$/, '')}M`;
+  return `${(val / 1e9).toFixed(1).replace(/\.0$/, '')}G`;
 }
 
 /**

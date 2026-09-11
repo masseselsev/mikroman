@@ -20,6 +20,7 @@ import { mergeTelemetryIntoUsers, mergeRestUsersPreservingRates } from './utils/
 import { SetupWizard } from './components/SetupWizard';
 import { AppFooter } from './components/AppFooter';
 import { QuotaStrip } from './components/QuotaStrip';
+import { QuotaSetupPromptModal } from './components/QuotaSetupPromptModal';
 import { ContainersPage } from './components/ContainersPage';
 import { LoginPage } from './components/LoginPage';
 import { useAuth } from './context/AuthContext';
@@ -103,6 +104,24 @@ export function App() {
   const [firmwareStatus, setFirmwareStatus] = useState(null);
   const [logsModalOpen, setLogsModalOpen] = useState(false);
   const [logStats, setLogStats] = useState(null);
+  const [showQuotaPrompt, setShowQuotaPrompt] = useState(false);
+
+  useEffect(() => {
+    if (!activeRouter?.id) return;
+    let dismissed = false;
+    try {
+      dismissed = localStorage.getItem(`mikroman:quota-prompt-dismissed-${activeRouter.id}`) === 'true';
+    } catch {
+      // ignore
+    }
+    if (dismissed) return;
+
+    api.getQuota(activeRouter.id).then(res => {
+      if (res?.data && res.data.configured === false) {
+        setShowQuotaPrompt(true);
+      }
+    }).catch(() => {});
+  }, [activeRouter?.id]);
   // Firmware and log-stat polls ride the 6 s data poll but must not run at
   // its rate: each firmware check is two REST calls to the router, and the
   // answer changes about once a month. Keyed by router id so a switch
@@ -867,6 +886,17 @@ export function App() {
         onClose={() => setSettingsModalOpen(false)}
         onReboot={handleReboot}
         onRoutersChanged={reloadAll}
+      />
+
+      {/* Quota First-Connect Setup Prompt */}
+      <QuotaSetupPromptModal
+        isOpen={showQuotaPrompt}
+        router={activeRouter}
+        onConfigure={() => {
+          setShowQuotaPrompt(false);
+          handleOpenSettings('general');
+        }}
+        onDismiss={() => setShowQuotaPrompt(false)}
       />
 
       {/* Traffic History Modal (User & Device) */}

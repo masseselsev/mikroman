@@ -68,6 +68,13 @@ describe('formatSpeed', () => {
     expect(formatSpeed(39_500)).toBe('39.5 Kbps');
     expect(formatSpeed(12_400_000)).toBe('12.4 Mbps');
   });
+
+  it('formats speed in bytes when unit is bytes', () => {
+    expect(formatSpeed(0, 'bytes')).toBe('0 B/s');
+    expect(formatSpeed(8_000, 'bytes')).toBe('1.0 KB/s');
+    expect(formatSpeed(80_000_000, 'bytes')).toBe('10.0 MB/s');
+    expect(formatSpeed(8_000_000_000, 'bytes')).toBe('1.00 GB/s');
+  });
 });
 
 describe('formatSpeedShort', () => {
@@ -92,6 +99,11 @@ describe('formatSpeedShort', () => {
 
   it('reports sub-kbit rates as a bare number', () => {
     expect(formatSpeedShort(512)).toBe('512');
+  });
+
+  it('formats short rates in bytes when unit is bytes', () => {
+    expect(formatSpeedShort(80_000, 'bytes')).toBe('10K');
+    expect(formatSpeedShort(80_000_000, 'bytes')).toBe('10M');
   });
 });
 

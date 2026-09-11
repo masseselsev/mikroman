@@ -15,6 +15,8 @@ import {
   ArrowDownLeft,
 } from 'lucide-react';
 import { formatBytes, formatSpeed } from '../utils/formatters';
+import { useSpeedUnit } from '../context/SpeedUnitContext';
+import { WorldConnectionsModal } from './WorldConnectionsModal';
 
 /**
  * Live connection tracker.
@@ -33,6 +35,7 @@ export function LiveConnectionsModal({
   inline = false,
 }) {
   const { t } = useI18n();
+  const { speedUnit } = useSpeedUnit();
   const [connections, setConnections] = useState([]);
   // The count of connections that matched the *router-side* filters (device,
   // in future protocol/search) before `limit` truncated the list - not the
@@ -48,6 +51,7 @@ export function LiveConnectionsModal({
   const [killPendingId, setKillPendingId] = useState(null);
   const [killingId, setKillingId] = useState(null);
   const [error, setError] = useState(null);
+  const [showWorldMap, setShowWorldMap] = useState(false);
 
   const timerRef = useRef(null);
 
@@ -201,17 +205,30 @@ export function LiveConnectionsModal({
               >
                 <span>
                   <ArrowUpRight size={12} style={{ verticalAlign: -1, color: 'var(--color-primary)' }} />{' '}
-                  {formatSpeed(totalUploadRate)}
+                  {formatSpeed(totalUploadRate, speedUnit)}
                 </span>
                 <span>
                   <ArrowDownLeft size={12} style={{ verticalAlign: -1, color: 'var(--color-success)' }} />{' '}
-                  {formatSpeed(totalDownloadRate)}
+                  {formatSpeed(totalDownloadRate, speedUnit)}
                 </span>
               </div>
             </div>
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            {/* World Map toggle */}
+            <button
+              className="btn btn-sm btn-ghost"
+              onClick={() => setShowWorldMap(true)}
+              title={t('world_map_btn')}
+              style={{ display: 'flex', alignItems: 'center', gap: 5 }}
+            >
+              <Globe size={14} />
+              <span style={{ fontSize: 'var(--fs-xs)' }}>
+                {t('world_map_btn')}
+              </span>
+            </button>
+
             {/* Auto-refresh toggle */}
             <button
               className={`btn btn-sm ${isAutoRefresh ? 'btn-ghost text-primary' : 'btn-ghost'}`}
@@ -456,10 +473,10 @@ export function LiveConnectionsModal({
                       {/* Live Rates */}
                       <td style={{ padding: '8px 10px', textAlign: 'right', whiteSpace: 'nowrap' }}>
                         <div style={{ color: 'var(--color-primary)', fontSize: 'var(--fs-2xs)' }}>
-                          ↑ {formatSpeed(c.orig_rate)}
+                          ↑ {formatSpeed(c.orig_rate, speedUnit)}
                         </div>
                         <div style={{ color: 'var(--color-success)', fontSize: 'var(--fs-2xs)' }}>
-                          ↓ {formatSpeed(c.repl_rate)}
+                          ↓ {formatSpeed(c.repl_rate, speedUnit)}
                         </div>
                       </td>
 
@@ -527,6 +544,12 @@ export function LiveConnectionsModal({
             </tbody>
           </table>
         </div>
+
+        <WorldConnectionsModal
+          isOpen={showWorldMap}
+          onClose={() => setShowWorldMap(false)}
+          connections={connections}
+        />
     </>
   );
 

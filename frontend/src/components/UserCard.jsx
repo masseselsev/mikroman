@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useI18n } from '../context/I18nContext';
+import { useSpeedUnit } from '../context/SpeedUnitContext';
 import { api } from '../api/client';
 import { formatSpeed, formatSpeedShort, formatBytes, formatBytesCompact, formatGbWhole, formatRelativeTime, formatLastActive, formatDateTime, parseUtcDate, safeStr } from '../utils/formatters';
 import { displayVendor } from '../utils/deviceLabels';
@@ -180,6 +181,7 @@ export function bandLabel(band) {
  *    carries the number the reader came for.
  */
 function DeviceRow({ group, t, lang, grandTotal = 0, onOpen, onUpdate, onViewTrafficHistory, onViewConnections }) {
+  const { speedUnit } = useSpeedUnit();
   const [busy, setBusy] = useState(false);
   // The adapter list under the "N×" chip, for pulling an adapter back out of a
   // bundle it was wrongly grouped into.
@@ -467,8 +469,8 @@ function DeviceRow({ group, t, lang, grandTotal = 0, onOpen, onUpdate, onViewTra
           ))}
           {isMoving && (
             <span className="drow-rate" style={{ marginLeft: 'auto' }}>
-              <span style={{ color: rateIn ? 'var(--color-success)' : 'var(--text-muted)' }}>↓ {formatSpeedShort(rateIn)}</span>
-              <span style={{ color: rateOut ? 'var(--color-primary)' : 'var(--text-muted)' }}>↑ {formatSpeedShort(rateOut)}</span>
+              <span style={{ color: rateIn ? 'var(--color-success)' : 'var(--text-muted)' }}>↓ {formatSpeedShort(rateIn, speedUnit)}</span>
+              <span style={{ color: rateOut ? 'var(--color-primary)' : 'var(--text-muted)' }}>↑ {formatSpeedShort(rateOut, speedUnit)}</span>
             </span>
           )}
         </div>
@@ -479,6 +481,7 @@ function DeviceRow({ group, t, lang, grandTotal = 0, onOpen, onUpdate, onViewTra
 
 export function UserCard({ user, users = [], onEdit, onDelete, onLimitChange, onPauseToggle, onUpdate, onViewTrafficHistory, onViewConnections, showHidden = false, autoSortActivity = false, gatewayTotal = 0, deviceGrandTotal = 0, dragIndex = null }) {
   const { t, lang } = useI18n();
+  const { speedUnit } = useSpeedUnit();
   const [isUpdating, setIsUpdating] = useState(false);
   const [customDown, setCustomDown] = useState('');
   const [customUp, setCustomUp] = useState('');
@@ -671,7 +674,7 @@ export function UserCard({ user, users = [], onEdit, onDelete, onLimitChange, on
             <ArrowDown size={16} style={{ color: isOnline ? 'var(--color-success)' : 'var(--text-muted)', flexShrink: 0 }} />
             <div style={{ minWidth: 0 }}>
               <div className="usage-figure font-mono" style={{ color: isOnline ? 'var(--color-success)' : 'var(--text-muted)' }}>
-                {formatSpeed(user.current_rate_in || 0)}
+                {formatSpeed(user.current_rate_in || 0, speedUnit)}
               </div>
               <div className="usage-caption font-mono">
                 {formatBytes(user.bytes_today_in || 0)}
@@ -685,7 +688,7 @@ export function UserCard({ user, users = [], onEdit, onDelete, onLimitChange, on
             <ArrowUp size={16} style={{ color: isOnline ? 'var(--color-primary)' : 'var(--text-muted)', flexShrink: 0 }} />
             <div style={{ minWidth: 0 }}>
               <div className="usage-figure font-mono" style={{ color: isOnline ? 'var(--color-primary)' : 'var(--text-muted)' }}>
-                {formatSpeed(user.current_rate_out || 0)}
+                {formatSpeed(user.current_rate_out || 0, speedUnit)}
               </div>
               <div className="usage-caption font-mono">
                 {formatBytes(user.bytes_today_out || 0)}

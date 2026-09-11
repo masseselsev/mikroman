@@ -115,10 +115,14 @@ func (s *TrafficService) ReconcileQueues(ctx context.Context, routerID int) erro
 	}
 
 	// Map devices per user
+	immunes := client.GetImmuneIPs()
 	userIPs := make(map[int][]string)
 	for _, dev := range devices {
 		if dev.UserID != nil && dev.IPAddress.Valid && dev.IPAddress.String != "" {
-			userIPs[*dev.UserID] = append(userIPs[*dev.UserID], dev.IPAddress.String+"/32")
+			ip := cleanIP(dev.IPAddress.String)
+			if ip != "" && !immunes[ip] {
+				userIPs[*dev.UserID] = append(userIPs[*dev.UserID], ip+"/32")
+			}
 		}
 	}
 
@@ -168,7 +172,10 @@ func (s *TrafficService) ReconcileQueues(ctx context.Context, routerID int) erro
 	targetBlockedIPs := make(map[string]string)
 	for _, dev := range devices {
 		if dev.IPAddress.Valid && dev.IPAddress.String != "" {
-			ip := dev.IPAddress.String
+			ip := cleanIP(dev.IPAddress.String)
+			if ip == "" || immunes[ip] {
+				continue
+			}
 			if dev.IsPaused || (dev.UserID != nil && userPaused[*dev.UserID]) {
 				targetBlockedIPs[ip] = fmt.Sprintf("mikroman:paused:dev_%d", dev.ID)
 			}
@@ -223,7 +230,7 @@ func (s *TrafficService) SyncCounterRules(ctx context.Context, routerID int) err
 	// Filter accountable devices (not deleted, has non-empty IP)
 	var candidates []db.Device
 	for _, d := range devices {
-		if !d.IsDeleted && d.IPAddress.Valid && strings.TrimSpace(d.IPAddress.String) != "" {
+		if !d.IsDeleted && d.IPAddress.Valid && cleanIP(d.IPAddress.String) != "" {
 			candidates = append(candidates, d)
 		}
 	}
@@ -241,7 +248,7 @@ func (s *TrafficService) SyncCounterRules(ctx context.Context, routerID int) err
 
 	accountableByIP := make(map[string]db.Device)
 	for _, d := range candidates {
-		ip := strings.TrimSpace(d.IPAddress.String)
+		ip := cleanIP(d.IPAddress.String)
 		if _, exists := accountableByIP[ip]; !exists {
 			accountableByIP[ip] = d
 		}
@@ -354,18 +361,20 @@ func (s *TrafficService) SyncCounterRules(ctx context.Context, routerID int) err
 				slog.Warn("Failed to create mangle rule", "comment", comment, "router_id", routerID, "error", err)
 			}
 		} else {
+			if existingRule.InInterface != spec.InInterface || existingRule.OutInterface != spec.OutInterface {
+				_ = client.DeleteMangleRule(ctx, existingRule.ID)
+				if err := client.CreateMangleRule(ctx, &ruleCopy); err != nil {
+					slog.Warn("Failed to recreate mangle rule with updated interface", "comment", comment, "router_id", routerID, "error", err)
+				}
+				continue
+			}
+
 			updates := make(map[string]interface{})
-			if existingRule.SrcAddress != spec.SrcAddress {
-				updates["src-address"] = spec.SrcAddress
+			if cleanIP(existingRule.SrcAddress) != cleanIP(spec.SrcAddress) {
+				updates["src-address"] = cleanIP(spec.SrcAddress)
 			}
-			if existingRule.DstAddress != spec.DstAddress {
-				updates["dst-address"] = spec.DstAddress
-			}
-			if existingRule.InInterface != spec.InInterface {
-				updates["in-interface"] = spec.InInterface
-			}
-			if existingRule.OutInterface != spec.OutInterface {
-				updates["out-interface"] = spec.OutInterface
+			if cleanIP(existingRule.DstAddress) != cleanIP(spec.DstAddress) {
+				updates["dst-address"] = cleanIP(spec.DstAddress)
 			}
 			if len(updates) > 0 {
 				if err := client.UpdateMangleRule(ctx, existingRule.ID, updates); err != nil {
@@ -579,4 +588,8 @@ func (s *TrafficService) StartBackgroundLoop(ctx context.Context, interval time.
 			}
 		}
 	}()
+}
+
+func cleanIP(addr string) string {
+	return strings.TrimSpace(strings.Split(addr, "/")[0])
 }
