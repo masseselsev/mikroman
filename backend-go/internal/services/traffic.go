@@ -176,6 +176,20 @@ func (s *TrafficService) ReconcileQueues(ctx context.Context, routerID int) erro
 				"comment":   uComment,
 			}); err != nil {
 				slog.Error("Failed to update user simple queue on RouterOS", "user", u.Name, "err", err)
+		} else {
+			needsUpdate := matchedQ.Name != qName ||
+				normalizeRateLimit(matchedQ.MaxLimit) != normalizeRateLimit(maxLimit) ||
+				normalizeTarget(matchedQ.Target) != normalizeTarget(target) ||
+				matchedQ.Comment != uComment
+			if needsUpdate {
+				if err := client.UpdateSimpleQueue(ctx, matchedQ.ID, map[string]interface{}{
+					"name":      qName,
+					"target":    target,
+					"max-limit": maxLimit,
+					"comment":   uComment,
+				}); err != nil {
+					slog.Error("Failed to update user simple queue on RouterOS", "user", u.Name, "err", err)
+				}
 			}
 		}
 
@@ -257,6 +271,22 @@ func (s *TrafficService) ReconcileQueues(ctx context.Context, routerID int) erro
 					"comment":   devComment,
 				}); err != nil {
 					slog.Error("Failed to update device custom simple queue on RouterOS", "device_id", dev.ID, "err", err)
+			} else {
+				needsUpdate := matchedDevQ.Name != devQName ||
+					normalizeRateLimit(matchedDevQ.MaxLimit) != normalizeRateLimit(devMaxLimit) ||
+					normalizeTarget(matchedDevQ.Target) != normalizeTarget(target) ||
+					normalizeParent(matchedDevQ.Parent) != normalizeParent(parentName) ||
+					matchedDevQ.Comment != devComment
+				if needsUpdate {
+					if err := client.UpdateSimpleQueue(ctx, matchedDevQ.ID, map[string]interface{}{
+						"name":      devQName,
+						"target":    target,
+						"max-limit": devMaxLimit,
+						"parent":    parentName,
+						"comment":   devComment,
+					}); err != nil {
+						slog.Error("Failed to update device custom simple queue on RouterOS", "device_id", dev.ID, "err", err)
+					}
 				}
 			}
 
@@ -296,6 +326,21 @@ func (s *TrafficService) ReconcileQueues(ctx context.Context, routerID int) erro
 					"comment":   devComment,
 				}); err != nil {
 					slog.Error("Failed to update device quarantine simple queue on RouterOS", "device_id", dev.ID, "err", err)
+			} else {
+				needsUpdate := matchedDevQ.Name != devQName ||
+					normalizeRateLimit(matchedDevQ.MaxLimit) != normalizeRateLimit(maxLimit) ||
+					normalizeTarget(matchedDevQ.Target) != normalizeTarget(target) ||
+					normalizeParent(matchedDevQ.Parent) != "" ||
+					matchedDevQ.Comment != devComment
+				if needsUpdate {
+					if err := client.UpdateSimpleQueue(ctx, matchedDevQ.ID, map[string]interface{}{
+						"name":      devQName,
+						"target":    target,
+						"max-limit": maxLimit,
+						"comment":   devComment,
+					}); err != nil {
+						slog.Error("Failed to update device quarantine simple queue on RouterOS", "device_id", dev.ID, "err", err)
+					}
 				}
 			}
 
@@ -398,6 +443,68 @@ func formatRate(limit string) string {
 	}
 	norm := normalize(l)
 	return fmt.Sprintf("%s/%s", norm, norm)
+}
+
+func parseRateTokenToBps(token string) int64 {
+	token = strings.TrimSpace(strings.ToLower(token))
+	if token == "" || token == "0" || token == "unlimited" || token == "none" || token == "default" {
+		return 0
+	}
+	multiplier := int64(1)
+	if strings.HasSuffix(token, "g") {
+		multiplier = 1_000_000_000
+		token = strings.TrimSuffix(token, "g")
+	} else if strings.HasSuffix(token, "m") {
+		multiplier = 1_000_000
+		token = strings.TrimSuffix(token, "m")
+	} else if strings.HasSuffix(token, "k") {
+		multiplier = 1_000
+		token = strings.TrimSuffix(token, "k")
+	}
+	val, err := strconv.ParseFloat(token, 64)
+	if err != nil {
+		return 0
+	}
+	return int64(val * float64(multiplier))
+}
+
+func normalizeRateLimit(limit string) string {
+	parts := strings.Split(strings.TrimSpace(limit), "/")
+	if len(parts) == 1 {
+		bps := parseRateTokenToBps(parts[0])
+		return fmt.Sprintf("%d/%d", bps, bps)
+	}
+	if len(parts) >= 2 {
+		up := parseRateTokenToBps(parts[0])
+		down := parseRateTokenToBps(parts[1])
+		return fmt.Sprintf("%d/%d", up, down)
+	}
+	return "0/0"
+}
+
+func normalizeTarget(target string) string {
+	parts := strings.Split(target, ",")
+	entries := make([]string, 0, len(parts))
+	for _, p := range parts {
+		clean := strings.TrimSpace(p)
+		if clean == "" {
+			continue
+		}
+		if !strings.Contains(clean, "/") {
+			clean += "/32"
+		}
+		entries = append(entries, clean)
+	}
+	sort.Strings(entries)
+	return strings.Join(entries, ",")
+}
+
+func normalizeParent(parent string) string {
+	p := strings.TrimSpace(parent)
+	if p == "" || strings.EqualFold(p, "none") {
+		return ""
+	}
+	return p
 }
 
 // SyncCounterRules ensures RouterOS has mangle accounting rules for all accountable devices and self-traffic.

@@ -44,6 +44,13 @@ type TelemetryService struct {
 	cachedIPAddrsAt map[int]time.Time
 	cachedPublicIP  map[int]string
 	cachedPubIPAt   map[int]time.Time
+	cachedHealth    map[int]*routeros.SystemHealth
+	cachedHealth    map[int][]routeros.HealthItem
+	cachedHealthAt  map[int]time.Time
+	cachedDevStats  map[int]map[int]db.VolumeStats
+	cachedUserStats map[int]map[int]db.VolumeStats
+	cachedStatsAt   map[int]time.Time
+	lastMetricsSave map[int]time.Time
 }
 
 func NewTelemetryService(database *db.DB, client *routeros.Client, hub EventBroadcaster) *TelemetryService {
@@ -70,6 +77,13 @@ func NewTelemetryService(database *db.DB, client *routeros.Client, hub EventBroa
 		cachedIPAddrsAt: make(map[int]time.Time),
 		cachedPublicIP:  make(map[int]string),
 		cachedPubIPAt:   make(map[int]time.Time),
+		cachedHealth:    make(map[int]*routeros.SystemHealth),
+		cachedHealth:    make(map[int][]routeros.HealthItem),
+		cachedHealthAt:  make(map[int]time.Time),
+		cachedDevStats:  make(map[int]map[int]db.VolumeStats),
+		cachedUserStats: make(map[int]map[int]db.VolumeStats),
+		cachedStatsAt:   make(map[int]time.Time),
+		lastMetricsSave: make(map[int]time.Time),
 	}
 }
 
@@ -141,41 +155,21 @@ func (s *TelemetryService) getClient(routerID int) (*routeros.Client, error) {
 	return newClient, nil
 }
 
-func (s *TelemetryService) Collect(ctx context.Context, routerID int) error {
-	client, err := s.getClient(routerID)
-	if err != nil || client == nil {
-		return err
+func (s *TelemetryService) saveMetricsAndRollups(routerID int, now time.Time, res *routeros.SystemResource, health *routeros.SystemHealth, ifaces []routeros.Interface) {
+func (s *TelemetryService) saveMetricsAndRollups(routerID int, now time.Time, res *routeros.Resource, health []routeros.HealthItem, ifaces []routeros.Interface) {
+	if res == nil {
+		return
 	}
-
-	res, err := client.GetSystemResource(ctx)
-	if err != nil {
-		return err
-	}
-
 	cpuLoad, _ := strconv.ParseFloat(res.CPULoad, 64)
 	freeMem, _ := strconv.ParseInt(res.FreeMemory, 10, 64)
 	totalMem, _ := strconv.ParseInt(res.TotalMemory, 10, 64)
-
 	var memPct float64
 	var usedMem int64
 	if totalMem > 0 {
 		usedMem = totalMem - freeMem
 		memPct = (float64(usedMem) / float64(totalMem)) * 100.0
 	}
-
-	// Fetch health early so temperature & voltage are saved with system_metrics
-	health, _ := client.GetSystemHealth(ctx)
 	temp, volt := routeros.ExtractHealthMetrics(health)
-
-	// Insert into system_metrics
-	_, _ = s.database.SqlDB.Exec(`
-		INSERT INTO system_metrics (router_id, cpu_load, memory_used_bytes, memory_total_bytes, memory_usage_pct, temperature, voltage, timestamp)
-		VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-	`, routerID, cpuLoad, usedMem, totalMem, memPct, temp, volt)
-
-	// Fetch interfaces
-	ifaces, _ := client.GetInterfaces(ctx)
-	now := time.Now()
 
 	s.mu.Lock()
 	pTime := s.prevTime[routerID]
@@ -193,11 +187,83 @@ func (s *TelemetryService) Collect(ctx context.Context, routerID int) error {
 	}
 	currentIfaces := make(map[string][2]int64)
 
+	tx, err := s.database.SqlDB.Begin()
+	if err != nil {
+		return
+	}
+	defer tx.Rollback()
+
+	_, _ = tx.Exec(`
+		INSERT INTO system_metrics (router_id, cpu_load, memory_used_bytes, memory_total_bytes, memory_usage_pct, temperature, voltage, timestamp)
+		VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+	`, routerID, cpuLoad, usedMem, totalMem, memPct, temp, volt)
+
+	todayStr := now.Format("2006-01-02")
 	for _, iface := range ifaces {
 		rx, _ := strconv.ParseInt(iface.RxByte, 10, 64)
-		tx, _ := strconv.ParseInt(iface.TxByte, 10, 64)
-		currentIfaces[iface.Name] = [2]int64{rx, tx}
+		txBytes, _ := strconv.ParseInt(iface.TxByte, 10, 64)
+		currentIfaces[iface.Name] = [2]int64{rx, txBytes}
+
+		var rRx, rTx float64
+		if dt > 0.1 {
+			if prev, exists := pIfaces[iface.Name]; exists {
+				dRx := rx - prev[0]
+				dTx := txBytes - prev[1]
+				if dRx > 0 {
+					rRx = float64(dRx*8) / dt
+				}
+				if dTx > 0 {
+					rTx = float64(dTx*8) / dt
+				}
+				if dRx > 0 || dTx > 0 {
+					_, _ = tx.Exec(`
+						INSERT INTO interface_traffic_rollups (router_id, interface_name, record_date, bytes_in, bytes_out)
+						VALUES (?, ?, ?, ?, ?)
+						ON CONFLICT(router_id, interface_name, record_date) DO UPDATE SET
+							bytes_in = bytes_in + excluded.bytes_in,
+							bytes_out = bytes_out + excluded.bytes_out
+					`, routerID, iface.Name, todayStr, dRx, dTx)
+				}
+			}
+		}
+
+		_, _ = tx.Exec(`
+			INSERT INTO interface_metrics (router_id, interface_name, rx_rate_bps, tx_rate_bps, rx_bytes_total, tx_bytes_total, timestamp)
+			VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+		`, routerID, iface.Name, rRx, rTx, rx, txBytes)
 	}
+
+	_ = tx.Commit()
+
+	s.mu.Lock()
+	if s.prevIfaces == nil {
+		s.prevIfaces = make(map[int]map[string][2]int64)
+	}
+	s.prevIfaces[routerID] = currentIfaces
+	if s.prevTime == nil {
+		s.prevTime = make(map[int]time.Time)
+	}
+	s.prevTime[routerID] = now
+	s.mu.Unlock()
+}
+
+func (s *TelemetryService) Collect(ctx context.Context, routerID int) error {
+	client, err := s.getClient(routerID)
+	if err != nil || client == nil {
+		return err
+	}
+
+	now := time.Now()
+
+	s.mu.Lock()
+	cachedHealth := s.cachedHealth[routerID]
+	cachedHealthAt := s.cachedHealthAt[routerID]
+	lastSave := s.lastMetricsSave[routerID]
+	s.mu.Unlock()
+
+	shouldSaveMetrics := lastSave.IsZero() || now.Sub(lastSave) >= 10*time.Second
+	shouldFetchHealth := cachedHealth == nil || now.Sub(cachedHealthAt) >= 5*time.Second
+	shouldFetchHealth := cachedHealthAt.IsZero() || now.Sub(cachedHealthAt) >= 5*time.Second
 
 	// Read monitored interfaces configuration
 	monKey := fmt.Sprintf("monitored_interfaces_%d", routerID)
@@ -213,93 +279,127 @@ func (s *TelemetryService) Collect(ctx context.Context, routerID int) error {
 		monitoredList = []string{}
 	}
 
-	ifacesRatesMap := make(map[string][2]float64)
+	var (
+		res         *routeros.SystemResource
+		res         *routeros.Resource
+		resErr      error
+		health      *routeros.SystemHealth
+		health      []routeros.HealthItem
+		rates       []routeros.InterfaceTrafficRate
+		mangleRules []routeros.MangleRule
+		ifaces      []routeros.Interface
+	)
 
-	// Fetch live rates from RouterOS monitor-traffic for monitored interfaces
+	var wg sync.WaitGroup
+
+	// 1. System Resource
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		res, resErr = client.GetSystemResource(ctx)
+	}()
+
+	// 2. Monitored interface traffic rates
 	if len(monitoredList) > 0 {
-		rates, err := client.MonitorInterfaceTraffic(ctx, monitoredList)
-		if err == nil && len(rates) > 0 {
-			for _, r := range rates {
-				ifacesRatesMap[r.Name] = [2]float64{r.RxBitsPerSecond, r.TxBitsPerSecond}
-			}
-		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			rates, _ = client.MonitorInterfaceTraffic(ctx, monitoredList)
+		}()
 	}
 
-	// For any interface without monitor-traffic, compute from byte deltas
-	if dt > 0.1 && len(pIfaces) > 0 {
-		for name, curr := range currentIfaces {
-			if _, ok := ifacesRatesMap[name]; !ok {
-				if prev, exists := pIfaces[name]; exists {
-					dRx := curr[0] - prev[0]
-					dTx := curr[1] - prev[1]
-					var rRx, rTx float64
-					if dRx > 0 {
-						rRx = float64(dRx*8) / dt
+	// 3. Mangle accounting rules (minimal payload via .proplist)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		mangleRules, _ = client.GetMangleAccountingRules(ctx)
+	}()
+
+	// 4. Health (cached 5s)
+	if shouldFetchHealth {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			health, _ = client.GetSystemHealth(ctx)
+		}()
+	} else {
+		health = cachedHealth
+	}
+
+	// 5. Interfaces (only when metrics save is due or no monitored WAN interfaces)
+	if shouldSaveMetrics || len(monitoredList) == 0 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ifaces, _ = client.GetInterfaces(ctx)
+		}()
+	}
+
+	wg.Wait()
+
+	if resErr != nil || res == nil {
+		return resErr
+	}
+
+	if shouldFetchHealth && health != nil {
+		s.mu.Lock()
+		s.cachedHealth[routerID] = health
+		s.cachedHealthAt[routerID] = now
+		s.mu.Unlock()
+	}
+
+	cpuLoad, _ := strconv.ParseFloat(res.CPULoad, 64)
+	freeMem, _ := strconv.ParseInt(res.FreeMemory, 10, 64)
+	totalMem, _ := strconv.ParseInt(res.TotalMemory, 10, 64)
+
+	var memPct float64
+	var usedMem int64
+	if totalMem > 0 {
+		usedMem = totalMem - freeMem
+		memPct = (float64(usedMem) / float64(totalMem)) * 100.0
+	}
+	temp, volt := routeros.ExtractHealthMetrics(health)
+
+	// Save historical metrics if due
+	if shouldSaveMetrics {
+		s.saveMetricsAndRollups(routerID, now, res, health, ifaces)
+		s.mu.Lock()
+		s.lastMetricsSave[routerID] = now
+		s.mu.Unlock()
+	}
+
+	// Calculate WAN rates across monitored interfaces
+	var wanRxBps, wanTxBps float64
+	if len(monitoredList) > 0 && len(rates) > 0 {
+		for _, r := range rates {
+			wanRxBps += r.RxBitsPerSecond
+			wanTxBps += r.TxBitsPerSecond
+		}
+	} else if len(monitoredList) == 0 && len(ifaces) > 0 {
+		s.mu.Lock()
+		pIfaces := s.prevIfaces[routerID]
+		pTime := s.prevTime[routerID]
+		s.mu.Unlock()
+		if pIfaces != nil && !pTime.IsZero() {
+			dt := now.Sub(pTime).Seconds()
+			if dt > 0.1 {
+				for _, iface := range ifaces {
+					rx, _ := strconv.ParseInt(iface.RxByte, 10, 64)
+					txBytes, _ := strconv.ParseInt(iface.TxByte, 10, 64)
+					if prev, ok := pIfaces[iface.Name]; ok {
+						dRx := rx - prev[0]
+						dTx := txBytes - prev[1]
+						if dRx > 0 {
+							wanRxBps += float64(dRx*8) / dt
+						}
+						if dTx > 0 {
+							wanTxBps += float64(dTx*8) / dt
+						}
 					}
-					if dTx > 0 {
-						rTx = float64(dTx*8) / dt
-					}
-					ifacesRatesMap[name] = [2]float64{rRx, rTx}
 				}
 			}
 		}
 	}
-
-	// Calculate WAN rates across monitored interfaces & record interface_metrics
-	var wanRxBps, wanTxBps float64
-	monMap := make(map[string]bool)
-	for _, m := range monitoredList {
-		monMap[m] = true
-	}
-
-	for _, iface := range ifaces {
-		rx, _ := strconv.ParseInt(iface.RxByte, 10, 64)
-		tx, _ := strconv.ParseInt(iface.TxByte, 10, 64)
-		rate := ifacesRatesMap[iface.Name]
-
-		if monMap[iface.Name] {
-			wanRxBps += rate[0]
-			wanTxBps += rate[1]
-		}
-
-		_, _ = s.database.SqlDB.Exec(`
-			INSERT INTO interface_metrics (router_id, interface_name, rx_rate_bps, tx_rate_bps, rx_bytes_total, tx_bytes_total, timestamp)
-			VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-		`, routerID, iface.Name, rate[0], rate[1], rx, tx)
-
-		// Update interface_traffic_rollups with sampled byte deltas
-		if prev, exists := pIfaces[iface.Name]; exists {
-			dRx := rx - prev[0]
-			dTx := tx - prev[1]
-			if dRx < 0 {
-				dRx = 0 // Counter rollover or router reboot
-			}
-			if dTx < 0 {
-				dTx = 0
-			}
-			if dRx > 0 || dTx > 0 {
-				todayStr := now.Format("2006-01-02")
-				_, _ = s.database.SqlDB.Exec(`
-					INSERT INTO interface_traffic_rollups (router_id, interface_name, record_date, bytes_in, bytes_out)
-					VALUES (?, ?, ?, ?, ?)
-					ON CONFLICT(router_id, interface_name, record_date) DO UPDATE SET
-						bytes_in = bytes_in + excluded.bytes_in,
-						bytes_out = bytes_out + excluded.bytes_out
-				`, routerID, iface.Name, todayStr, dRx, dTx)
-			}
-		}
-	}
-
-	s.mu.Lock()
-	if s.prevIfaces == nil {
-		s.prevIfaces = make(map[int]map[string][2]int64)
-	}
-	s.prevIfaces[routerID] = currentIfaces
-	if s.prevTime == nil {
-		s.prevTime = make(map[int]time.Time)
-	}
-	s.prevTime[routerID] = now
-	s.mu.Unlock()
 
 	// Resolve WAN IP & Public IP with caching
 	s.mu.Lock()
@@ -378,8 +478,7 @@ func (s *TelemetryService) Collect(ctx context.Context, routerID int) error {
 	}
 	clockStr := now.Format("15:04:05")
 
-	// Differentiate mangle rules for live per-device rates
-	mangleRules, _ := client.GetMangleRules(ctx)
+	// Differentiate mangle rules for live per-device rates (rules fetched concurrently with .proplist)
 	currentDevBytes := make(map[int][2]int64)
 	for _, r := range mangleRules {
 		if !strings.HasPrefix(r.Comment, "mikroman:acct:dev_") {
@@ -479,11 +578,32 @@ func (s *TelemetryService) Collect(ctx context.Context, routerID int) error {
 	users, _ := s.database.GetUsers(&routerID)
 	devices, _ := s.database.GetDevices(&routerID)
 
-	todayStr := now.Format("2006-01-02")
-	anchorDay := s.database.GetBillingAnchorDay(&routerID)
-	cycleStart := db.CalculateBillingCycleStart(anchorDay, now)
-	devStats, _ := s.database.GetDeviceVolumeStats(cycleStart, todayStr)
-	userStats, _ := s.database.GetUserVolumeStats(cycleStart, todayStr)
+	// Fetch or use cached volume stats (cached 5s)
+	s.mu.Lock()
+	cachedDevs := s.cachedDevStats[routerID]
+	cachedUsers := s.cachedUserStats[routerID]
+	cachedStatsAt := s.cachedStatsAt[routerID]
+	s.mu.Unlock()
+
+	var devStats map[int]db.VolumeStats
+	var userStats map[int]db.VolumeStats
+
+	if cachedDevs != nil && cachedUsers != nil && now.Sub(cachedStatsAt) < 5*time.Second {
+		devStats = cachedDevs
+		userStats = cachedUsers
+	} else {
+		todayStr := now.Format("2006-01-02")
+		anchorDay := s.database.GetBillingAnchorDay(&routerID)
+		cycleStart := db.CalculateBillingCycleStart(anchorDay, now)
+		devStats, _ = s.database.GetDeviceVolumeStats(cycleStart, todayStr)
+		userStats, _ = s.database.GetUserVolumeStats(cycleStart, todayStr)
+
+		s.mu.Lock()
+		s.cachedDevStats[routerID] = devStats
+		s.cachedUserStats[routerID] = userStats
+		s.cachedStatsAt[routerID] = now
+		s.mu.Unlock()
+	}
 
 	activeCount := 0
 	devsByUser := make(map[int][]db.Device)
@@ -598,6 +718,7 @@ func (s *TelemetryService) Collect(ctx context.Context, routerID int) error {
 				"routerboard_serial":   rbSerial,
 				"free_memory_mb":       float64(freeMem) / (1024 * 1024),
 				"total_memory_mb":      float64(totalMem) / (1024 * 1024),
+				"memory_usage_pct":     memPct,
 				"temperature":          temp,
 				"voltage":              volt,
 				"uptime":               res.Uptime,
@@ -654,6 +775,7 @@ func (s *TelemetryService) StartBackgroundLoop(ctx context.Context, defaultInter
 
 			routers, err := s.database.GetRouters()
 			if err == nil {
+				var wg sync.WaitGroup
 				for _, r := range routers {
 					if r.IsActive {
 						callCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
@@ -661,14 +783,26 @@ func (s *TelemetryService) StartBackgroundLoop(ctx context.Context, defaultInter
 							slog.Debug("Telemetry collection failed", "router_id", r.ID, "err", err)
 						}
 						cancel()
+						wg.Add(1)
+						go func(rID int) {
+							defer wg.Done()
+							callCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
+							defer cancel()
+							if err := s.Collect(callCtx, rID); err != nil {
+								slog.Debug("Telemetry collection failed", "router_id", rID, "err", err)
+							}
+						}(r.ID)
 					}
 				}
+				wg.Wait()
 			}
 
 			elapsed := time.Since(start)
 			sleepDuration := interval - elapsed
 			if sleepDuration < 50*time.Millisecond {
 				sleepDuration = 50 * time.Millisecond
+			if sleepDuration < 20*time.Millisecond {
+				sleepDuration = 20 * time.Millisecond
 			}
 
 			select {

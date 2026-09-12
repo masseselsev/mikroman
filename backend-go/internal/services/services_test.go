@@ -302,3 +302,103 @@ func TestFormatRate(t *testing.T) {
 		}
 	}
 }
+
+func TestNormalizeRateLimitAndTarget(t *testing.T) {
+	// 1. Rate limits
+	if normalizeRateLimit("11M/11M") != normalizeRateLimit("11000000/11000000") {
+		t.Fatalf("expected 11M/11M to equal 11000000/11000000 in normalized form, got %q vs %q",
+			normalizeRateLimit("11M/11M"), normalizeRateLimit("11000000/11000000"))
+	}
+	if normalizeRateLimit("5M/5M") != normalizeRateLimit("5000000/5000000") {
+		t.Fatalf("expected 5M/5M to equal 5000000/5000000 in normalized form")
+	}
+	if normalizeRateLimit("500k/1M") != "500000/1000000" {
+		t.Fatalf("expected 500000/1000000, got %q", normalizeRateLimit("500k/1M"))
+	}
+
+	// 2. Targets (order independence and /32 normalization)
+	t1 := normalizeTarget("192.0.2.250/32,192.0.2.246/32,192.0.2.239/32")
+	t2 := normalizeTarget("192.0.2.246/32, 192.0.2.239/32, 192.0.2.250/32")
+	if t1 != t2 {
+		t.Fatalf("expected normalized targets to match regardless of order, got %q vs %q", t1, t2)
+	}
+
+	// 3. Parent (none vs empty)
+	if normalizeParent("none") != normalizeParent("") {
+		t.Fatalf("expected 'none' and '' to normalize identically")
+	}
+}
+
+func TestReconcileQueuesNoSpamWhenMatching(t *testing.T) {
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "queue_nospam.db")
+	fernet, _ := crypto.NewFernet("cw_z4pYJ2-8_9V18R5v6R1XbJ9i9w9G1R1XbJ9i9w9E=")
+	database, _ := db.Open(dbPath, fernet)
+	defer database.Close()
+
+	_, _ = database.SqlDB.Exec("INSERT INTO routers (id, name, host) VALUES (1, 'TestRouter', '127.0.0.1')")
+	_, _ = database.SqlDB.Exec("INSERT INTO users (id, router_id, name, speed_limit) VALUES (1, 1, 'Mark', '11M/11M')")
+	_, _ = database.SqlDB.Exec("INSERT INTO devices (id, router_id, user_id, mac_address, ip_address, is_active) VALUES (1, 1, 1, 'AA:BB:CC:11:22:33', '192.0.2.100', 1)")
+
+	updateCount := 0
+	createCount := 0
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/rest/queue/simple", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			// RouterOS returns expanded bps rate limit ("11000000/11000000") and parent "none"
+			_ = json.NewEncoder(w).Encode([]map[string]interface{}{
+				{
+					".id":       "*10",
+					"name":      "mikroman-Mark",
+					"target":    "192.0.2.100/32",
+					"max-limit": "11000000/11000000",
+					"parent":    "none",
+					"comment":   "mikroman:user_1",
+				},
+			})
+		} else if r.Method == http.MethodPut || r.Method == http.MethodPost {
+			createCount++
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{".id": "*11"})
+		}
+	})
+	mux.HandleFunc("/rest/queue/simple/*10", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPatch || r.Method == http.MethodPost {
+			updateCount++
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{".id": "*10"})
+		}
+	})
+	mux.HandleFunc("/rest/ip/firewall/address-list", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode([]map[string]interface{}{
+			{".id": "*20", "list": "mikroman_queued", "address": "192.0.2.100", "comment": "mikroman:queued:user_1"},
+		})
+	})
+
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	u, _ := url.Parse(server.URL)
+	port, _ := strconv.Atoi(u.Port())
+	client, _ := routeros.NewClient(routeros.Config{
+		Host:    u.Hostname(),
+		Port:    port,
+		Timeout: 2 * time.Second,
+	})
+
+	trafficSvc := NewTrafficService(database, client)
+	ctx := context.Background()
+
+	// Run ReconcileQueues
+	if err := trafficSvc.ReconcileQueues(ctx, 1); err != nil {
+		t.Fatalf("ReconcileQueues failed: %v", err)
+	}
+
+	// Verify that NO update or create calls were sent to RouterOS!
+	if updateCount != 0 {
+		t.Fatalf("expected 0 queue updates, got %d (redundant queue set spam!)", updateCount)
+	}
+	if createCount != 0 {
+		t.Fatalf("expected 0 queue creates, got %d", createCount)
+	}
+}
+
