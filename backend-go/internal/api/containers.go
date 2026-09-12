@@ -280,7 +280,7 @@ func (h *ContainerHandler) List(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if support.Status != "ready" {
-		WriteJSON(w, http.StatusOK, APIResponse{Success: true, Data: overview})
+		WriteJSON(w, http.StatusOK, overview)
 		return
 	}
 
@@ -400,7 +400,7 @@ func (h *ContainerHandler) List(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	WriteJSON(w, http.StatusOK, APIResponse{Success: true, Data: overview})
+	WriteJSON(w, http.StatusOK, overview)
 }
 
 func (h *ContainerHandler) Action(w http.ResponseWriter, r *http.Request) {
@@ -431,7 +431,7 @@ func (h *ContainerHandler) Action(w http.ResponseWriter, r *http.Request) {
 	}
 
 	msg := fmt.Sprintf("Container %s dispatched", action)
-	WriteJSON(w, http.StatusOK, APIResponse{Success: true, Data: true, Message: &msg})
+	WriteJSON(w, http.StatusOK, map[string]interface{}{"message": msg})
 }
 
 type ContainerCreateRequest struct {
@@ -504,7 +504,7 @@ func (h *ContainerHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	msg := "Container created"
-	WriteJSON(w, http.StatusCreated, APIResponse{Success: true, Data: true, Message: &msg})
+	WriteJSON(w, http.StatusCreated, map[string]interface{}{"message": msg})
 }
 
 func (h *ContainerHandler) Storage(w http.ResponseWriter, r *http.Request) {
@@ -605,7 +605,7 @@ func (h *ContainerHandler) Storage(w http.ResponseWriter, r *http.Request) {
 		RequiredBytes: 400 * 1024 * 1024,
 	}
 
-	WriteJSON(w, http.StatusOK, APIResponse{Success: true, Data: result})
+	WriteJSON(w, http.StatusOK, result)
 }
 
 type ContainerFormatRequest struct {
@@ -636,7 +636,7 @@ func (h *ContainerHandler) Format(w http.ResponseWriter, r *http.Request) {
 	}
 
 	msg := "Format started on " + slot
-	WriteJSON(w, http.StatusOK, APIResponse{Success: true, Data: true, Message: &msg})
+	WriteJSON(w, http.StatusOK, map[string]interface{}{"message": msg})
 }
 
 type ContainerSetupRequest struct {
@@ -684,7 +684,7 @@ func (h *ContainerHandler) SetupPlan(w http.ResponseWriter, r *http.Request) {
 		Blockers: []string{},
 	}
 
-	WriteJSON(w, http.StatusOK, APIResponse{Success: true, Data: plan})
+	WriteJSON(w, http.StatusOK, plan)
 }
 
 func (h *ContainerHandler) SetupApply(w http.ResponseWriter, r *http.Request) {

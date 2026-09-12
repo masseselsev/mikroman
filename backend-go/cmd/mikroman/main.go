@@ -104,6 +104,7 @@ func main() {
 	defer cancel()
 
 	var telemSvc *services.TelemetryService
+	var trafficSvc *services.TrafficService
 	if client != nil {
 		discSvc := services.NewDiscoveryService(database, client, hub)
 		discSvc.StartBackgroundLoop(ctx, cfg.HeavySyncIntervalSeconds)
@@ -111,13 +112,15 @@ func main() {
 		telemSvc = services.NewTelemetryService(database, client, hub)
 		telemSvc.StartBackgroundLoop(ctx, cfg.PollIntervalSeconds)
 
-		trafficSvc := services.NewTrafficService(database, client)
+		trafficSvc = services.NewTrafficService(database, client)
 		trafficSvc.StartBackgroundLoop(ctx, cfg.HeavySyncIntervalSeconds)
 
 		logSvc := services.NewLogScraperService(database, client)
 		logSvc.StartBackgroundLoop(ctx, cfg.LogScrapeIntervalSeconds)
 
 		slog.Info("Background workers started (Goroutines M:N scheduler)")
+	} else {
+		trafficSvc = services.NewTrafficService(database, nil)
 	}
 
 	// Backup scheduler (hourly check)
@@ -148,6 +151,7 @@ func main() {
 		Hub:              hub,
 		LiveRates:        telemSvc,
 		TelegramReloader: telegramSvc,
+		Reconciler:       trafficSvc,
 		DistDir:          distDir,
 	})
 

@@ -37,6 +37,7 @@ type TelemetryService struct {
 	prevDeviceBytes map[int]map[int][2]int64
 	prevMangleTime  map[int]time.Time
 	latestRates     map[int]LiveRateSnapshot
+	pubNet          *PublicNetworkService
 }
 
 func NewTelemetryService(database *db.DB, client *routeros.Client, hub EventBroadcaster) *TelemetryService {
@@ -56,6 +57,7 @@ func NewTelemetryService(database *db.DB, client *routeros.Client, hub EventBroa
 		prevDeviceBytes: make(map[int]map[int][2]int64),
 		prevMangleTime:  make(map[int]time.Time),
 		latestRates:     make(map[int]LiveRateSnapshot),
+		pubNet:          NewPublicNetworkService(),
 	}
 }
 
@@ -514,6 +516,7 @@ func (s *TelemetryService) Collect(ctx context.Context, routerID int) error {
 				"wan_tx_bps":           wanTxBps,
 				"wan_ip":               wanIP,
 				"public_ip":            publicIP,
+				"isp":                  s.pubNet.GetISP(routerID, publicIP),
 				"clock":                clockStr,
 				"monitored_interfaces": monitoredList,
 				"user_count":           len(users),

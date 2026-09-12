@@ -15,7 +15,7 @@ import { Gauge, Loader2, AlertCircle } from 'lucide-react';
  * A run takes up to a couple of minutes and the request blocks for its
  * duration, so the button stays busy rather than polling a job id.
  */
-export function SpeedTestBadge({ routerId }) {
+export function SpeedTestBadge({ routerId, onNavigate }) {
   const { t } = useI18n();
   const [status, setStatus] = useState(null);
   const [running, setRunning] = useState(false);
@@ -67,7 +67,17 @@ export function SpeedTestBadge({ routerId }) {
       unreachable: 'speedtest_unreachable',
     }[status.reason] || 'speedtest_no_container';
     return (
-      <span className="speedtest-note" title={t(reasonKey)}>
+      <span
+        className="speedtest-note"
+        title={t(reasonKey)}
+        style={{ cursor: onNavigate ? 'pointer' : 'default' }}
+        onClick={(e) => {
+          if (onNavigate) {
+            e.stopPropagation();
+            onNavigate('containers');
+          }
+        }}
+      >
         {hasFigures ? (
           <span className="font-mono">
             ↓{Math.round(last.download_mbps)} ↑{Math.round(last.upload_mbps ?? 0)}

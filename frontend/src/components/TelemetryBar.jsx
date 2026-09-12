@@ -545,7 +545,7 @@ export function TelemetryBar({ router, activeRouter, interfaces = [], onNavigate
             publicNetLine,
             // The line's measured speed belongs with its address and its owner.
             activeRouterId
-              ? <SpeedTestBadge key="speedtest" routerId={activeRouterId} />
+              ? <SpeedTestBadge key="speedtest" routerId={activeRouterId} onNavigate={onNavigate} />
               : null,
             !router.public_ip && !router.isp ? (router.version || '') : null
           ]}

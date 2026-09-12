@@ -1119,6 +1119,16 @@ func TestRouterSubresourceEndpoints(t *testing.T) {
 	if wCont.Code != http.StatusOK {
 		t.Fatalf("expected 200 for containers list, got %d", wCont.Code)
 	}
+	var contResp struct {
+		Success bool                 `json:"success"`
+		Data    ContainerOverviewDTO `json:"data"`
+	}
+	if err := json.Unmarshal(wCont.Body.Bytes(), &contResp); err != nil {
+		t.Fatalf("failed to unmarshal containers response: %v", err)
+	}
+	if contResp.Data.Support.Status == "" {
+		t.Fatalf("expected non-empty support.status in containers response, got empty (body: %s)", wCont.Body.String())
+	}
 
 	reqStorage := httptest.NewRequest(http.MethodGet, "/api/v1/routers/"+rIDStr+"/containers/storage", nil)
 	reqStorage.AddCookie(sessionCookie)

@@ -149,7 +149,9 @@ func (h *LogHandler) GetLogs(w http.ResponseWriter, r *http.Request) {
 					if hideSelfApi {
 						if strings.Contains(mLower, "logged in") || strings.Contains(mLower, "logged out") || strings.Contains(mLower, "login failure") ||
 							strings.Contains(mLower, "by api:rest") || strings.Contains(mLower, "by api@") || strings.Contains(mLower, "by api:") ||
-							strings.Contains(mLower, "by api") || strings.Contains(mLower, "api:rest@") {
+							strings.Contains(mLower, "by api") || strings.Contains(mLower, "api:rest@") ||
+							strings.Contains(mLower, "via api") || strings.Contains(mLower, "via rest-api") || strings.Contains(mLower, "user rest") ||
+							strings.Contains(mLower, "rest-api") {
 							continue
 						}
 					}
@@ -214,7 +216,7 @@ func (h *LogHandler) GetLogs(w http.ResponseWriter, r *http.Request) {
 		args = append(args, severityFilter)
 	}
 	if hideSelfApi {
-		where = append(where, "(message NOT LIKE '%logged in%' AND message NOT LIKE '%logged out%' AND message NOT LIKE '%login failure%' AND message NOT LIKE '%by api:rest%' AND message NOT LIKE '%by api@%' AND message NOT LIKE '%by api:%' AND message NOT LIKE '%by api %' AND message NOT LIKE '%api:rest@%')")
+		where = append(where, "(message NOT LIKE '%logged in%' AND message NOT LIKE '%logged out%' AND message NOT LIKE '%login failure%' AND message NOT LIKE '%by api:rest%' AND message NOT LIKE '%by api@%' AND message NOT LIKE '%by api:%' AND message NOT LIKE '%by api %' AND message NOT LIKE '%api:rest@%' AND message NOT LIKE '%via api%' AND message NOT LIKE '%via rest-api%' AND message NOT LIKE '%user rest%' AND message NOT LIKE '%rest-api%')")
 	}
 	if hideContainerLogs {
 		where = append(where, "NOT (topics LIKE '%container%' AND message LIKE '%mikroman%')")
@@ -362,31 +364,43 @@ func (h *LogHandler) GetLogStats(w http.ResponseWriter, r *http.Request) {
 	var stats RouterLogStatsDTO
 	stats.RouterID = rID
 
-	var query string
-	var args []interface{}
-	if rID > 0 {
-		query = `
-			SELECT
-				COUNT(*),
-				COALESCE(SUM(CASE WHEN severity = 'critical' THEN 1 ELSE 0 END), 0),
-				COALESCE(SUM(CASE WHEN severity = 'error' THEN 1 ELSE 0 END), 0),
-				COALESCE(SUM(CASE WHEN severity = 'warning' THEN 1 ELSE 0 END), 0),
-				COALESCE(SUM(CASE WHEN category = 'auth' AND severity IN ('critical', 'error') THEN 1 ELSE 0 END), 0)
-			FROM router_logs
-			WHERE router_id = ?
-		`
-		args = append(args, rID)
-	} else {
-		query = `
-			SELECT
-				COUNT(*),
-				COALESCE(SUM(CASE WHEN severity = 'critical' THEN 1 ELSE 0 END), 0),
-				COALESCE(SUM(CASE WHEN severity = 'error' THEN 1 ELSE 0 END), 0),
-				COALESCE(SUM(CASE WHEN severity = 'warning' THEN 1 ELSE 0 END), 0),
-				COALESCE(SUM(CASE WHEN category = 'auth' AND severity IN ('critical', 'error') THEN 1 ELSE 0 END), 0)
-			FROM router_logs
-		`
+	sinceStr := strings.TrimSpace(r.URL.Query().Get("since"))
+	var cutoff time.Time
+	if sinceStr != "" {
+		// Try parsing ISO8601 / RFC3339 formats
+		if t, err := time.Parse(time.RFC3339Nano, sinceStr); err == nil {
+			cutoff = t.UTC()
+		} else if t, err := time.Parse(time.RFC3339, sinceStr); err == nil {
+			cutoff = t.UTC()
+		} else if t, err := time.Parse("2006-01-02 15:04:05", sinceStr); err == nil {
+			cutoff = t.UTC()
+		}
 	}
+	if cutoff.IsZero() {
+		// Default to trailing 24 hours
+		cutoff = time.Now().UTC().Add(-24 * time.Hour)
+	}
+
+	cutoffStr := cutoff.Format("2006-01-02 15:04:05")
+
+	where := []string{"timestamp >= ?"}
+	args := []interface{}{cutoffStr}
+
+	if rID > 0 {
+		where = append(where, "router_id = ?")
+		args = append(args, rID)
+	}
+
+	query := fmt.Sprintf(`
+		SELECT
+			COUNT(*),
+			COALESCE(SUM(CASE WHEN severity = 'critical' THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN severity = 'error' THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN severity = 'warning' THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN category = 'auth' AND severity IN ('critical', 'error') THEN 1 ELSE 0 END), 0)
+		FROM router_logs
+		WHERE %s
+	`, strings.Join(where, " AND "))
 
 	_ = h.database.SqlDB.QueryRow(query, args...).Scan(
 		&stats.TotalLogs,

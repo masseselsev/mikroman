@@ -99,3 +99,27 @@ describe('DeviceInbox manual merge', () => {
     expect(screen.queryByRole('button', { name: /^Merge$/ })).toBeNull();
   });
 });
+
+describe('DeviceInbox hidden devices toggle', () => {
+  const hiddenDevice = {
+    id: 8,
+    mac_address: '2A:FB:3A:9D:D2:2D',
+    ip_address: '192.168.88.56',
+    hostname: 'Smart-Plug-Hidden',
+    is_active: true,
+    is_hidden: true,
+    history: [],
+  };
+
+  it('hides is_hidden devices by default and reveals them when toggle is checked', async () => {
+    renderInbox({ devices: [unassigned[0], hiddenDevice] });
+    expect(screen.queryByText('Smart-Plug-Hidden')).toBeNull();
+    expect(screen.getByText('Pixel-9-Pro-XL')).toBeInTheDocument();
+
+    const checkbox = screen.getByRole('checkbox', { name: /show hidden|скрытые устр/i });
+    fireEvent.click(checkbox);
+
+    expect(await screen.findByText('Smart-Plug-Hidden')).toBeInTheDocument();
+  });
+});
+

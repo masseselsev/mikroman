@@ -194,11 +194,11 @@ func (h *ConnectionsHandler) GetLiveConnections(w http.ResponseWriter, r *http.R
 	protoFilter := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("protocol")))
 	searchFilter := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("search")))
 
-	limit := 250
+	limit := 500
 	if l := r.URL.Query().Get("limit"); l != "" {
 		if val, err := strconv.Atoi(l); err == nil && val > 0 {
-			if val > 1000 {
-				limit = 1000
+			if val > 2500 {
+				limit = 2500
 			} else {
 				limit = val
 			}
@@ -244,8 +244,25 @@ func (h *ConnectionsHandler) GetLiveConnections(w http.ResponseWriter, r *http.R
 		dstIP, dstPort := splitEndpoint(c.DstAddress)
 		proto := strings.ToLower(c.Protocol)
 
-		if protoFilter != "" && proto != protoFilter {
-			continue
+		if protoFilter != "" {
+			switch protoFilter {
+			case "web":
+				isWeb := (srcPort != nil && (*srcPort == 80 || *srcPort == 443 || *srcPort == 8080 || *srcPort == 8443)) ||
+					(dstPort != nil && (*dstPort == 80 || *dstPort == 443 || *dstPort == 8080 || *dstPort == 8443))
+				if !isWeb {
+					continue
+				}
+			case "dns":
+				isDNS := (srcPort != nil && (*srcPort == 53 || *srcPort == 853)) ||
+					(dstPort != nil && (*dstPort == 53 || *dstPort == 853))
+				if !isDNS {
+					continue
+				}
+			default:
+				if proto != protoFilter {
+					continue
+				}
+			}
 		}
 
 		// Device / User attribution
