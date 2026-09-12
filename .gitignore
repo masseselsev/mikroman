@@ -16,3 +16,4 @@ frontend/dist/
 
 # Local development compose overrides
 docker-compose.override.yml
+.continue/

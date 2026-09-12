@@ -359,6 +359,7 @@ export function App() {
     setUsers([]);
     setUnassignedDevices([]);
     setAlerts([]);
+    setInterfaces([]);
     setIsLoading(true);
     try {
       await api.activateRouter(routerObj.id);
@@ -665,9 +666,10 @@ export function App() {
           <TrafficAnalytics activeRouter={activeRouter} />
         )}
 
-        {/* Tab Content: RouterOS Containers */}
+        {/* Tab Content: Live Connections */}
         {activeTab === 'connections' && (
           <LiveConnectionsModal
+            key={activeRouter?.id || 'default'}
             isOpen
             inline
             initialRouterId={activeRouter?.id}
@@ -698,7 +700,7 @@ export function App() {
         {activeTab === 'health' && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
             {/* Interactive Hardware & Bandwidth Charts */}
-            <MetricCharts activeRouterId={activeRouter?.id} />
+            <MetricCharts key={activeRouter?.id || 'default'} activeRouterId={activeRouter?.id} />
 
             <div>
               {/* Collapsed by default: on a router with a dozen ports this is
@@ -911,6 +913,7 @@ export function App() {
 
       {/* Live Connections Modal */}
       <LiveConnectionsModal
+        key={`modal-${connectionsDeviceId || 'all'}-${activeRouter?.id || 'default'}`}
         isOpen={connectionsModalOpen}
         initialDeviceId={connectionsDeviceId}
         initialRouterId={activeRouter?.id}

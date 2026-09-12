@@ -144,6 +144,30 @@ func (c *Client) GetImmuneIPs() map[string]bool {
 	return res
 }
 
+// Matches returns true if this client connects to the specified host and port.
+func (c *Client) Matches(host string, port int) bool {
+	if c == nil {
+		return false
+	}
+	return c.cfg.Host == host && c.cfg.Port == port
+}
+
+// Host returns the configured router host.
+func (c *Client) Host() string {
+	if c == nil {
+		return ""
+	}
+	return c.cfg.Host
+}
+
+// Port returns the configured router port.
+func (c *Client) Port() int {
+	if c == nil {
+		return 0
+	}
+	return c.cfg.Port
+}
+
 // AddImmuneIP dynamically whitelists an IP from blocking.
 func (c *Client) AddImmuneIP(ip string) {
 	c.immuneMu.Lock()

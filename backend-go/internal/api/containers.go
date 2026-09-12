@@ -28,15 +28,8 @@ func (h *ContainerHandler) getRouterClient(ctx context.Context, routerID int) (*
 	if err != nil || router == nil {
 		return nil, nil, err
 	}
-	defaultRouter, _ := h.database.GetDefaultRouter()
-	if defaultRouter != nil && defaultRouter.ID == routerID && h.client != nil {
+	if h.client != nil && h.client.Matches(router.Host, router.Port) {
 		return h.client, router, nil
-	}
-	if defaultRouter == nil && h.client != nil {
-		routers, _ := h.database.GetRouters()
-		if len(routers) <= 1 {
-			return h.client, router, nil
-		}
 	}
 
 	c, err := routeros.NewClient(routeros.Config{

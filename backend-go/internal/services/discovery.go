@@ -27,6 +27,8 @@ func NewDiscoveryService(database *db.DB, client *routeros.Client, hub EventBroa
 	if client != nil {
 		if def, err := database.GetDefaultRouter(); err == nil && def != nil {
 			clients[def.ID] = client
+		} else if routers, err := database.GetRouters(); err == nil && len(routers) == 1 {
+			clients[routers[0].ID] = client
 		}
 	}
 	return &DiscoveryService{
@@ -45,25 +47,17 @@ func (s *DiscoveryService) getClient(routerID int) (*routeros.Client, error) {
 		return c, nil
 	}
 
-	defaultRouter, _ := s.database.GetDefaultRouter()
-	if defaultRouter != nil && defaultRouter.ID == routerID && s.client != nil {
-		s.clients[routerID] = s.client
-		return s.client, nil
-	}
-	if defaultRouter == nil && s.client != nil {
-		routers, _ := s.database.GetRouters()
-		if len(routers) <= 1 {
-			s.clients[routerID] = s.client
-			return s.client, nil
-		}
-	}
-
 	router, err := s.database.GetRouter(routerID)
 	if err != nil {
 		return nil, err
 	}
 	if router == nil {
 		return nil, fmt.Errorf("router %d not found", routerID)
+	}
+
+	if s.client != nil && s.client.Matches(router.Host, router.Port) {
+		s.clients[routerID] = s.client
+		return s.client, nil
 	}
 
 	newClient, err := routeros.NewClient(routeros.Config{
@@ -277,6 +271,11 @@ func (s *DiscoveryService) SyncDevices(ctx context.Context, routerID int) (int, 
 
 		if info.IP != "" {
 			info.IP = strings.TrimSpace(strings.Split(info.IP, "/")[0])
+			// If another device on this router previously held this exact IP address, clear that old device's IP so two devices don't both claim the same IP
+			_, _ = s.database.SqlDB.Exec(`
+				UPDATE devices SET ip_address = NULL
+				WHERE router_id = ? AND ip_address = ? AND mac_address != ?
+			`, routerID, info.IP, mac)
 		}
 
 		if existing == nil {
@@ -297,7 +296,7 @@ func (s *DiscoveryService) SyncDevices(ctx context.Context, routerID int) (int, 
 				`, devID, mac, info.Hostname, info.IP)
 			}
 		} else {
-			// Update existing device
+			// Update existing device; reactivate if previously deleted
 			_, _ = s.database.SqlDB.Exec(`
 				UPDATE devices SET
 					router_id = coalesce(?, router_id),
@@ -305,9 +304,33 @@ func (s *DiscoveryService) SyncDevices(ctx context.Context, routerID int) (int, 
 					hostname = coalesce(nullif(?, ''), hostname),
 					last_interface = coalesce(nullif(?, ''), last_interface),
 					is_active = 1,
+					is_deleted = 0,
 					last_seen = CURRENT_TIMESTAMP
 				WHERE id = ?
 			`, routerID, nullIfEmpty(info.IP), nullIfEmpty(info.Hostname), nullIfEmpty(info.Interface), existing.ID)
+		}
+	}
+
+	// Inactivate devices belonging to this router that were not seen in this sweep
+	if len(discovered) > 0 {
+		rows, err := s.database.SqlDB.Query(`SELECT id, mac_address, is_active FROM devices WHERE router_id = ? AND is_deleted = 0`, routerID)
+		if err == nil {
+			var inactivateIDs []int
+			for rows.Next() {
+				var id int
+				var devMAC string
+				var isActive int
+				if err := rows.Scan(&id, &devMAC, &isActive); err == nil {
+					if isActive == 1 && discovered[devMAC] == nil {
+						inactivateIDs = append(inactivateIDs, id)
+					}
+				}
+			}
+			_ = rows.Close()
+
+			for _, devID := range inactivateIDs {
+				_, _ = s.database.SqlDB.Exec(`UPDATE devices SET is_active = 0 WHERE id = ?`, devID)
+			}
 		}
 	}
 

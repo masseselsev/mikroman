@@ -24,6 +24,8 @@ func NewLogScraperService(database *db.DB, client *routeros.Client) *LogScraperS
 	if client != nil {
 		if def, err := database.GetDefaultRouter(); err == nil && def != nil {
 			clients[def.ID] = client
+		} else if routers, err := database.GetRouters(); err == nil && len(routers) == 1 {
+			clients[routers[0].ID] = client
 		}
 	}
 	return &LogScraperService{
@@ -41,25 +43,23 @@ func (s *LogScraperService) getClient(routerID int) (*routeros.Client, error) {
 		return c, nil
 	}
 
-	defaultRouter, _ := s.database.GetDefaultRouter()
-	if defaultRouter != nil && defaultRouter.ID == routerID && s.client != nil {
-		s.clients[routerID] = s.client
-		return s.client, nil
-	}
-	if defaultRouter == nil && s.client != nil {
-		routers, _ := s.database.GetRouters()
-		if len(routers) <= 1 {
-			s.clients[routerID] = s.client
-			return s.client, nil
-		}
-	}
-
 	router, err := s.database.GetRouter(routerID)
 	if err != nil {
 		return nil, err
 	}
 	if router == nil {
 		return nil, fmt.Errorf("router %d not found", routerID)
+	}
+
+	if c, ok := s.clients[routerID]; ok && c != nil {
+		if c.Matches(router.Host, router.Port) {
+			return c, nil
+		}
+	}
+
+	if s.client != nil && s.client.Matches(router.Host, router.Port) {
+		s.clients[routerID] = s.client
+		return s.client, nil
 	}
 
 	newClient, err := routeros.NewClient(routeros.Config{

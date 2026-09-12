@@ -159,3 +159,13 @@ func TestRouterOSClientEndpoints(t *testing.T) {
 		t.Fatalf("expected host %s in immune IPs: %+v", u.Hostname(), immunes)
 	}
 }
+
+func TestMonitorInterfaceTrafficUnmarshal(t *testing.T) {
+	strJSON := []byte(`[{"name": "ether1", "rx-bits-per-second": "15000000", "tx-bits-per-second": "5000000"}]`)
+	var rates []InterfaceTrafficRate
+	err := unmarshalFlexible(strJSON, &rates)
+	if err != nil {
+		t.Fatalf("Failed to unmarshal string numbers: %v", err)
+	}
+	t.Logf("rates: %+v", rates)
+}
