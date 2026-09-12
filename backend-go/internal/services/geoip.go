@@ -264,6 +264,12 @@ func LookupGeoIP(ipStr string) GeoLocation {
 		}
 	}
 
+	// 1. Query dynamic MMDB database first
+	if loc, ok := LookupMMDB(ip); ok && loc != nil {
+		return *loc
+	}
+
+	// 2. Fall back to static bootstrap table if MMDB is still downloading or unlisted
 	for _, g := range geoTable {
 		if g.network.Contains(ip) {
 			return GeoLocation{

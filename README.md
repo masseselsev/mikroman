@@ -60,7 +60,7 @@
 
 * **🌐 Real-Time Observability, GeoIP World Map & Centralized Logs**:
   * Real-time `/ip/firewall/connection` tracker with device attribution, live socket termination, and crisp vector SVG country flags.
-  * Interactive **SVG World Connections Map** plotting active remote endpoints across smooth continent projections with pulsating nodes, transfer rates, socket counts, and nation-level bandwidth rollups.
+  * Interactive **SVG World Connections Map** plotting active remote endpoints across smooth continent projections with pulsating nodes, transfer rates, socket counts, and nation-level bandwidth rollups, backed by a local **DB-IP Country MMDB engine** with automatic monthly background updates, zero-downtime hot swapping, and sub-microsecond local lookups without third-party API rate limits.
   * Precise SoC hardware identification (`services.ResolveCPUIdentity`) mapping RouterOS board names and product codes to exact processor part numbers (e.g. Qualcomm IPQ-5322).
   * Robust RouterOS container detection supporting both boolean and string serialization, with configuration fallback probing.
   * Centralized terminal log viewer with regex event classification (auth, interface, DHCP, wireless, firewall, system), SQLite history storage up to 50,000 entries, depth selector with full custom manual limits, and self-API mutation filtering (`by api:rest`).

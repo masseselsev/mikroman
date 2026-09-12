@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { api } from '../api/client';
-import { ContainerSetupPanel } from './ContainerSetupPanel';
 import { ContainerWorkloads } from './ContainerWorkloads';
 import { useI18n } from '../context/I18nContext';
 import {
@@ -315,12 +314,6 @@ export function ContainersPage({ activeRouter }) {
             </div>
           </div>
         </div>
-      )}
-
-      {/* Only once the package is ready: the panel writes to a router that is
-          routing, and there is nothing to write to while the feature is off. */}
-      {ready && (
-        <ContainerSetupPanel routerId={routerId} config={config} onDone={load} />
       )}
 
       {error && (
