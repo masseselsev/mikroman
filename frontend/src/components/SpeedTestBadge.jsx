@@ -26,6 +26,8 @@ export function SpeedTestBadge({ routerId, onNavigate }) {
     try {
       const res = await api.getSpeedTestStatus(routerId);
       setStatus(res.data || null);
+      const data = res?.data || res;
+      setStatus(data || null);
     } catch {
       // Unreachable router, or a RouterOS without the container package. The
       // tile is still useful without this, so failure is simply silence.
@@ -42,9 +44,11 @@ export function SpeedTestBadge({ routerId, onNavigate }) {
     setError(null);
     try {
       const res = await api.runSpeedTest(routerId);
-      const result = res.data?.result;
+      const result = res?.data?.result || res?.result;
       if (result && result.status !== 'ok') {
         setError(result.error || t('speedtest_failed'));
+      } else if (result && result.download_mbps != null) {
+        setStatus(prev => ({ ...(prev || {}), last_result: result, can_run: true }));
       }
       await load();
     } catch (err) {

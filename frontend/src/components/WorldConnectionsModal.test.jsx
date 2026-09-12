@@ -132,5 +132,47 @@ describe('WorldConnectionsModal', () => {
     fireEvent.click(closeBtn);
     expect(onClose).toHaveBeenCalledTimes(1);
   });
+
+  it('supports interactive zoom controls', () => {
+    render(<WorldConnectionsModal isOpen={true} onClose={vi.fn()} connections={mockGeoConnections} />);
+
+    expect(screen.getByText('100%')).toBeInTheDocument();
+    const zoomInBtn = screen.getByTitle('Zoom in');
+    fireEvent.click(zoomInBtn);
+
+    expect(screen.getByText('150%')).toBeInTheDocument();
+    const resetBtn = screen.getByTitle('Reset view');
+    expect(resetBtn).toBeInTheDocument();
+
+    fireEvent.click(resetBtn);
+    expect(screen.getByText('100%')).toBeInTheDocument();
+  });
+
+  it('pins unknown UN connections to Antarctica', () => {
+    const unConnections = [
+      {
+        id: '*99',
+        src_ip: '192.168.88.50',
+        dst_ip: '198.51.100.99',
+        country_code: 'UN',
+        country_name: 'Global Internet',
+        lat: 20.0, // even if payload reports 20, UI overrides to -78
+        lng: 0.0,
+      },
+    ];
+    render(<WorldConnectionsModal isOpen={true} onClose={vi.fn()} connections={unConnections} />);
+
+    const unNode = screen.getByTestId('map-node-UN');
+    expect(unNode).toBeInTheDocument();
+
+    // In project(lat, lng):
+    // x = ((0 + 180)/360) * 1000 = 500
+    // y = ((90 - (-78))/180) * 500 = 466.67
+    const circle = unNode.querySelector('circle[stroke="#ffffff"]');
+    expect(circle).toBeInTheDocument();
+    expect(circle.getAttribute('cx')).toBe('500');
+    expect(Number(circle.getAttribute('cy'))).toBeCloseTo(466.67, 1);
+  });
 });
+
 

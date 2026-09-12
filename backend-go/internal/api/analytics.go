@@ -621,6 +621,58 @@ func (h *AnalyticsHandler) GetTrafficOverview(w http.ResponseWriter, r *http.Req
 		}
 	}
 
+	// Fallback to interface_metrics if rollups are still empty
+	if len(ifaceMap) == 0 {
+		var mQuery string
+		var mArgs []interface{}
+		if routerID != nil {
+			mQuery = `SELECT interface_name, MAX(rx_bytes_total) - MIN(rx_bytes_total), MAX(tx_bytes_total) - MIN(tx_bytes_total) FROM interface_metrics WHERE router_id = ? AND timestamp >= ? AND timestamp <= ? GROUP BY interface_name`
+			mArgs = []interface{}{*routerID, startDateStr + " 00:00:00", endDateStr + " 23:59:59"}
+		} else {
+			mQuery = `SELECT interface_name, MAX(rx_bytes_total) - MIN(rx_bytes_total), MAX(tx_bytes_total) - MIN(tx_bytes_total) FROM interface_metrics WHERE timestamp >= ? AND timestamp <= ? GROUP BY interface_name`
+			mArgs = []interface{}{startDateStr + " 00:00:00", endDateStr + " 23:59:59"}
+		}
+		if mRows, mErr := h.database.SqlDB.Query(mQuery, mArgs...); mErr == nil {
+			defer mRows.Close()
+			for mRows.Next() {
+				var iName string
+				var bIn, bOut int64
+				if err := mRows.Scan(&iName, &bIn, &bOut); err == nil {
+					if bIn < 0 {
+						bIn = 0
+					}
+					if bOut < 0 {
+						bOut = 0
+					}
+					if bIn > 0 || bOut > 0 {
+						ifaceMap[iName] = [2]int64{bIn, bOut}
+					}
+				}
+			}
+		}
+	}
+	// Fallback to latest sample for known interfaces if still empty
+	if len(ifaceMap) == 0 {
+		var lQuery string
+		var lArgs []interface{}
+		if routerID != nil {
+			lQuery = `SELECT interface_name, MAX(rx_bytes_total), MAX(tx_bytes_total) FROM interface_metrics WHERE router_id = ? GROUP BY interface_name`
+			lArgs = []interface{}{*routerID}
+		} else {
+			lQuery = `SELECT interface_name, MAX(rx_bytes_total), MAX(tx_bytes_total) FROM interface_metrics GROUP BY interface_name`
+		}
+		if lRows, lErr := h.database.SqlDB.Query(lQuery, lArgs...); lErr == nil {
+			defer lRows.Close()
+			for lRows.Next() {
+				var iName string
+				var bIn, bOut int64
+				if err := lRows.Scan(&iName, &bIn, &bOut); err == nil {
+					ifaceMap[iName] = [2]int64{bIn, bOut}
+				}
+			}
+		}
+	}
+
 	var interfacesList []InterfaceTrafficSummary
 	monSet := make(map[string]bool)
 	for _, m := range monitoredList {
@@ -634,7 +686,7 @@ func (h *AnalyticsHandler) GetTrafficOverview(w http.ResponseWriter, r *http.Req
 		}
 		interfacesList = append(interfacesList, InterfaceTrafficSummary{
 			InterfaceName: iName,
-			IsTunnel:      strings.HasPrefix(iName, "wg") || strings.HasPrefix(iName, "zt") || strings.HasPrefix(iName, "ovpn"),
+			IsTunnel:      isTunnelInterface(iName),
 			IsMonitored:   monSet[iName],
 			BytesIn:       v[0],
 			BytesOut:      v[1],
@@ -644,6 +696,19 @@ func (h *AnalyticsHandler) GetTrafficOverview(w http.ResponseWriter, r *http.Req
 			AllTimeBytes:  iTotal,
 		})
 	}
+
+	sort.Slice(interfacesList, func(i, j int) bool {
+		// Tunnels (WireGuard, ZeroTier, etc.) first
+		if interfacesList[i].IsTunnel != interfacesList[j].IsTunnel {
+			return interfacesList[i].IsTunnel
+		}
+		// Then monitored WAN interfaces
+		if interfacesList[i].IsMonitored != interfacesList[j].IsMonitored {
+			return interfacesList[i].IsMonitored
+		}
+		// Highest volume first
+		return interfacesList[i].TotalBytes > interfacesList[j].TotalBytes
+	})
 
 	// Accounting health & coverage
 	healthStatus := "ok"
@@ -1609,4 +1674,15 @@ type UserDestinationStatItem struct {
 
 func (h *AnalyticsHandler) UserDestinations(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, []UserDestinationStatItem{})
+}
+
+func isTunnelInterface(name string) bool {
+	n := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(name, "<")))
+	prefixes := []string{"wg", "wireguard", "zt", "zerotier", "gre", "eoip", "l2tp", "pptp", "sstp", "ovpn", "tun", "tap", "ipip", "6to4", "vxlan", "vpn"}
+	for _, p := range prefixes {
+		if strings.HasPrefix(n, p) {
+			return true
+		}
+	}
+	return false
 }

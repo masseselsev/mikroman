@@ -151,6 +151,7 @@ type SimpleQueue struct {
 	LimitAt    string       `json:"limit-at,omitempty"`
 	Priority   string       `json:"priority,omitempty"`
 	Disabled   FlexibleBool `json:"disabled,omitempty"`
+	Parent     string       `json:"parent,omitempty"`
 	Comment    string       `json:"comment,omitempty"`
 	Bytes      string       `json:"bytes,omitempty"` // "upload/download" cumulative
 	TotalBytes string       `json:"total-bytes,omitempty"`
@@ -188,6 +189,7 @@ type FirewallConnection struct {
 	OrigBytes       FlexibleInt64 `json:"orig-bytes,omitempty"`
 	ReplBytes       FlexibleInt64 `json:"repl-bytes,omitempty"`
 	Timeout         string        `json:"timeout,omitempty"`
+	FastTrack       FlexibleBool  `json:"fasttrack,omitempty"`
 }
 
 // FilterRule represents /ip/firewall/filter

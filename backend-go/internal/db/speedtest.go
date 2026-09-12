@@ -7,16 +7,23 @@ import (
 
 // InsertSpeedTestResult stores a newly completed or timed out speed test run.
 func (db *DB) InsertSpeedTestResult(res *SpeedTestResult) error {
+	now := res.CreatedAt
+	if now.IsZero() {
+		now = time.Now().UTC()
+		res.CreatedAt = now
+	}
+
 	query := `
 		INSERT INTO speed_test_results (
-			router_id, download_mbps, upload_mbps, ping_ms, jitter_ms,
+			router_id, created_at, download_mbps, upload_mbps, ping_ms, jitter_ms,
 			packet_loss_pct, server_name, isp, result_url, status, error, raw_output
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
 
 	row, err := db.SqlDB.Exec(
 		query,
 		res.RouterID,
+		now,
 		res.DownloadMbps,
 		res.UploadMbps,
 		res.PingMs,

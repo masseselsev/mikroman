@@ -178,8 +178,10 @@ export function TelemetryBar({ router, activeRouter, interfaces = [], onNavigate
   const { t } = useI18n();
   const { speedUnit } = useSpeedUnit();
   const [modalOpen, setModalOpen] = useState(false);
+  const [modalTab, setModalTab] = useState('wan');
   const [availableIfaces, setAvailableIfaces] = useState([]);
   const [selectedIfaces, setSelectedIfaces] = useState([]);
+  const [ignoredDiscoveryIfaces, setIgnoredDiscoveryIfaces] = useState([]);
   const [isSaving, setIsSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
 
@@ -258,6 +260,9 @@ export function TelemetryBar({ router, activeRouter, interfaces = [], onNavigate
           if (res?.data?.selected_interfaces) {
             setSelectedIfaces(res.data.selected_interfaces);
           }
+          if (res?.data?.ignored_discovery_interfaces) {
+            setIgnoredDiscoveryIfaces(res.data.ignored_discovery_interfaces);
+          }
         })
         .catch(() => {});
     }
@@ -266,14 +271,16 @@ export function TelemetryBar({ router, activeRouter, interfaces = [], onNavigate
   const openConfigModal = async () => {
     setModalOpen(true);
     setSaveSuccess(false);
+    setModalTab('wan');
     try {
       const [ifacesRes, cfgRes] = await Promise.all([
         api.getAvailableInterfaces(activeRouter?.id).catch(() => ({ data: [] })),
-        api.getMonitoredInterfacesConfig(activeRouter?.id).catch(() => ({ data: { selected_interfaces: [] } }))
+        api.getMonitoredInterfacesConfig(activeRouter?.id).catch(() => ({ data: { selected_interfaces: [], ignored_discovery_interfaces: [] } }))
       ]);
       const list = ifacesRes.data || interfaces || [];
       setAvailableIfaces(list);
       setSelectedIfaces(cfgRes.data?.selected_interfaces || []);
+      setIgnoredDiscoveryIfaces(cfgRes.data?.ignored_discovery_interfaces || []);
     } catch (err) {
       console.error('Failed to load interfaces config', err);
     }
@@ -281,6 +288,12 @@ export function TelemetryBar({ router, activeRouter, interfaces = [], onNavigate
 
   const handleToggleIface = (name) => {
     setSelectedIfaces(prev =>
+      prev.includes(name) ? prev.filter(n => n !== name) : [...prev, name]
+    );
+  };
+
+  const handleToggleIgnoredIface = (name) => {
+    setIgnoredDiscoveryIfaces(prev =>
       prev.includes(name) ? prev.filter(n => n !== name) : [...prev, name]
     );
   };
@@ -313,7 +326,7 @@ export function TelemetryBar({ router, activeRouter, interfaces = [], onNavigate
   const handleSave = async () => {
     setIsSaving(true);
     try {
-      await api.saveMonitoredInterfacesConfig(activeRouter?.id, selectedIfaces);
+      await api.saveMonitoredInterfacesConfig(activeRouter?.id, selectedIfaces, ignoredDiscoveryIfaces);
       setSaveSuccess(true);
       setTimeout(() => {
         setModalOpen(false);
@@ -566,69 +579,161 @@ export function TelemetryBar({ router, activeRouter, interfaces = [], onNavigate
               </button>
             </div>
 
-            <div className="modal-body">
-              <p style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-muted)', marginBottom: 14, lineHeight: 1.4 }}>
-                {t('gateway_ifaces_desc')}
-              </p>
+            <div style={{ display: 'flex', borderBottom: '1px solid var(--border-color)', background: 'var(--bg-secondary)', padding: '0 16px' }}>
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                style={{
+                  borderRadius: 0,
+                  borderBottom: modalTab === 'wan' ? '2px solid var(--color-primary)' : '2px solid transparent',
+                  color: modalTab === 'wan' ? 'var(--color-primary)' : 'var(--text-secondary)',
+                  fontWeight: modalTab === 'wan' ? 700 : 500,
+                  padding: '8px 12px'
+                }}
+                onClick={() => setModalTab('wan')}
+              >
+                {t('tab_wan_ifaces')} ({selectedIfaces.length})
+              </button>
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                style={{
+                  borderRadius: 0,
+                  borderBottom: modalTab === 'discovery' ? '2px solid var(--color-primary)' : '2px solid transparent',
+                  color: modalTab === 'discovery' ? 'var(--color-primary)' : 'var(--text-secondary)',
+                  fontWeight: modalTab === 'discovery' ? 700 : 500,
+                  padding: '8px 12px'
+                }}
+                onClick={() => setModalTab('discovery')}
+              >
+                {t('tab_discovery_ifaces')} ({ignoredDiscoveryIfaces.length})
+              </button>
+            </div>
 
-              {/* Interface list. Tick the interface(s) that face the internet;
-                  a VLAN or PPPoE link is shown nested under the port it runs
-                  on. The selected set is what the WAN counters sum over. */}
-              <div className="list-box" style={{ maxHeight: 280 }}>
-                {availableIfaces.length === 0 ? (
-                  <div className="empty-note">{t('loading_interfaces')}</div>
-                ) : (
-                  nestedIfaces.map(({ iface, depth }) => {
-                    const isChecked = selectedIfaces.includes(iface.name);
-                    return (
-                      <div
-                        key={iface.name}
-                        className={`list-row${isChecked ? ' is-selected' : ''}`}
-                        onClick={() => handleToggleIface(iface.name)}
-                      >
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0, paddingLeft: depth * 20 }}>
-                          {depth > 0 && (
-                            <span style={{ color: 'var(--text-muted)', flexShrink: 0, marginLeft: -14 }}>↳</span>
-                          )}
-                          <input
-                            type="checkbox"
-                            checked={isChecked}
-                            readOnly
-                            style={{ cursor: 'pointer', pointerEvents: 'none' }}
-                          />
-                          <span style={{
-                            width: 8,
-                            height: 8,
-                            borderRadius: 'var(--radius-full)',
-                            background: iface.running ? 'var(--color-success)' : 'var(--text-muted)',
-                            flexShrink: 0
-                          }} />
-                          <span className="truncate" style={{ fontWeight: isChecked ? 700 : 500 }}>{iface.name}</span>
-                          {/* The WAN badge marks the admin's choice, nothing
-                              else: it appears only on ticked rows. */}
-                          {isChecked && (
-                            <span
-                              className="badge badge-primary"
-                              style={{ fontSize: 'var(--fs-3xs)', padding: '1px 5px', flexShrink: 0 }}
-                              title={t('wan_iface_hint')}
-                            >
-                              {t('wan_label')}
+            <div className="modal-body">
+              {modalTab === 'wan' ? (
+                <>
+                  <p style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-muted)', marginBottom: 14, lineHeight: 1.4 }}>
+                    {t('gateway_ifaces_desc')}
+                  </p>
+
+                  {/* Interface list. Tick the interface(s) that face the internet;
+                      a VLAN or PPPoE link is shown nested under the port it runs
+                      on. The selected set is what the WAN counters sum over. */}
+                  <div className="list-box" style={{ maxHeight: 280 }}>
+                    {availableIfaces.length === 0 ? (
+                      <div className="empty-note">{t('loading_interfaces')}</div>
+                    ) : (
+                      nestedIfaces.map(({ iface, depth }) => {
+                        const isChecked = selectedIfaces.includes(iface.name);
+                        return (
+                          <div
+                            key={iface.name}
+                            className={`list-row${isChecked ? ' is-selected' : ''}`}
+                            onClick={() => handleToggleIface(iface.name)}
+                          >
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0, paddingLeft: depth * 20 }}>
+                              {depth > 0 && (
+                                <span style={{ color: 'var(--text-muted)', flexShrink: 0, marginLeft: -14 }}>↳</span>
+                              )}
+                              <input
+                                type="checkbox"
+                                checked={isChecked}
+                                readOnly
+                                style={{ cursor: 'pointer', pointerEvents: 'none' }}
+                              />
+                              <span style={{
+                                width: 8,
+                                height: 8,
+                                borderRadius: 'var(--radius-full)',
+                                background: iface.running ? 'var(--color-success)' : 'var(--text-muted)',
+                                flexShrink: 0
+                              }} />
+                              <span className="truncate" style={{ fontWeight: isChecked ? 700 : 500 }}>{iface.name}</span>
+                              {/* The WAN badge marks the admin's choice, nothing
+                                  else: it appears only on ticked rows. */}
+                              {isChecked && (
+                                <span
+                                  className="badge badge-primary"
+                                  style={{ fontSize: 'var(--fs-3xs)', padding: '1px 5px', flexShrink: 0 }}
+                                  title={t('wan_iface_hint')}
+                                >
+                                  {t('wan_label')}
+                                </span>
+                              )}
+                            </div>
+                            <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', flexShrink: 0, display: 'flex', alignItems: 'center', gap: 6 }}>
+                              {/* Routing-table steer, kept as a faint hint so it can
+                                  never be mistaken for the selection itself. */}
+                              {iface.is_wan && !isChecked && (
+                                <span style={{ opacity: 0.7, fontStyle: 'italic' }}>{t('wan_detected_hint')}</span>
+                              )}
+                              <span>{iface.parent ? t('iface_on_parent', { parent: iface.parent }) : (iface.type || 'interface')}</span>
                             </span>
-                          )}
-                        </div>
-                        <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', flexShrink: 0, display: 'flex', alignItems: 'center', gap: 6 }}>
-                          {/* Routing-table steer, kept as a faint hint so it can
-                              never be mistaken for the selection itself. */}
-                          {iface.is_wan && !isChecked && (
-                            <span style={{ opacity: 0.7, fontStyle: 'italic' }}>{t('wan_detected_hint')}</span>
-                          )}
-                          <span>{iface.parent ? t('iface_on_parent', { parent: iface.parent }) : (iface.type || 'interface')}</span>
-                        </span>
-                      </div>
-                    );
-                  })
-                )}
-              </div>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+                </>
+              ) : (
+                <>
+                  <p style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-muted)', marginBottom: 14, lineHeight: 1.4 }}>
+                    {t('discovery_ifaces_desc')}
+                  </p>
+
+                  <div className="list-box" style={{ maxHeight: 280 }}>
+                    {availableIfaces.length === 0 ? (
+                      <div className="empty-note">{t('loading_interfaces')}</div>
+                    ) : (
+                      nestedIfaces.map(({ iface, depth }) => {
+                        const isChecked = ignoredDiscoveryIfaces.includes(iface.name);
+                        return (
+                          <div
+                            key={iface.name}
+                            className={`list-row${isChecked ? ' is-selected' : ''}`}
+                            onClick={() => handleToggleIgnoredIface(iface.name)}
+                          >
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0, paddingLeft: depth * 20 }}>
+                              {depth > 0 && (
+                                <span style={{ color: 'var(--text-muted)', flexShrink: 0, marginLeft: -14 }}>↳</span>
+                              )}
+                              <input
+                                type="checkbox"
+                                checked={isChecked}
+                                readOnly
+                                style={{ cursor: 'pointer', pointerEvents: 'none' }}
+                              />
+                              <span style={{
+                                width: 8,
+                                height: 8,
+                                borderRadius: 'var(--radius-full)',
+                                background: iface.running ? 'var(--color-success)' : 'var(--text-muted)',
+                                flexShrink: 0
+                              }} />
+                              <span className="truncate" style={{ fontWeight: isChecked ? 700 : 500 }}>{iface.name}</span>
+                              {isChecked && (
+                                <span
+                                  className="badge badge-warning"
+                                  style={{ fontSize: 'var(--fs-3xs)', padding: '1px 5px', flexShrink: 0 }}
+                                >
+                                  {t('discovery_excluded_badge')}
+                                </span>
+                              )}
+                            </div>
+                            <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', flexShrink: 0, display: 'flex', alignItems: 'center', gap: 6 }}>
+                              {iface.is_tunnel && (
+                                <span style={{ opacity: 0.8, fontStyle: 'italic' }}>{t('auto_excluded_hint')}</span>
+                              )}
+                              <span>{iface.parent ? t('iface_on_parent', { parent: iface.parent }) : (iface.type || 'interface')}</span>
+                            </span>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+                </>
+              )}
             </div>
 
             <div className="modal-footer">

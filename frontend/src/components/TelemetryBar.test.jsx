@@ -12,6 +12,7 @@ vi.mock('../api/client', () => ({
     getSettings: vi.fn(),
     getMonitoredInterfacesConfig: vi.fn(),
     getAvailableInterfaces: vi.fn(),
+    saveMonitoredInterfacesConfig: vi.fn(),
     getLatestSpeedTest: vi.fn(),
     getSpeedTestHistory: vi.fn(),
   },
@@ -22,8 +23,20 @@ vi.mock('../api/client', () => ({
 beforeEach(() => {
   api.getIpLookup.mockResolvedValue({ data: { services: [], default_id: null } });
   api.getSettings.mockResolvedValue({ data: {} });
-  api.getMonitoredInterfacesConfig.mockResolvedValue({ data: { selected_interfaces: [] } });
-  api.getAvailableInterfaces.mockResolvedValue({ data: [] });
+  api.getMonitoredInterfacesConfig.mockResolvedValue({
+    data: {
+      selected_interfaces: ['ether1'],
+      ignored_discovery_interfaces: ['zerotier1']
+    }
+  });
+  api.getAvailableInterfaces.mockResolvedValue({
+    data: [
+      { name: 'ether1', type: 'ether', running: true, is_wan: true, is_tunnel: false },
+      { name: 'zerotier1', type: 'zerotier', running: true, is_wan: false, is_tunnel: true },
+      { name: 'ether2', type: 'ether', running: true, is_wan: false, is_tunnel: false }
+    ]
+  });
+  api.saveMonitoredInterfacesConfig.mockResolvedValue({ data: { success: true } });
   api.getLatestSpeedTest.mockResolvedValue({ data: null });
   api.getSpeedTestHistory.mockResolvedValue({ data: [] });
 });
@@ -197,5 +210,55 @@ describe('TelemetryBar tile density', () => {
       (el) => el.textContent.includes('203.0.113.9') && el.textContent.includes('Acme Telecom')
     );
     expect(folded, 'public IP and provider should share one sub-line').toBeTruthy();
+  });
+});
+
+describe('TelemetryBar interface modal and discovery exclusion tabs', () => {
+  it('opens interface modal and supports switching between WAN and Discovery Exclusion tabs', async () => {
+    const { fireEvent, waitFor } = await import('@testing-library/react');
+    renderWithProviders(<TelemetryBar router={router} activeRouter={{ id: 1 }} />);
+
+    // Click WAN subline to open modal
+    const wanSublines = screen.getAllByText(/WAN · ether1/);
+    fireEvent.click(wanSublines[0]);
+
+    // Modal title should appear
+    await waitFor(() => {
+      expect(screen.getByText('Network Interfaces')).toBeInTheDocument();
+    });
+
+    // Both tabs should be present
+    const wanTab = screen.getByText(/WAN Uplinks/);
+    const discoveryTab = screen.getByText(/Discovery Exclusion/);
+    expect(wanTab).toBeInTheDocument();
+    expect(discoveryTab).toBeInTheDocument();
+
+    // In WAN tab, description is present
+    expect(screen.getByText(/Tick the interface\(s\) that face the internet/i)).toBeInTheDocument();
+
+    // Switch to Discovery Exclusion tab
+    fireEvent.click(discoveryTab);
+
+    // Discovery exclusion description and badge should appear
+    await waitFor(() => {
+      expect(screen.getByText(/Interfaces excluded from client scanning/i)).toBeInTheDocument();
+    });
+    expect(screen.getByText('Excluded')).toBeInTheDocument();
+
+    // Click ether2 to add it to discovery exclusion
+    const ether2Row = screen.getByText('ether2');
+    fireEvent.click(ether2Row);
+
+    // Save
+    const saveButton = screen.getByRole('button', { name: /Save/i });
+    fireEvent.click(saveButton);
+
+    await waitFor(() => {
+      expect(api.saveMonitoredInterfacesConfig).toHaveBeenCalledWith(
+        1,
+        ['ether1'],
+        expect.arrayContaining(['zerotier1', 'ether2'])
+      );
+    });
   });
 });

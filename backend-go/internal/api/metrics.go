@@ -25,15 +25,18 @@ func NewMetricsHandler(database *db.DB, client *routeros.Client) *MetricsHandler
 }
 
 type MonitoredInterfacesConfigDTO struct {
-	RouterID           *int     `json:"router_id,omitempty"`
-	SelectedInterfaces []string `json:"selected_interfaces"`
+	RouterID                   *int     `json:"router_id,omitempty"`
+	SelectedInterfaces         []string `json:"selected_interfaces"`
+	IgnoredDiscoveryInterfaces []string `json:"ignored_discovery_interfaces"`
 }
 
 func (h *MetricsHandler) GetMonitoredInterfacesConfig(w http.ResponseWriter, r *http.Request) {
 	rID := r.URL.Query().Get("router_id")
 	settingKey := "monitored_interfaces_default"
+	ignKey := "ignored_discovery_interfaces_default"
 	if rID != "" {
 		settingKey = fmt.Sprintf("monitored_interfaces_%s", rID)
+		ignKey = fmt.Sprintf("ignored_discovery_interfaces_%s", rID)
 	}
 
 	val, err := h.database.GetSetting(settingKey)
@@ -45,14 +48,24 @@ func (h *MetricsHandler) GetMonitoredInterfacesConfig(w http.ResponseWriter, r *
 		selected = []string{}
 	}
 
+	ignVal, err := h.database.GetSetting(ignKey)
+	var ignored []string
+	if err == nil && ignVal != "" {
+		_ = json.Unmarshal([]byte(ignVal), &ignored)
+	}
+	if ignored == nil {
+		ignored = []string{}
+	}
+
 	var routerID *int
 	if id, err := strconv.Atoi(rID); err == nil {
 		routerID = &id
 	}
 
 	WriteJSON(w, http.StatusOK, MonitoredInterfacesConfigDTO{
-		RouterID:           routerID,
-		SelectedInterfaces: selected,
+		RouterID:                   routerID,
+		SelectedInterfaces:         selected,
+		IgnoredDiscoveryInterfaces: ignored,
 	})
 }
 
@@ -64,17 +77,37 @@ func (h *MetricsHandler) SaveMonitoredInterfacesConfig(w http.ResponseWriter, r 
 	}
 
 	settingKey := "monitored_interfaces_default"
+	ignKey := "ignored_discovery_interfaces_default"
 	if payload.RouterID != nil {
 		settingKey = fmt.Sprintf("monitored_interfaces_%d", *payload.RouterID)
+		ignKey = fmt.Sprintf("ignored_discovery_interfaces_%d", *payload.RouterID)
 	}
 
-	if payload.SelectedInterfaces == nil {
-		payload.SelectedInterfaces = []string{}
+	if payload.SelectedInterfaces != nil {
+		bytesVal, _ := json.Marshal(payload.SelectedInterfaces)
+		_ = h.database.SetSetting(settingKey, string(bytesVal), "Monitored WAN interfaces")
 	}
-	bytesVal, _ := json.Marshal(payload.SelectedInterfaces)
-	_ = h.database.SetSetting(settingKey, string(bytesVal), "Monitored WAN interfaces")
+
+	if payload.IgnoredDiscoveryInterfaces != nil {
+		ignBytes, _ := json.Marshal(payload.IgnoredDiscoveryInterfaces)
+		_ = h.database.SetSetting(ignKey, string(ignBytes), "Interfaces excluded from device discovery")
+	}
 
 	WriteJSON(w, http.StatusOK, payload)
+}
+
+func isTunnelIface(name, ifaceType string) bool {
+	lower := strings.ToLower(name)
+	tLower := strings.ToLower(ifaceType)
+	return strings.HasPrefix(lower, "zt") || strings.HasPrefix(lower, "zerotier") ||
+		strings.HasPrefix(lower, "wg") || strings.HasPrefix(lower, "wireguard") ||
+		strings.HasPrefix(lower, "ovpn") || strings.HasPrefix(lower, "tun") ||
+		strings.HasPrefix(lower, "tap") || strings.HasPrefix(lower, "gre") ||
+		strings.HasPrefix(lower, "eoip") || strings.HasPrefix(lower, "ppp") ||
+		strings.HasPrefix(lower, "sstp") || strings.HasPrefix(lower, "l2tp") ||
+		strings.HasPrefix(lower, "ipip") || strings.Contains(tLower, "tunnel") ||
+		strings.Contains(tLower, "wireguard") || strings.Contains(tLower, "ovpn") ||
+		strings.Contains(tLower, "ppp")
 }
 
 func (h *MetricsHandler) ListAvailableInterfaces(w http.ResponseWriter, r *http.Request) {
@@ -106,6 +139,7 @@ func (h *MetricsHandler) ListAvailableInterfaces(w http.ResponseWriter, r *http.
 			RxByte:    rx,
 			TxByte:    tx,
 			ActualMTU: iface.ActualMTU,
+			IsTunnel:  isTunnelIface(iface.Name, iface.Type),
 		})
 	}
 	WriteJSON(w, http.StatusOK, dtos)

@@ -279,3 +279,26 @@ func TestTrafficServiceReconcile(t *testing.T) {
 		t.Fatalf("expected 192.0.2.10 and 192.0.2.20 in mikroman_queued, got %+v", queuedIPs)
 	}
 }
+
+func TestFormatRate(t *testing.T) {
+	cases := map[string]string{
+		"15M/15M":   "15M/15M",
+		"11m/11m":   "11M/11M",
+		"15M":       "15M/15M",
+		"15m":       "15M/15M",
+		"15":        "15M/15M",
+		"500k":      "500k/500k",
+		"1g":        "1G/1G",
+		"unlimited": "0/0",
+		"default":   "0/0",
+		"0":         "0/0",
+		"0/0":       "0/0",
+		"":          "0/0",
+	}
+	for in, expected := range cases {
+		out := formatRate(in)
+		if out != expected {
+			t.Errorf("formatRate(%q) = %q; expected %q", in, out, expected)
+		}
+	}
+}

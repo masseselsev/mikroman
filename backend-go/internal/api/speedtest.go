@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -188,12 +189,18 @@ func (h *SpeedTestHandler) Run(w http.ResponseWriter, r *http.Request) {
 			}
 			dbModel := reading.ToDBModel(routerID)
 			_ = h.database.InsertSpeedTestResult(dbModel)
+			if insErr := h.database.InsertSpeedTestResult(dbModel); insErr != nil {
+				slog.Error("Failed to save speed test result to database", "err", insErr, "router_id", routerID)
+			}
 			WriteJSON(w, http.StatusOK, map[string]interface{}{"result": dbModel, "error": errMsg})
 			return
 		}
 
 		dbModel := reading.ToDBModel(routerID)
 		_ = h.database.InsertSpeedTestResult(dbModel)
+		if insErr := h.database.InsertSpeedTestResult(dbModel); insErr != nil {
+			slog.Error("Failed to save speed test result to database", "err", insErr, "router_id", routerID)
+		}
 		WriteJSON(w, http.StatusOK, map[string]interface{}{"result": dbModel})
 		return
 	}
@@ -208,12 +215,18 @@ func (h *SpeedTestHandler) Run(w http.ResponseWriter, r *http.Request) {
 		}
 		dbModel := reading.ToDBModel(routerID)
 		_ = h.database.InsertSpeedTestResult(dbModel)
+		if insErr := h.database.InsertSpeedTestResult(dbModel); insErr != nil {
+			slog.Error("Failed to save speed test result to database", "err", insErr, "router_id", routerID)
+		}
 		WriteJSON(w, http.StatusOK, map[string]interface{}{"result": dbModel, "error": errMsg})
 		return
 	}
 
 	dbModel := reading.ToDBModel(routerID)
 	_ = h.database.InsertSpeedTestResult(dbModel)
+	if insErr := h.database.InsertSpeedTestResult(dbModel); insErr != nil {
+		slog.Error("Failed to save speed test result to database", "err", insErr, "router_id", routerID)
+	}
 	WriteJSON(w, http.StatusOK, map[string]interface{}{"result": dbModel})
 }
 

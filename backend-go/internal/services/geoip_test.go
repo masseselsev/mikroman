@@ -14,6 +14,10 @@ func TestLookupGeoIP(t *testing.T) {
 		"192.0.2.1", // RFC 5737
 		"198.51.100.1", // RFC 5737
 		"203.0.113.1", // RFC 5737
+		"255.255.255.255", // Broadcast
+		"100.64.0.1", // RFC 6598 CGNAT
+		"100.89.60.223", // RFC 6598 Tailscale / CGNAT
+		"100.127.255.254", // RFC 6598 CGNAT
 		"",
 	}
 	for _, ip := range testsLocal {
@@ -26,6 +30,14 @@ func TestLookupGeoIP(t *testing.T) {
 		}
 		if res.FlagEmoji != "🏠" {
 			t.Errorf("expected flag 🏠 for %s, got %s", ip, res.FlagEmoji)
+		}
+	}
+
+	// Unknown public IP fallback (Antarctica coordinates)
+	resUnknown := LookupGeoIP("192.88.99.1") // 6to4 relay anycast or unlisted IP
+	if resUnknown.CountryCode == "UN" {
+		if resUnknown.Lat != -78.0 || resUnknown.Lng != 0.0 {
+			t.Errorf("expected UN to be pinned to Antarctica (-78.0, 0.0), got (%f, %f)", resUnknown.Lat, resUnknown.Lng)
 		}
 	}
 

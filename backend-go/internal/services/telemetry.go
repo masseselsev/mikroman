@@ -247,6 +247,28 @@ func (s *TelemetryService) Collect(ctx context.Context, routerID int) error {
 			INSERT INTO interface_metrics (router_id, interface_name, rx_rate_bps, tx_rate_bps, rx_bytes_total, tx_bytes_total, timestamp)
 			VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
 		`, routerID, iface.Name, rate[0], rate[1], rx, tx)
+
+		// Update interface_traffic_rollups with sampled byte deltas
+		if prev, exists := pIfaces[iface.Name]; exists {
+			dRx := rx - prev[0]
+			dTx := tx - prev[1]
+			if dRx < 0 {
+				dRx = 0 // Counter rollover or router reboot
+			}
+			if dTx < 0 {
+				dTx = 0
+			}
+			if dRx > 0 || dTx > 0 {
+				todayStr := now.Format("2006-01-02")
+				_, _ = s.database.SqlDB.Exec(`
+					INSERT INTO interface_traffic_rollups (router_id, interface_name, record_date, bytes_in, bytes_out)
+					VALUES (?, ?, ?, ?, ?)
+					ON CONFLICT(router_id, interface_name, record_date) DO UPDATE SET
+						bytes_in = bytes_in + excluded.bytes_in,
+						bytes_out = bytes_out + excluded.bytes_out
+				`, routerID, iface.Name, todayStr, dRx, dTx)
+			}
+		}
 	}
 
 	if s.prevIfaces == nil {
@@ -543,8 +565,24 @@ func (s *TelemetryService) getInterval(defaultInterval time.Duration) time.Durat
 	return 3 * time.Second
 }
 
+func (s *TelemetryService) backfillInterfaceRollups() {
+	_, _ = s.database.SqlDB.Exec(`
+		INSERT INTO interface_traffic_rollups (router_id, interface_name, record_date, bytes_in, bytes_out)
+		SELECT router_id, interface_name, DATE(timestamp) as rec_date,
+		       MAX(0, MAX(rx_bytes_total) - MIN(rx_bytes_total)) as b_in,
+		       MAX(0, MAX(tx_bytes_total) - MIN(tx_bytes_total)) as b_out
+		FROM interface_metrics
+		GROUP BY router_id, interface_name, DATE(timestamp)
+		HAVING b_in > 0 OR b_out > 0
+		ON CONFLICT(router_id, interface_name, record_date) DO NOTHING;
+	`)
+}
+
 func (s *TelemetryService) StartBackgroundLoop(ctx context.Context, defaultInterval time.Duration) {
 	go func() {
+		// Backfill rollups from historical interface_metrics if table was empty
+		s.backfillInterfaceRollups()
+
 		// Run initial collection immediately
 		routers, err := s.database.GetRouters()
 		if err == nil {

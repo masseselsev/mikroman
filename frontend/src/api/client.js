@@ -241,10 +241,14 @@ export const api = {
   },
   getAvailableInterfaces: (routerId = null) => request(`/metrics/interfaces/list${routerId ? `?router_id=${routerId}` : ''}`),
   getMonitoredInterfacesConfig: (routerId = null) => request(`/metrics/config${routerId ? `?router_id=${routerId}` : ''}`),
-  saveMonitoredInterfacesConfig: (routerIdOrPayload, selectedInterfaces) => {
+  saveMonitoredInterfacesConfig: (routerIdOrPayload, selectedInterfaces, ignoredInterfaces = undefined) => {
     const payload = (typeof routerIdOrPayload === 'object' && routerIdOrPayload !== null)
       ? routerIdOrPayload
-      : { router_id: routerIdOrPayload, selected_interfaces: selectedInterfaces };
+      : {
+          router_id: routerIdOrPayload,
+          selected_interfaces: selectedInterfaces,
+          ...(ignoredInterfaces !== undefined ? { ignored_discovery_interfaces: ignoredInterfaces } : {})
+        };
     return request('/metrics/config', {
       method: 'POST',
       body: JSON.stringify(payload)
