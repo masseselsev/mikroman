@@ -9,40 +9,40 @@ import (
 
 // Package represents /system/package
 type Package struct {
-	ID       string `json:".id"`
-	Name     string `json:"name"`
-	Version  string `json:"version"`
-	Disabled string `json:"disabled"`
+	ID       string       `json:".id"`
+	Name     string       `json:"name"`
+	Version  string       `json:"version"`
+	Disabled FlexibleBool `json:"disabled"`
 }
 
 // Container represents /container
 type Container struct {
-	ID            string `json:".id"`
-	Name          string `json:"name,omitempty"`
-	Tag           string `json:"tag,omitempty"`
-	Status        string `json:"status,omitempty"`
-	Running       string `json:"running,omitempty"`
-	OS            string `json:"os,omitempty"`
-	Arch          string `json:"arch,omitempty"`
-	Interface     string `json:"interface,omitempty"`
-	RootDir       string `json:"root-dir,omitempty"`
-	Mounts        string `json:"mounts,omitempty"`
-	Mountlists    string `json:"mountlists,omitempty"`
-	Envlist       string `json:"envlist,omitempty"`
-	Envlists      string `json:"envlists,omitempty"`
-	Cmd           string `json:"cmd,omitempty"`
-	Entrypoint    string `json:"entrypoint,omitempty"`
-	Hostname      string `json:"hostname,omitempty"`
-	Logging       string `json:"logging,omitempty"`
-	StartOnBoot   string `json:"start-on-boot,omitempty"`
-	Comment       string `json:"comment,omitempty"`
-	CPUUsage      string `json:"cpu-usage,omitempty"`
-	MemoryCurrent string `json:"memory-current,omitempty"`
-	MemoryHigh    string `json:"memory-high,omitempty"`
-	MemoryMax     string `json:"memory-max,omitempty"`
-	ContainerSize string `json:"container-size,omitempty"`
-	RestartCount  string `json:"restart-count,omitempty"`
-	StopTime      string `json:"stop-time,omitempty"`
+	ID            string       `json:".id"`
+	Name          string       `json:"name,omitempty"`
+	Tag           string       `json:"tag,omitempty"`
+	Status        string       `json:"status,omitempty"`
+	Running       FlexibleBool `json:"running,omitempty"`
+	OS            string       `json:"os,omitempty"`
+	Arch          string       `json:"arch,omitempty"`
+	Interface     string       `json:"interface,omitempty"`
+	RootDir       string       `json:"root-dir,omitempty"`
+	Mounts        string       `json:"mounts,omitempty"`
+	Mountlists    string       `json:"mountlists,omitempty"`
+	Envlist       string       `json:"envlist,omitempty"`
+	Envlists      string       `json:"envlists,omitempty"`
+	Cmd           string       `json:"cmd,omitempty"`
+	Entrypoint    string       `json:"entrypoint,omitempty"`
+	Hostname      string       `json:"hostname,omitempty"`
+	Logging       FlexibleBool `json:"logging,omitempty"`
+	StartOnBoot   FlexibleBool `json:"start-on-boot,omitempty"`
+	Comment       string       `json:"comment,omitempty"`
+	CPUUsage      string       `json:"cpu-usage,omitempty"`
+	MemoryCurrent string       `json:"memory-current,omitempty"`
+	MemoryHigh    string       `json:"memory-high,omitempty"`
+	MemoryMax     string       `json:"memory-max,omitempty"`
+	ContainerSize string       `json:"container-size,omitempty"`
+	RestartCount  string       `json:"restart-count,omitempty"`
+	StopTime      string       `json:"stop-time,omitempty"`
 }
 
 // ContainerMount represents /container/mounts
@@ -72,14 +72,14 @@ type ContainerConfig struct {
 
 // DiskItem represents /disk
 type DiskItem struct {
-	ID       string `json:".id"`
-	Name     string `json:"name,omitempty"`
-	Type     string `json:"type,omitempty"`
-	FS       string `json:"fs,omitempty"`
-	Free     string `json:"free,omitempty"`
-	Size     string `json:"size,omitempty"`
-	Status   string `json:"status,omitempty"`
-	ReadOnly string `json:"read-only,omitempty"`
+	ID       string       `json:".id"`
+	Name     string       `json:"name,omitempty"`
+	Type     string       `json:"type,omitempty"`
+	FS       string       `json:"fs,omitempty"`
+	Free     string       `json:"free,omitempty"`
+	Size     string       `json:"size,omitempty"`
+	Status   string       `json:"status,omitempty"`
+	ReadOnly FlexibleBool `json:"read-only,omitempty"`
 }
 
 // GetPackages queries /system/package

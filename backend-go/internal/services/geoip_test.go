@@ -62,3 +62,4 @@ func TestLookupGeoIP(t *testing.T) {
 		t.Errorf("expected 🇩🇪 for 78.46.10.1, got %s", resDE.FlagEmoji)
 	}
 }
+

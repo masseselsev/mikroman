@@ -17,6 +17,7 @@ import {
 import { formatBytes, formatSpeed } from '../utils/formatters';
 import { useSpeedUnit } from '../context/SpeedUnitContext';
 import { WorldConnectionsModal } from './WorldConnectionsModal';
+import { CountryFlag } from './CountryFlag';
 
 /**
  * Live connection tracker.
@@ -457,9 +458,7 @@ export function LiveConnectionsModal({
                       {/* Destination */}
                       <td style={{ padding: '8px 10px' }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                          <span style={{ fontSize: '1rem', lineHeight: 1 }} title={c.country_name || c.country_code}>
-                            {c.flag_emoji || '🌐'}
-                          </span>
+                          <CountryFlag code={c.country_code} size={15} />
                           <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>
                             {c.domain || c.dst_ip}
                           </span>

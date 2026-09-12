@@ -183,6 +183,20 @@ type ContainerSetupPlanDTO struct {
 func (h *ContainerHandler) probeSupport(ctx context.Context, client *routeros.Client) ContainerSupportDTO {
 	pkgs, err := client.GetPackages(ctx)
 	if err != nil {
+		if cfg, cfgErr := client.GetContainerConfig(ctx); cfgErr == nil && cfg != nil {
+			return ContainerSupportDTO{
+				Installed: true,
+				Enabled:   true,
+				Status:    "ready",
+			}
+		}
+		if _, ctrErr := client.GetContainers(ctx); ctrErr == nil {
+			return ContainerSupportDTO{
+				Installed: true,
+				Enabled:   true,
+				Status:    "ready",
+			}
+		}
 		return ContainerSupportDTO{
 			Status:  "unreachable",
 			Message: "Could not query the router for installed packages: " + err.Error(),
@@ -199,6 +213,20 @@ func (h *ContainerHandler) probeSupport(ctx context.Context, client *routeros.Cl
 	}
 
 	if foundPkg == nil {
+		if cfg, cfgErr := client.GetContainerConfig(ctx); cfgErr == nil && cfg != nil {
+			return ContainerSupportDTO{
+				Installed: true,
+				Enabled:   true,
+				Status:    "ready",
+			}
+		}
+		if _, ctrErr := client.GetContainers(ctx); ctrErr == nil {
+			return ContainerSupportDTO{
+				Installed: true,
+				Enabled:   true,
+				Status:    "ready",
+			}
+		}
 		return ContainerSupportDTO{
 			Installed: false,
 			Enabled:   false,
@@ -207,7 +235,7 @@ func (h *ContainerHandler) probeSupport(ctx context.Context, client *routeros.Cl
 		}
 	}
 
-	disabled := routeros.AsBool(foundPkg.Disabled)
+	disabled := foundPkg.Disabled.Bool()
 	if disabled {
 		ver := foundPkg.Version
 		return ContainerSupportDTO{
@@ -273,20 +301,25 @@ func (h *ContainerHandler) List(w http.ResponseWriter, r *http.Request) {
 	if ctrs, err := client.GetContainers(r.Context()); err == nil {
 		for _, c := range ctrs {
 			var running *bool
-			if c.Running != "" {
-				rBool := routeros.AsBool(c.Running)
+			if c.Running {
+				rBool := true
+				running = &rBool
+			} else if strings.EqualFold(c.Status, "running") {
+				rBool := true
+				running = &rBool
+			} else if strings.EqualFold(c.Status, "stopped") || strings.EqualFold(c.Status, "error") {
+				rBool := false
+				running = &rBool
+			} else {
+				rBool := c.Running.Bool()
 				running = &rBool
 			}
-			var logging *bool
-			if c.Logging != "" {
-				lBool := routeros.AsBool(c.Logging)
-				logging = &lBool
-			}
-			var startBoot *bool
-			if c.StartOnBoot != "" {
-				sBool := routeros.AsBool(c.StartOnBoot)
-				startBoot = &sBool
-			}
+
+			lBool := c.Logging.Bool()
+			logging := &lBool
+
+			sBool := c.StartOnBoot.Bool()
+			startBoot := &sBool
 
 			mountsVal := c.Mountlists
 			if mountsVal == "" {
@@ -504,7 +537,7 @@ func (h *ContainerHandler) Storage(w http.ResponseWriter, r *http.Request) {
 		free := routeros.AsCount(d.Free)
 		sz := routeros.AsCount(d.Size)
 		isPart := strings.Contains(d.Name, "part")
-		readOnly := routeros.AsBool(d.ReadOnly)
+		readOnly := d.ReadOnly.Bool()
 		formatting := strings.EqualFold(d.Status, "formatting")
 		fsStr := d.FS
 		usable := (fsStr == "ext4" || fsStr == "ext3") && !readOnly && !formatting

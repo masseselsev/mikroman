@@ -58,10 +58,11 @@
   * Autonomous 4-stage reboot reconnection state machine.
 
 * **🌐 Real-Time Observability, GeoIP World Map & Centralized Logs**:
-  * Real-time `/ip/firewall/connection` tracker with device attribution, live socket termination, and country flag indicators.
-  * Interactive **SVG World Connections Map** plotting active remote endpoints across an equirectangular projection with pulsating nodes, transfer rates, socket counts, and nation-level bandwidth rollups.
-  * In-memory offline GeoIP engine (`geoip.go`) resolving destination countries, coordinates, and emoji flags without external API latency or rate limits.
-  * Centralized terminal log viewer with regex event classification (auth, interface, DHCP, wireless, firewall, system), SQLite history storage, configurable retention depth, and dedicated `Hide container logs` filtering.
+  * Real-time `/ip/firewall/connection` tracker with device attribution, live socket termination, and crisp vector SVG country flags.
+  * Interactive **SVG World Connections Map** plotting active remote endpoints across smooth continent projections with pulsating nodes, transfer rates, socket counts, and nation-level bandwidth rollups.
+  * Precise SoC hardware identification (`services.ResolveCPUIdentity`) mapping RouterOS board names and product codes to exact processor part numbers (e.g. Qualcomm IPQ-5322).
+  * Robust RouterOS container detection supporting both boolean and string serialization, with configuration fallback probing.
+  * Centralized terminal log viewer with regex event classification (auth, interface, DHCP, wireless, firewall, system), SQLite history storage up to 10,000 entries, depth selector, and self-API mutation filtering (`by api:rest`).
   * Router-native **Speed Test Runner** running single-shot Ookla tests via lightweight RouterOS container (`quay.io/tangent/speedtest-cli:latest`), streaming download/upload/ping metrics into history without external tooling.
   * Configurable bandwidth display unit toggle (`Mbps`/`Kbps` vs `MB/s`/`KB/s`) persisting across the application.
   * Multi-router ISP quota isolation: quotas are strictly scoped per-router with unmetered defaults and a first-connect setup prompt.

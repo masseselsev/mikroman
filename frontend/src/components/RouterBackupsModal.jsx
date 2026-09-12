@@ -559,7 +559,7 @@ export default function RouterBackupsModal({ isOpen, onClose, routerId, routerNa
                       className="form-select"
                       value={baseId || ''}
                       onChange={e => loadDiff(Number(e.target.value), targetId)}
-                      style={{ height: 24, fontSize: 'var(--fs-2xs)', padding: '0 4px' }}
+                      style={{ height: 28, fontSize: 'var(--fs-2xs)', padding: '2px 24px 2px 8px' }}
                     >
                       {backups.map(b => (
                         <option key={b.id} value={b.id}>#{b.id} · {formatRelativeTime(b.created_at)}</option>
@@ -570,7 +570,7 @@ export default function RouterBackupsModal({ isOpen, onClose, routerId, routerNa
                       className="form-select"
                       value={targetId || ''}
                       onChange={e => loadDiff(baseId, e.target.value)}
-                      style={{ height: 24, fontSize: 'var(--fs-2xs)', padding: '0 4px' }}
+                      style={{ height: 28, fontSize: 'var(--fs-2xs)', padding: '2px 24px 2px 8px' }}
                     >
                       <option value="live">⚡ {t('diff_live_option')}</option>
                       {backups.map(b => (

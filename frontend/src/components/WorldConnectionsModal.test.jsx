@@ -32,8 +32,8 @@ const mockGeoConnections = [
   {
     id: '*1',
     protocol: 'tcp',
-    src_ip: '192.0.2.50',
-    dst_ip: '198.51.100.46',
+    src_ip: '192.168.88.50',
+    dst_ip: '142.250.190.46',
     domain: 'youtube.com',
     country_code: 'US',
     country_name: 'United States',
@@ -49,8 +49,8 @@ const mockGeoConnections = [
   {
     id: '*2',
     protocol: 'tcp',
-    src_ip: '192.0.2.50',
-    dst_ip: '203.0.113.100',
+    src_ip: '192.168.88.50',
+    dst_ip: '91.108.56.100',
     domain: 'telegram.org',
     country_code: 'NL',
     country_name: 'Netherlands',
@@ -66,8 +66,8 @@ const mockGeoConnections = [
   {
     id: '*3',
     protocol: 'udp',
-    src_ip: '192.0.2.50',
-    dst_ip: '192.0.2.1',
+    src_ip: '192.168.88.50',
+    dst_ip: '192.168.88.1',
     country_code: 'LOCAL',
     country_name: 'Local Network',
     flag_emoji: '🏠',
@@ -133,3 +133,4 @@ describe('WorldConnectionsModal', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 });
+

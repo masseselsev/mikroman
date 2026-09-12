@@ -98,6 +98,13 @@ export function RouterLogsModal({ isOpen, onClose, routerId = null, routerName =
       return false;
     }
   });
+  const [logLimit, setLogLimit] = useState(() => {
+    try {
+      return parseInt(localStorage.getItem('mikroman:logs-limit') || '500', 10) || 500;
+    } catch {
+      return 500;
+    }
+  });
   const [isStreaming, setIsStreaming] = useState(true);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -114,7 +121,7 @@ export function RouterLogsModal({ isOpen, onClose, routerId = null, routerName =
   const fetchLogs = useCallback(async (showLoading = false) => {
     if (showLoading) setLoading(true);
     try {
-      const params = { source, limit: 500 };
+      const params = { source, limit: logLimit };
       // The app's own log belongs to the application, not to a router, and it
       // has no RouterOS categories or self-login lines to filter - sending those
       // params would imply the panel can narrow it in ways the endpoint ignores.
@@ -133,7 +140,7 @@ export function RouterLogsModal({ isOpen, onClose, routerId = null, routerName =
     } finally {
       if (showLoading) setLoading(false);
     }
-  }, [source, category, search, routerId, hideSelfApi, hideContainerLogs]);
+  }, [source, category, search, routerId, hideSelfApi, hideContainerLogs, logLimit]);
 
   const toggleHideSelfApi = () => {
     setHideSelfApi(prev => {
@@ -349,6 +356,36 @@ export function RouterLogsModal({ isOpen, onClose, routerId = null, routerName =
                 </button>
               ))}
             </div>
+
+            {source !== 'live' && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                <span style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)' }}>{t('log_limit_label')}:</span>
+                <select
+                  className="form-select"
+                  value={logLimit}
+                  onChange={e => {
+                    const next = Number(e.target.value);
+                    setLogLimit(next);
+                    try {
+                      localStorage.setItem('mikroman:logs-limit', String(next));
+                    } catch {}
+                  }}
+                  style={{
+                    height: 28,
+                    fontSize: 'var(--fs-2xs)',
+                    padding: '2px 24px 2px 8px',
+                    width: 'auto',
+                    minWidth: 74,
+                  }}
+                >
+                  <option value={500}>500</option>
+                  <option value={1000}>1 000</option>
+                  <option value={2500}>2 500</option>
+                  <option value={5000}>5 000</option>
+                  <option value={10000}>10 000</option>
+                </select>
+              </div>
+            )}
 
             <button
               type="button"

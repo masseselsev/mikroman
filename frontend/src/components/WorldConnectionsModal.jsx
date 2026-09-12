@@ -2,6 +2,7 @@ import React, { useState, useMemo } from 'react';
 import { useI18n } from '../context/I18nContext';
 import { useSpeedUnit } from '../context/SpeedUnitContext';
 import { formatBytes, formatSpeed } from '../utils/formatters';
+import { CountryFlag } from './CountryFlag';
 import {
   X,
   Globe,
@@ -13,7 +14,7 @@ import {
 /**
  * World Connections Map Modal
  *
- * Visualizes active live connections on a 1000x500 Equirectangular SVG world map.
+ * Visualizes active live connections on a high-fidelity 1000x500 Equirectangular SVG world map.
  * Groups connections by country/region, displaying glowing pulsating nodes,
  * socket counts, bandwidth consumption, and top remote destinations.
  */
@@ -43,7 +44,6 @@ export function WorldConnectionsModal({
         groups[code] = {
           code,
           name: c.country_name || code,
-          flag: c.flag_emoji || '🌐',
           lat: c.lat,
           lng: c.lng,
           count: 0,
@@ -108,7 +108,7 @@ export function WorldConnectionsModal({
         className="modal-card"
         onClick={(e) => e.stopPropagation()}
         style={{
-          maxWidth: 1120,
+          maxWidth: 1140,
           width: '96vw',
           maxHeight: '92vh',
           display: 'flex',
@@ -258,11 +258,11 @@ export function WorldConnectionsModal({
             style={{
               position: 'relative',
               width: '100%',
-              background: '#0a0f1d',
+              background: '#070b16',
               borderRadius: 8,
               border: '1px solid rgba(255, 255, 255, 0.08)',
               overflow: 'hidden',
-              boxShadow: 'inset 0 2px 10px rgba(0,0,0,0.6)',
+              boxShadow: 'inset 0 2px 12px rgba(0,0,0,0.7)',
             }}
           >
             <svg
@@ -281,62 +281,68 @@ export function WorldConnectionsModal({
                   <stop offset="60%" stopColor="#d97706" stopOpacity="0.4" />
                   <stop offset="100%" stopColor="#d97706" stopOpacity="0" />
                 </radialGradient>
-                <pattern id="gridPattern" width="50" height="50" patternUnits="userSpaceOnUse">
-                  <path d="M 50 0 L 0 0 0 50" fill="none" stroke="rgba(255, 255, 255, 0.03)" strokeWidth="1" />
+                <pattern id="gridDots" width="20" height="20" patternUnits="userSpaceOnUse">
+                  <circle cx="2" cy="2" r="1" fill="rgba(255, 255, 255, 0.04)" />
                 </pattern>
               </defs>
 
-              {/* Grid Background */}
-              <rect width="1000" height="500" fill="#080d1a" />
-              <rect width="1000" height="500" fill="url(#gridPattern)" />
+              {/* High-tech Canvas Background */}
+              <rect width="1000" height="500" fill="#070b16" />
+              <rect width="1000" height="500" fill="url(#gridDots)" />
 
-              {/* Parallels and Meridians (Graticule) */}
-              <g stroke="rgba(255, 255, 255, 0.07)" strokeWidth="1" strokeDasharray="4 4">
-                {/* Latitudes */}
-                <line x1="0" y1="83.3" x2="1000" y2="83.3" /> {/* 60° N */}
-                <line x1="0" y1="166.7" x2="1000" y2="166.7" /> {/* 30° N */}
-                <line x1="0" y1="250" x2="1000" y2="250" stroke="rgba(59, 130, 246, 0.25)" strokeDasharray="none" /> {/* Equator */}
-                <line x1="0" y1="333.3" x2="1000" y2="333.3" /> {/* 30° S */}
-                <line x1="0" y1="416.7" x2="1000" y2="416.7" /> {/* 60° S */}
+              {/* Graticule Grid */}
+              <g stroke="rgba(255, 255, 255, 0.05)" strokeWidth="1" strokeDasharray="3 3">
+                <line x1="0" y1="83.3" x2="1000" y2="83.3" />
+                <line x1="0" y1="166.7" x2="1000" y2="166.7" />
+                <line x1="0" y1="250" x2="1000" y2="250" stroke="rgba(59, 130, 246, 0.2)" strokeDasharray="none" />
+                <line x1="0" y1="333.3" x2="1000" y2="333.3" />
+                <line x1="0" y1="416.7" x2="1000" y2="416.7" />
 
-                {/* Longitudes */}
-                <line x1="166.7" y1="0" x2="166.7" y2="500" /> {/* 120° W */}
-                <line x1="333.3" y1="0" x2="333.3" y2="500" /> {/* 60° W */}
-                <line x1="500" y1="0" x2="500" y2="500" stroke="rgba(59, 130, 246, 0.25)" strokeDasharray="none" /> {/* Prime Meridian */}
-                <line x1="666.7" y1="0" x2="666.7" y2="500" /> {/* 60° E */}
-                <line x1="833.3" y1="0" x2="833.3" y2="500" /> {/* 120° E */}
+                <line x1="166.7" y1="0" x2="166.7" y2="500" />
+                <line x1="333.3" y1="0" x2="333.3" y2="500" />
+                <line x1="500" y1="0" x2="500" y2="500" stroke="rgba(59, 130, 246, 0.2)" strokeDasharray="none" />
+                <line x1="666.7" y1="0" x2="666.7" y2="500" />
+                <line x1="833.3" y1="0" x2="833.3" y2="500" />
               </g>
 
-              {/* Stylized Continents Landmass Shapes */}
-              <g fill="rgba(255, 255, 255, 0.08)" stroke="rgba(255, 255, 255, 0.18)" strokeWidth="1">
+              {/* Realistic Smooth Vector Landmasses */}
+              <g fill="#162032" stroke="#2a3b55" strokeWidth="1.2" strokeLinejoin="round" strokeLinecap="round">
                 {/* North America */}
-                <path d="M 90,45 L 180,45 L 240,65 L 280,85 L 310,120 L 290,145 L 260,165 L 240,195 L 230,240 L 210,240 L 195,210 L 160,190 L 125,160 L 95,120 L 80,80 Z" />
+                <path d="M 45,55 Q 65,40 100,45 Q 120,40 150,42 Q 185,45 205,58 Q 220,68 250,65 Q 285,62 305,80 Q 320,95 305,120 Q 295,135 280,140 Q 295,150 280,165 Q 260,175 250,195 Q 240,210 230,240 Q 215,245 205,225 Q 195,210 175,195 Q 160,190 140,165 Q 115,150 95,125 Q 75,105 60,85 Q 45,70 45,55 Z" />
+                {/* Alaska & Canadian Islands */}
+                <path d="M 30,60 Q 45,50 65,55 Q 75,65 60,75 Q 45,70 30,60 Z" />
+                <path d="M 180,30 Q 220,25 240,35 Q 230,50 190,45 Z" />
                 {/* Greenland */}
-                <path d="M 370,40 L 430,40 L 420,80 L 380,85 Z" />
+                <path d="M 360,35 Q 410,25 435,40 Q 440,70 410,85 Q 380,85 365,65 Q 355,50 360,35 Z" />
                 {/* South America */}
-                <path d="M 275,235 L 320,240 L 360,265 L 375,300 L 355,360 L 325,410 L 305,430 L 295,410 L 280,330 L 265,270 Z" />
+                <path d="M 270,225 Q 295,215 325,230 Q 360,245 385,275 Q 395,305 380,335 Q 365,365 345,400 Q 325,435 305,445 Q 290,430 285,395 Q 280,355 270,320 Q 255,275 260,245 Q 260,230 270,225 Z" />
                 {/* Europe */}
-                <path d="M 470,80 L 510,70 L 545,85 L 560,115 L 530,140 L 495,145 L 475,135 L 465,105 Z" />
-                {/* British Isles */}
-                <path d="M 460,90 L 475,85 L 470,105 L 455,100 Z" />
+                <path d="M 470,80 Q 500,65 530,70 Q 550,65 570,85 Q 580,110 565,135 Q 545,145 520,140 Q 495,145 475,130 Q 465,105 470,80 Z" />
+                {/* Scandinavia */}
+                <path d="M 515,45 Q 535,35 555,45 Q 565,70 545,80 Q 530,75 515,45 Z" />
+                {/* Great Britain & Ireland */}
+                <path d="M 455,80 Q 470,75 465,95 Q 455,100 455,80 Z" />
+                <path d="M 440,85 Q 450,82 445,98 Q 438,95 440,85 Z" />
                 {/* Africa */}
-                <path d="M 465,155 L 535,150 L 570,180 L 610,215 L 585,270 L 560,330 L 525,365 L 500,345 L 470,265 L 450,205 Z" />
+                <path d="M 460,150 Q 515,140 555,150 Q 600,175 620,215 Q 615,250 595,290 Q 575,335 545,370 Q 520,380 500,355 Q 475,310 460,260 Q 445,210 445,185 Q 445,160 460,150 Z" />
                 {/* Madagascar */}
-                <path d="M 605,320 L 618,315 L 612,350 L 600,345 Z" />
+                <path d="M 605,315 Q 620,310 615,350 Q 600,345 605,315 Z" />
                 {/* Asia & Siberia */}
-                <path d="M 550,75 L 680,60 L 820,65 L 940,90 L 930,130 L 880,150 L 860,180 L 820,225 L 770,230 L 730,225 L 700,240 L 670,220 L 620,210 L 590,175 L 560,120 Z" />
+                <path d="M 570,75 Q 640,50 720,55 Q 820,50 910,70 Q 960,85 940,115 Q 910,135 885,150 Q 865,175 835,210 Q 795,225 760,225 Q 730,220 705,240 Q 675,230 635,210 Q 605,180 585,140 Q 565,105 570,75 Z" />
+                {/* Middle East */}
+                <path d="M 585,170 Q 625,165 635,200 Q 615,220 585,195 Z" />
+                {/* India */}
+                <path d="M 680,205 Q 720,205 730,245 Q 710,275 690,255 Q 675,230 680,205 Z" />
                 {/* Japan */}
-                <path d="M 895,145 L 910,140 L 900,175 L 885,170 Z" />
-                {/* India & Southeast Asia */}
-                <path d="M 675,215 L 725,215 L 730,265 L 710,285 L 690,265 Z" />
-                {/* Indonesia & Philippines */}
-                <path d="M 770,270 L 830,275 L 860,260 L 880,290 L 820,305 L 760,290 Z" />
+                <path d="M 890,135 Q 915,130 905,170 Q 885,165 890,135 Z" />
+                {/* Southeast Asia & Indonesia */}
+                <path d="M 750,235 Q 785,240 780,270 Q 755,270 750,235 Z" />
+                <path d="M 780,275 Q 835,280 860,265 Q 875,295 825,305 Q 770,295 780,275 Z" />
+                <path d="M 845,230 Q 865,235 855,260 Q 840,250 845,230 Z" />
                 {/* Australia */}
-                <path d="M 810,315 L 880,310 L 910,335 L 905,385 L 845,390 L 815,360 Z" />
+                <path d="M 805,315 Q 860,295 895,315 Q 920,345 910,380 Q 880,400 845,395 Q 815,375 805,345 Q 800,325 805,315 Z" />
                 {/* New Zealand */}
-                <path d="M 940,380 L 950,375 L 945,415 L 935,410 Z" />
-                {/* Antarctica shelf */}
-                <path d="M 80,470 L 920,470 L 900,490 L 100,490 Z" />
+                <path d="M 940,375 Q 955,370 945,415 Q 935,410 940,375 Z" />
               </g>
 
               {/* Active Connection Nodes */}
@@ -395,27 +401,28 @@ export function WorldConnectionsModal({
                       {g.count}
                     </text>
 
-                    {/* Text Label on map */}
+                    {/* Map Badge with ISO code */}
                     <g transform={`translate(${x + nodeRadius + 4}, ${y + 4})`}>
                       <rect
                         x="-2"
                         y="-11"
-                        width={g.code.length * 7 + 28}
+                        width={g.code.length * 8 + 14}
                         height="16"
                         rx="4"
-                        fill="rgba(10, 15, 29, 0.85)"
-                        stroke={isSelected ? '#f59e0b' : 'rgba(255, 255, 255, 0.2)'}
+                        fill="rgba(10, 15, 29, 0.9)"
+                        stroke={isSelected ? '#f59e0b' : 'rgba(255, 255, 255, 0.25)'}
                         strokeWidth="1"
                       />
                       <text
-                        x="2"
+                        x="5"
                         y="1"
                         fill="#ffffff"
                         fontSize="10px"
-                        fontWeight="600"
+                        fontWeight="700"
+                        letterSpacing="0.5px"
                         pointerEvents="none"
                       >
-                        {g.flag} {g.code}
+                        {g.code}
                       </text>
                     </g>
                   </g>
@@ -466,8 +473,8 @@ export function WorldConnectionsModal({
                 <>
                   <div>
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                        <span style={{ fontSize: '1.4rem', lineHeight: 1 }}>{activeSelected.flag}</span>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                        <CountryFlag code={activeSelected.code} size={24} />
                         <div>
                           <div style={{ fontWeight: 600, fontSize: 'var(--fs-md, 14px)', color: 'var(--text-primary, #f8fafc)' }}>
                             {activeSelected.name}
@@ -565,7 +572,7 @@ export function WorldConnectionsModal({
                       key={g.code}
                       onClick={() => setSelectedCountryCode(g.code)}
                       style={{
-                        minWidth: 150,
+                        minWidth: 155,
                         textAlign: 'left',
                         padding: '8px 10px',
                         borderRadius: 6,
@@ -577,8 +584,8 @@ export function WorldConnectionsModal({
                         flexShrink: 0,
                       }}
                     >
-                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
-                        <span style={{ fontSize: '1.1rem' }}>{g.flag}</span>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+                        <CountryFlag code={g.code} size={18} />
                         <span
                           style={{
                             fontSize: '10px',

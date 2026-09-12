@@ -488,6 +488,7 @@ func (s *TelemetryService) Collect(ctx context.Context, routerID int) error {
 	if s.hub != nil {
 		defaultRouter, _ := s.database.GetDefaultRouter()
 		isDefault := (defaultRouter != nil && defaultRouter.ID == routerID)
+		cpuIdent := ResolveCPUIdentity(rbModel, res.BoardName, res.Platform, res.ArchitectureName, res.ArchitectureName)
 		s.hub.BroadcastRouter(routerID, isDefault, map[string]interface{}{
 			"type":      "telemetry_tick",
 			"timestamp": float64(now.Unix()),
@@ -496,8 +497,8 @@ func (s *TelemetryService) Collect(ctx context.Context, routerID int) error {
 				"board_name":           res.BoardName,
 				"version":              res.Version,
 				"cpu_load":             cpuLoad,
-				"cpu_model":            res.BoardName,
-				"cpu_model_exact":      true,
+				"cpu_model":            cpuIdent.Model,
+				"cpu_model_exact":      cpuIdent.Exact,
 				"cpu_platform":         res.Platform,
 				"cpu_arch":             res.ArchitectureName,
 				"cpu_count":            cpuCount,

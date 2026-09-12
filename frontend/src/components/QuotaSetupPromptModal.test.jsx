@@ -49,3 +49,4 @@ describe('QuotaSetupPromptModal', () => {
     expect(localStorage.getItem('mikroman:quota-prompt-dismissed-42')).toBe('true');
   });
 });
+

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"syscall"
 	"time"
 
@@ -22,6 +23,9 @@ import (
 )
 
 func main() {
+	// Constrain runtime memory for embedded & container execution on RouterOS
+	debug.SetMemoryLimit(64 * 1024 * 1024)
+
 	_ = mime.AddExtensionType(".js", "text/javascript; charset=utf-8")
 	_ = mime.AddExtensionType(".mjs", "text/javascript; charset=utf-8")
 	_ = mime.AddExtensionType(".css", "text/css; charset=utf-8")

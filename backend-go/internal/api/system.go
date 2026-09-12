@@ -11,6 +11,7 @@ import (
 	"github.com/masseselsev/mikroman/internal/config"
 	"github.com/masseselsev/mikroman/internal/db"
 	"github.com/masseselsev/mikroman/internal/routeros"
+	"github.com/masseselsev/mikroman/internal/services"
 )
 
 var startedAt = time.Now()
@@ -311,6 +312,8 @@ func (h *SystemHandler) GetSystemStatus(w http.ResponseWriter, r *http.Request) 
 	cpuCount, _ := strconv.Atoi(res.CPUCount)
 	cpuFreq, _ := strconv.Atoi(res.CPUFrequency)
 
+	cpuIdent := services.ResolveCPUIdentity(rbModel, res.BoardName, "", res.ArchitectureName, res.ArchitectureName)
+
 	WriteJSON(w, http.StatusOK, map[string]interface{}{
 		"connected": true,
 		"resource": map[string]interface{}{
@@ -332,8 +335,8 @@ func (h *SystemHandler) GetSystemStatus(w http.ResponseWriter, r *http.Request) 
 			"current_firmware": currentFw,
 			"upgrade_firmware": upgradeFw,
 		},
-		"cpu_model":       res.BoardName,
-		"cpu_model_exact": true,
+		"cpu_model":       cpuIdent.Model,
+		"cpu_model_exact": cpuIdent.Exact,
 		"health": map[string]interface{}{
 			"temperature": temp,
 			"voltage":     volt,
