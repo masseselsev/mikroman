@@ -1,9 +1,11 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -16,13 +18,19 @@ type LiveRatesProvider interface {
 	GetLatestRates(routerID int) (userRates map[int][2]int64, devRates map[int][2]int64)
 }
 
+// QueueReconciler synchronizes Simple Queues and FastTrack exemptions.
+type QueueReconciler interface {
+	ReconcileQueues(ctx context.Context, routerID int) error
+}
+
 type UserHandler struct {
 	database      *db.DB
 	ratesProvider LiveRatesProvider
+	reconciler    QueueReconciler
 }
 
-func NewUserHandler(database *db.DB, ratesProvider LiveRatesProvider) *UserHandler {
-	return &UserHandler{database: database, ratesProvider: ratesProvider}
+func NewUserHandler(database *db.DB, ratesProvider LiveRatesProvider, reconciler QueueReconciler) *UserHandler {
+	return &UserHandler{database: database, ratesProvider: ratesProvider, reconciler: reconciler}
 }
 
 func (h *UserHandler) List(w http.ResponseWriter, r *http.Request) {
@@ -251,26 +259,77 @@ func (h *UserHandler) Get(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *UserHandler) Create(w http.ResponseWriter, r *http.Request) {
-	var user db.User
-	if err := json.NewDecoder(r.Body).Decode(&user); err != nil {
+	var req struct {
+		Name       string   `json:"name"`
+		RouterID   *int     `json:"router_id"`
+		AvatarIcon string   `json:"avatar_icon"`
+		SpeedLimit string   `json:"speed_limit"`
+		IsPaused   bool     `json:"is_paused"`
+		Priority   int      `json:"priority"`
+		DeviceMACs []string `json:"device_macs"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		WriteError(w, http.StatusBadRequest, "Invalid payload")
 		return
 	}
 
-	if user.Name == "" {
+	cleanName := strings.TrimSpace(req.Name)
+	if cleanName == "" {
 		WriteError(w, http.StatusBadRequest, "User name is required")
 		return
 	}
-	if user.AvatarIcon == "" {
-		user.AvatarIcon = "user"
+	if req.AvatarIcon == "" {
+		req.AvatarIcon = "user"
 	}
-	if user.SpeedLimit == "" {
-		user.SpeedLimit = "unlimited"
+	if req.SpeedLimit == "" {
+		req.SpeedLimit = "unlimited"
+	}
+
+	var effRouterID int
+	if req.RouterID != nil && *req.RouterID > 0 {
+		effRouterID = *req.RouterID
+	} else if def, err := h.database.GetDefaultRouter(); err == nil && def != nil {
+		effRouterID = def.ID
+	} else if routers, err := h.database.GetRouters(); err == nil && len(routers) > 0 {
+		effRouterID = routers[0].ID
+	}
+
+	user := db.User{
+		Name:       cleanName,
+		AvatarIcon: req.AvatarIcon,
+		SpeedLimit: req.SpeedLimit,
+		IsPaused:   req.IsPaused,
+		Priority:   req.Priority,
+	}
+	if effRouterID > 0 {
+		user.RouterID = &effRouterID
 	}
 
 	if err := h.database.CreateUser(&user); err != nil {
 		WriteError(w, http.StatusInternalServerError, "Failed to create user: "+err.Error())
 		return
+	}
+
+	// Assign selected devices to this user
+	if len(req.DeviceMACs) > 0 {
+		for _, mac := range req.DeviceMACs {
+			macClean := strings.ToUpper(strings.TrimSpace(mac))
+			if macClean != "" {
+				if effRouterID > 0 {
+					_, _ = h.database.SqlDB.Exec("UPDATE devices SET user_id = ?, router_id = ? WHERE UPPER(mac_address) = ?", user.ID, effRouterID, macClean)
+				} else {
+					_, _ = h.database.SqlDB.Exec("UPDATE devices SET user_id = ? WHERE UPPER(mac_address) = ?", user.ID, macClean)
+				}
+			}
+		}
+	}
+
+	if h.reconciler != nil && effRouterID > 0 {
+		go func(rID int) {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			_ = h.reconciler.ReconcileQueues(ctx, rID)
+		}(effRouterID)
 	}
 
 	user.Devices = []db.Device{}
@@ -293,8 +352,8 @@ func (h *UserHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if name, ok := payload["name"].(string); ok && name != "" {
-		existing.Name = name
+	if name, ok := payload["name"].(string); ok && strings.TrimSpace(name) != "" {
+		existing.Name = strings.TrimSpace(name)
 	}
 	if icon, ok := payload["avatar_icon"].(string); ok && icon != "" {
 		existing.AvatarIcon = icon
@@ -309,9 +368,56 @@ func (h *UserHandler) Update(w http.ResponseWriter, r *http.Request) {
 		existing.Priority = int(priority)
 	}
 
+	// Handle device assignments / unassignments by MAC address
+	if macsRaw, ok := payload["device_macs"].([]interface{}); ok {
+		var targetMACs []string
+		targetMap := make(map[string]bool)
+		for _, m := range macsRaw {
+			if s, ok := m.(string); ok && strings.TrimSpace(s) != "" {
+				clean := strings.ToUpper(strings.TrimSpace(s))
+				targetMACs = append(targetMACs, clean)
+				targetMap[clean] = true
+			}
+		}
+
+		// Unassign devices belonging to this user that are not in targetMACs
+		allDevs, _ := h.database.GetDevices(existing.RouterID)
+		for _, d := range allDevs {
+			if d.UserID != nil && *d.UserID == existing.ID {
+				if !targetMap[strings.ToUpper(d.MacAddress)] {
+					_, _ = h.database.SqlDB.Exec("UPDATE devices SET user_id = NULL WHERE id = ?", d.ID)
+				}
+			}
+		}
+
+		// Assign newly selected devices
+		for _, mac := range targetMACs {
+			if existing.RouterID != nil {
+				_, _ = h.database.SqlDB.Exec("UPDATE devices SET user_id = ?, router_id = ? WHERE UPPER(mac_address) = ?", existing.ID, *existing.RouterID, mac)
+			} else {
+				_, _ = h.database.SqlDB.Exec("UPDATE devices SET user_id = ? WHERE UPPER(mac_address) = ?", existing.ID, mac)
+			}
+		}
+	}
+
 	if err := h.database.UpdateUser(existing); err != nil {
 		WriteError(w, http.StatusInternalServerError, "Failed to update user: "+err.Error())
 		return
+	}
+
+	var effRouterID int
+	if existing.RouterID != nil && *existing.RouterID > 0 {
+		effRouterID = *existing.RouterID
+	} else if def, err := h.database.GetDefaultRouter(); err == nil && def != nil {
+		effRouterID = def.ID
+	}
+
+	if h.reconciler != nil && effRouterID > 0 {
+		go func(rID int) {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			_ = h.reconciler.ReconcileQueues(ctx, rID)
+		}(effRouterID)
 	}
 
 	WriteJSON(w, http.StatusOK, existing)
@@ -321,12 +427,29 @@ func (h *UserHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	idStr := chi.URLParam(r, "id")
 	id, _ := strconv.Atoi(idStr)
 
+	existing, _ := h.database.GetUser(id)
+
 	// Unassign devices first
 	_, _ = h.database.SqlDB.Exec("UPDATE devices SET user_id = NULL WHERE user_id = ?", id)
 
 	if err := h.database.DeleteUser(id); err != nil {
 		WriteError(w, http.StatusInternalServerError, "Failed to delete user")
 		return
+	}
+
+	var effRouterID int
+	if existing != nil && existing.RouterID != nil && *existing.RouterID > 0 {
+		effRouterID = *existing.RouterID
+	} else if def, err := h.database.GetDefaultRouter(); err == nil && def != nil {
+		effRouterID = def.ID
+	}
+
+	if h.reconciler != nil && effRouterID > 0 {
+		go func(rID int) {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			_ = h.reconciler.ReconcileQueues(ctx, rID)
+		}(effRouterID)
 	}
 
 	WriteJSON(w, http.StatusOK, map[string]string{"message": "User deleted successfully"})

@@ -150,11 +150,13 @@ export function UserModal({ user, unassignedDevices = [], isOpen, onClose, onSav
   const [selectedMacs, setSelectedMacs] = useState([]);
   const [ownDevices, setOwnDevices] = useState([]);
   const [isSaving, setIsSaving] = useState(false);
+  const [saveError, setSaveError] = useState(null);
 
   useEffect(() => {
     if (user) {
       setName(user.name || '');
       setNameError('');
+      setSaveError(null);
       const limit = user.speed_limit || 'unlimited';
       setSpeedLimit(limit);
       const isKnown = SPEED_PRESETS.some(p => p.value === limit);
@@ -176,6 +178,7 @@ export function UserModal({ user, unassignedDevices = [], isOpen, onClose, onSav
     } else {
       setName('');
       setNameError('');
+      setSaveError(null);
       setSpeedLimit('unlimited');
       setIsCustomMode(false);
       setCustomDown('50M');
@@ -189,6 +192,7 @@ export function UserModal({ user, unassignedDevices = [], isOpen, onClose, onSav
 
   const handleNameChange = (val) => {
     setName(val);
+    setSaveError(null);
     if (val && !/^[a-zA-Z0-9_\-\. ]+$/.test(val)) {
       setNameError('Only English letters, numbers, spaces, hyphens, or underscores are allowed.');
     } else {
@@ -235,6 +239,7 @@ export function UserModal({ user, unassignedDevices = [], isOpen, onClose, onSav
     }
 
     setIsSaving(true);
+    setSaveError(null);
     try {
       await onSave({
         name: name.trim(),
@@ -242,6 +247,8 @@ export function UserModal({ user, unassignedDevices = [], isOpen, onClose, onSav
         device_macs: selectedMacs
       });
       onClose();
+    } catch (err) {
+      setSaveError(err.message || String(err));
     } finally {
       setIsSaving(false);
     }
@@ -278,6 +285,20 @@ export function UserModal({ user, unassignedDevices = [], isOpen, onClose, onSav
 
         <form onSubmit={handleSubmit}>
           <div className="modal-body">
+            {saveError && (
+              <div style={{
+                padding: '8px 12px',
+                borderRadius: 'var(--radius-sm)',
+                backgroundColor: 'rgba(239, 68, 68, 0.15)',
+                color: 'var(--color-danger)',
+                fontSize: 'var(--fs-xs)',
+                marginBottom: 12,
+                border: '1px solid rgba(239, 68, 68, 0.3)',
+                wordBreak: 'break-word',
+              }}>
+                {saveError}
+              </div>
+            )}
             <div className="form-group">
               <label className="form-label">{t('user_name')}</label>
               <input

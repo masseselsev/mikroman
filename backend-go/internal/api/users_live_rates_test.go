@@ -69,7 +69,7 @@ func TestUserHandler_LiveRatesEnrichment(t *testing.T) {
 		},
 	}
 
-	handler := NewUserHandler(database, mockProvider)
+	handler := NewUserHandler(database, mockProvider, nil)
 
 	// Test List
 	t.Run("List enriches live rates", func(t *testing.T) {

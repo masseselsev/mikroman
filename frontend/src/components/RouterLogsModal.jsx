@@ -52,6 +52,8 @@ const CATEGORIES = [
 // One click each for the topics RouterOS does not record unless asked.
 const TOPIC_PRESETS = ['wireless', 'firewall', 'wireguard', 'dns', 'script', 'dhcp'];
 
+const LOG_LIMIT_PRESETS = [500, 1000, 2500, 5000, 10000];
+
 const SEVERITY_COLORS = {
   critical: '#f43f5e',
   error: '#ef4444',
@@ -105,6 +107,15 @@ export function RouterLogsModal({ isOpen, onClose, routerId = null, routerName =
       return 500;
     }
   });
+  const [isCustomLimit, setIsCustomLimit] = useState(() => {
+    try {
+      const stored = parseInt(localStorage.getItem('mikroman:logs-limit') || '500', 10);
+      return !LOG_LIMIT_PRESETS.includes(stored);
+    } catch {
+      return false;
+    }
+  });
+  const [customLimitInput, setCustomLimitInput] = useState(() => String(logLimit));
   const [isStreaming, setIsStreaming] = useState(true);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -360,30 +371,94 @@ export function RouterLogsModal({ isOpen, onClose, routerId = null, routerName =
             {source !== 'live' && (
               <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
                 <span style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)' }}>{t('log_limit_label')}:</span>
-                <select
-                  className="form-select"
-                  value={logLimit}
-                  onChange={e => {
-                    const next = Number(e.target.value);
-                    setLogLimit(next);
-                    try {
-                      localStorage.setItem('mikroman:logs-limit', String(next));
-                    } catch {}
-                  }}
-                  style={{
-                    height: 28,
-                    fontSize: 'var(--fs-2xs)',
-                    padding: '2px 24px 2px 8px',
-                    width: 'auto',
-                    minWidth: 74,
-                  }}
-                >
-                  <option value={500}>500</option>
-                  <option value={1000}>1 000</option>
-                  <option value={2500}>2 500</option>
-                  <option value={5000}>5 000</option>
-                  <option value={10000}>10 000</option>
-                </select>
+                {isCustomLimit ? (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                    <input
+                      type="number"
+                      className="form-input"
+                      title="10 - 50 000"
+                      min={10}
+                      max={50000}
+                      value={customLimitInput}
+                      onChange={e => setCustomLimitInput(e.target.value)}
+                      onBlur={() => {
+                        let val = parseInt(customLimitInput, 10);
+                        if (isNaN(val) || val < 10) val = 10;
+                        if (val > 50000) val = 50000;
+                        setCustomLimitInput(String(val));
+                        setLogLimit(val);
+                        try {
+                          localStorage.setItem('mikroman:logs-limit', String(val));
+                        } catch {}
+                      }}
+                      onKeyDown={e => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          let val = parseInt(customLimitInput, 10);
+                          if (isNaN(val) || val < 10) val = 10;
+                          if (val > 50000) val = 50000;
+                          setCustomLimitInput(String(val));
+                          setLogLimit(val);
+                          try {
+                            localStorage.setItem('mikroman:logs-limit', String(val));
+                          } catch {}
+                        }
+                      }}
+                      style={{
+                        height: 28,
+                        fontSize: 'var(--fs-2xs)',
+                        padding: '2px 6px',
+                        width: 75,
+                      }}
+                    />
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-xs"
+                      onClick={() => {
+                        setIsCustomLimit(false);
+                        const fallback = 500;
+                        setLogLimit(fallback);
+                        try {
+                          localStorage.setItem('mikroman:logs-limit', String(fallback));
+                        } catch {}
+                      }}
+                      style={{ height: 28, fontSize: 'var(--fs-2xs)', padding: '2px 8px' }}
+                    >
+                      {t('log_limit_presets')}
+                    </button>
+                  </div>
+                ) : (
+                  <select
+                    className="form-select"
+                    value={LOG_LIMIT_PRESETS.includes(logLimit) ? logLimit : 'custom'}
+                    onChange={e => {
+                      if (e.target.value === 'custom') {
+                        setIsCustomLimit(true);
+                        setCustomLimitInput(String(logLimit));
+                      } else {
+                        const next = Number(e.target.value);
+                        setLogLimit(next);
+                        try {
+                          localStorage.setItem('mikroman:logs-limit', String(next));
+                        } catch {}
+                      }
+                    }}
+                    style={{
+                      height: 28,
+                      fontSize: 'var(--fs-2xs)',
+                      padding: '2px 24px 2px 8px',
+                      width: 'auto',
+                      minWidth: 74,
+                    }}
+                  >
+                    <option value={500}>500</option>
+                    <option value={1000}>1 000</option>
+                    <option value={2500}>2 500</option>
+                    <option value={5000}>5 000</option>
+                    <option value={10000}>10 000</option>
+                    <option value="custom">✏️ {t('log_limit_custom')}</option>
+                  </select>
+                )}
               </div>
             )}
 

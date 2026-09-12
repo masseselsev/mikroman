@@ -151,3 +151,131 @@ func TestDiscoveryAndTelemetryServices(t *testing.T) {
 		t.Fatalf("expected 2s interval from DB setting, got %v", interval)
 	}
 }
+
+func TestTrafficServiceReconcile(t *testing.T) {
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "traffic_test.db")
+
+	fernet, _ := crypto.NewFernet("cw_z4pYJ2-8_9V18R5v6R1XbJ9i9w9G1R1XbJ9i9w9E=")
+	database, err := db.Open(dbPath, fernet)
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer database.Close()
+
+	// Insert router
+	_, err = database.SqlDB.Exec("INSERT INTO routers (id, name, host, is_default) VALUES (1, 'TestRouter', '127.0.0.1', 1)")
+	if err != nil {
+		t.Fatalf("failed to insert router: %v", err)
+	}
+
+	// Insert limited user
+	_, err = database.SqlDB.Exec("INSERT INTO users (id, router_id, name, speed_limit) VALUES (1, 1, 'Alice', '15M/15M')")
+	if err != nil {
+		t.Fatalf("failed to insert user: %v", err)
+	}
+
+	// Insert assigned device for Alice
+	_, err = database.SqlDB.Exec("INSERT INTO devices (id, router_id, user_id, mac_address, ip_address, is_active) VALUES (1, 1, 1, '00:11:22:33:44:55', '192.0.2.10', 1)")
+	if err != nil {
+		t.Fatalf("failed to insert assigned device: %v", err)
+	}
+
+	// Insert unassigned device
+	_, err = database.SqlDB.Exec("INSERT INTO devices (id, router_id, user_id, mac_address, ip_address, is_active) VALUES (2, 1, NULL, '00:11:22:33:44:66', '192.0.2.20', 1)")
+	if err != nil {
+		t.Fatalf("failed to insert unassigned device: %v", err)
+	}
+
+	var createdQueues []routeros.SimpleQueue
+	var addressList []routeros.AddressListEntry
+	filterRules := []routeros.FilterRule{
+		{ID: "*1", Action: "fasttrack-connection", Chain: "forward"},
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/rest/queue/simple", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPut {
+			var q routeros.SimpleQueue
+			_ = json.NewDecoder(r.Body).Decode(&q)
+			q.ID = "*q" + strconv.Itoa(len(createdQueues)+1)
+			createdQueues = append(createdQueues, q)
+			_ = json.NewEncoder(w).Encode(q)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(createdQueues)
+	})
+	mux.HandleFunc("/rest/ip/firewall/address-list", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPut {
+			var entry routeros.AddressListEntry
+			_ = json.NewDecoder(r.Body).Decode(&entry)
+			entry.ID = "*al" + strconv.Itoa(len(addressList)+1)
+			addressList = append(addressList, entry)
+			_ = json.NewEncoder(w).Encode(entry)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(addressList)
+	})
+	mux.HandleFunc("/rest/ip/firewall/filter", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(filterRules)
+	})
+	mux.HandleFunc("/rest/ip/firewall/filter/*1", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPatch {
+			var fields map[string]interface{}
+			_ = json.NewDecoder(r.Body).Decode(&fields)
+			if src, ok := fields["src-address-list"].(string); ok {
+				filterRules[0].SrcAddressList = src
+			}
+			if dst, ok := fields["dst-address-list"].(string); ok {
+				filterRules[0].DstAddressList = dst
+			}
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+	})
+	mux.HandleFunc("/rest/ip/firewall/raw", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode([]routeros.FilterRule{})
+	})
+
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	u, _ := url.Parse(server.URL)
+	port, _ := strconv.Atoi(u.Port())
+	client, err := routeros.NewClient(routeros.Config{
+		Host:    u.Hostname(),
+		Port:    port,
+		Timeout: 2 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+
+	trafficSvc := NewTrafficService(database, client)
+	ctx := context.Background()
+	if err := trafficSvc.ReconcileQueues(ctx, 1); err != nil {
+		t.Fatalf("ReconcileQueues failed: %v", err)
+	}
+
+	// Verify FastTrack exemption rule was patched
+	if filterRules[0].SrcAddressList != "!mikroman_queued" || filterRules[0].DstAddressList != "!mikroman_queued" {
+		t.Fatalf("expected fasttrack exemption to be '!mikroman_queued', got src=%q, dst=%q",
+			filterRules[0].SrcAddressList, filterRules[0].DstAddressList)
+	}
+
+	// Verify Simple Queues were created: Alice and dev-2
+	if len(createdQueues) != 2 {
+		t.Fatalf("expected 2 Simple Queues, got %d: %+v", len(createdQueues), createdQueues)
+	}
+
+	// Verify address list mikroman_queued contains both 192.0.2.10 and 192.0.2.20
+	queuedIPs := make(map[string]bool)
+	for _, entry := range addressList {
+		if entry.List == "mikroman_queued" {
+			queuedIPs[entry.Address] = true
+		}
+	}
+	if !queuedIPs["192.0.2.10"] || !queuedIPs["192.0.2.20"] {
+		t.Fatalf("expected 192.0.2.10 and 192.0.2.20 in mikroman_queued, got %+v", queuedIPs)
+	}
+}

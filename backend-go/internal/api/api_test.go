@@ -1203,3 +1203,98 @@ func TestRouterSubresourceEndpoints(t *testing.T) {
 		t.Fatalf("expected 200 for backup diff, got %d", wDiff.Code)
 	}
 }
+
+func TestUserCreateWithDevicesAndDefaultRouter(t *testing.T) {
+	handler, database, _ := setupTestServer(t)
+	defer database.Close()
+
+	// 1. Status sets CSRF cookie
+	reqStatus := httptest.NewRequest(http.MethodGet, "/api/v1/auth/status", nil)
+	wStatus := httptest.NewRecorder()
+	handler.ServeHTTP(wStatus, reqStatus)
+	var csrfCookie *http.Cookie
+	for _, c := range wStatus.Result().Cookies() {
+		if c.Name == CSRFCookie {
+			csrfCookie = c
+		}
+	}
+
+	// 2. Authenticate
+	loginJSON := []byte(`{"password":"SecretAdminPassword123"}`)
+	reqLogin := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", bytes.NewReader(loginJSON))
+	reqLogin.Header.Set("Content-Type", "application/json")
+	reqLogin.AddCookie(csrfCookie)
+	reqLogin.Header.Set(CSRFHeader, csrfCookie.Value)
+	wLogin := httptest.NewRecorder()
+	handler.ServeHTTP(wLogin, reqLogin)
+
+	var sessionCookie *http.Cookie
+	for _, c := range wLogin.Result().Cookies() {
+		if c.Name == SessionCookie {
+			sessionCookie = c
+		}
+	}
+
+	// 3. Create router and device
+	_, _ = database.SqlDB.Exec("INSERT INTO routers (id, name, host, is_default) VALUES (1, 'MainRouter', '127.0.0.1', 1)")
+	_, _ = database.SqlDB.Exec("INSERT INTO devices (id, router_id, mac_address, ip_address, is_active) VALUES (10, 1, '00:11:22:33:44:77', '192.0.2.77', 1)")
+
+	// 4. Create User with device_macs and without explicit router_id
+	createPayload := []byte(`{
+		"name": "Charlie",
+		"speed_limit": "25M/50M",
+		"device_macs": ["00:11:22:33:44:77"]
+	}`)
+	reqCreate := httptest.NewRequest(http.MethodPost, "/api/v1/users", bytes.NewReader(createPayload))
+	reqCreate.Header.Set("Content-Type", "application/json")
+	reqCreate.AddCookie(csrfCookie)
+	reqCreate.AddCookie(sessionCookie)
+	reqCreate.Header.Set(CSRFHeader, csrfCookie.Value)
+	wCreate := httptest.NewRecorder()
+	handler.ServeHTTP(wCreate, reqCreate)
+
+	if wCreate.Code != http.StatusCreated {
+		t.Fatalf("expected 201 for user creation, got %d: %s", wCreate.Code, wCreate.Body.String())
+	}
+
+	// Verify device is now assigned to user
+	dev, err := database.GetDevice(10)
+	if err != nil || dev == nil {
+		t.Fatalf("device 10 not found: %v", err)
+	}
+	if dev.UserID == nil {
+		t.Fatalf("expected device 10 to be assigned to user, got nil")
+	}
+
+	// Verify user list includes user with assigned device
+	reqList := httptest.NewRequest(http.MethodGet, "/api/v1/users?router_id=1", nil)
+	reqList.AddCookie(sessionCookie)
+	wList := httptest.NewRecorder()
+	handler.ServeHTTP(wList, reqList)
+
+	if wList.Code != http.StatusOK {
+		t.Fatalf("expected 200 for user list, got %d", wList.Code)
+	}
+
+	var resp struct {
+		Success bool      `json:"success"`
+		Data    []db.User `json:"data"`
+	}
+	_ = json.Unmarshal(wList.Body.Bytes(), &resp)
+	users := resp.Data
+	found := false
+	for _, u := range users {
+		if u.Name == "Charlie" {
+			found = true
+			if len(u.Devices) != 1 {
+				t.Fatalf("expected 1 assigned device for Charlie, got %d", len(u.Devices))
+			}
+			if u.Devices[0].MacAddress != "00:11:22:33:44:77" {
+				t.Fatalf("expected MAC 00:11:22:33:44:77, got %s", u.Devices[0].MacAddress)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("user Charlie not found in /api/v1/users")
+	}
+}
