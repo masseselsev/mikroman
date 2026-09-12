@@ -1338,3 +1338,159 @@ func TestUserCreateWithDevicesAndDefaultRouter(t *testing.T) {
 		t.Fatalf("user Charlie not found in /api/v1/users")
 	}
 }
+
+func TestTrafficTimelineWithDataAndDateFormats(t *testing.T) {
+	handler, database, _ := setupTestServer(t)
+	defer database.Close()
+
+	_, _ = database.SqlDB.Exec("INSERT INTO routers (id, name, host, is_default) VALUES (1, 'MainRouter', '127.0.0.1', 1)")
+
+	// Login
+	goodBody := bytes.NewBufferString(`{"password": "SecretAdminPassword123"}`)
+	reqLogin := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", goodBody)
+	reqLogin.Header.Set("Content-Type", "application/json")
+	wLogin := httptest.NewRecorder()
+	handler.ServeHTTP(wLogin, reqLogin)
+	var sessionCookie *http.Cookie
+	for _, c := range wLogin.Result().Cookies() {
+		if c.Name == SessionCookie {
+			sessionCookie = c
+			break
+		}
+	}
+	if sessionCookie == nil {
+		t.Fatalf("login failed, no session cookie")
+	}
+
+	// Insert router, device, and historical rollups
+	rID := 1
+	res, err := database.SqlDB.Exec("INSERT INTO devices (router_id, mac_address, ip_address, hostname, is_active, is_hidden, is_deleted, speed_limit, is_paused, priority, last_seen) VALUES (?, ?, ?, ?, 1, 0, 0, '', 0, 0, ?)", rID, "00:11:22:33:44:88", "192.0.2.200", "HOST-TIMELINE", time.Now().UTC().Format(time.RFC3339))
+	if err != nil {
+		t.Fatalf("failed to insert device: %v", err)
+	}
+	devID, _ := res.LastInsertId()
+
+	now := time.Now()
+	d1 := now.AddDate(0, 0, -2).Format("2006-01-02")
+	d2 := now.AddDate(0, 0, -1).Format("2006-01-02") + " 00:00:00"
+	d3 := now.Format("2006-01-02") + "T00:00:00Z"
+
+	// 1. Insert device rollups with various date string formats
+	_, _ = database.SqlDB.Exec("INSERT INTO device_traffic_rollups (device_id, record_date, bytes_in, bytes_out) VALUES (?, ?, ?, ?)", devID, d1, 1000000, 200000)
+	_, _ = database.SqlDB.Exec("INSERT INTO device_traffic_rollups (device_id, record_date, bytes_in, bytes_out) VALUES (?, ?, ?, ?)", devID, d2, 2000000, 300000)
+	_, _ = database.SqlDB.Exec("INSERT INTO device_traffic_rollups (device_id, record_date, bytes_in, bytes_out) VALUES (?, ?, ?, ?)", devID, d3, 3000000, 400000)
+
+	// 2. Insert interface rollups
+	_, _ = database.SqlDB.Exec("INSERT INTO interface_traffic_rollups (router_id, interface_name, record_date, bytes_in, bytes_out) VALUES (?, ?, ?, ?, ?)", rID, "ether1", d1, 1500000, 250000)
+
+	// Query /api/v1/analytics/traffic?preset=7d&router_id=1
+	reqTraffic := httptest.NewRequest(http.MethodGet, "/api/v1/analytics/traffic?preset=7d&router_id=1", nil)
+	reqTraffic.AddCookie(sessionCookie)
+	wTraffic := httptest.NewRecorder()
+	handler.ServeHTTP(wTraffic, reqTraffic)
+
+	if wTraffic.Code != http.StatusOK {
+		t.Fatalf("expected 200 for traffic analytics, got %d: %s", wTraffic.Code, wTraffic.Body.String())
+	}
+
+	var resp struct {
+		Success bool `json:"success"`
+		Data    struct {
+			Timeline []struct {
+				RecordDate string `json:"record_date"`
+				BytesIn    int64  `json:"bytes_in"`
+				BytesOut   int64  `json:"bytes_out"`
+				TotalBytes int64  `json:"total_bytes"`
+			} `json:"timeline"`
+		} `json:"data"`
+	}
+	_ = json.Unmarshal(wTraffic.Body.Bytes(), &resp)
+
+	if len(resp.Data.Timeline) != 7 {
+		t.Fatalf("expected 7 days in timeline, got %d", len(resp.Data.Timeline))
+	}
+
+	foundD1 := false
+	for _, pt := range resp.Data.Timeline {
+		if pt.RecordDate == now.AddDate(0, 0, -2).Format("2006-01-02") {
+			foundD1 = true
+			if pt.TotalBytes == 0 {
+				t.Fatalf("expected non-zero total_bytes for d1, got 0")
+			}
+		}
+	}
+	if !foundD1 {
+		t.Fatalf("expected to find d1 in timeline")
+	}
+}
+
+func TestUnassignedDevicesHiddenFilter(t *testing.T) {
+	handler, database, _ := setupTestServer(t)
+	defer database.Close()
+
+	_, _ = database.SqlDB.Exec("INSERT INTO routers (id, name, host, is_default) VALUES (1, 'MainRouter', '127.0.0.1', 1)")
+
+	// Login
+	goodBody := bytes.NewBufferString(`{"password": "SecretAdminPassword123"}`)
+	reqLogin := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", goodBody)
+	reqLogin.Header.Set("Content-Type", "application/json")
+	wLogin := httptest.NewRecorder()
+	handler.ServeHTTP(wLogin, reqLogin)
+	var sessionCookie *http.Cookie
+	for _, c := range wLogin.Result().Cookies() {
+		if c.Name == SessionCookie {
+			sessionCookie = c
+			break
+		}
+	}
+	if sessionCookie == nil {
+		t.Fatalf("login failed, no session cookie")
+	}
+
+	// Insert 1 visible unassigned device and 1 hidden unassigned device
+	rID := 1
+	_, _ = database.SqlDB.Exec("INSERT INTO devices (router_id, mac_address, ip_address, hostname, is_active, is_hidden, is_deleted, speed_limit, is_paused, priority, last_seen) VALUES (?, ?, ?, ?, 1, 0, 0, '', 0, 0, ?)", rID, "00:11:22:33:44:91", "192.0.2.201", "HOST-VISIBLE", time.Now().UTC().Format(time.RFC3339))
+	_, _ = database.SqlDB.Exec("INSERT INTO devices (router_id, mac_address, ip_address, hostname, is_active, is_hidden, is_deleted, speed_limit, is_paused, priority, last_seen) VALUES (?, ?, ?, ?, 1, 1, 0, '', 0, 0, ?)", rID, "00:11:22:33:44:92", "192.0.2.202", "HOST-HIDDEN", time.Now().UTC().Format(time.RFC3339))
+
+	// Request with show_hidden=false
+	req1 := httptest.NewRequest(http.MethodGet, "/api/v1/devices?unassigned_only=true&show_hidden=false&router_id=1", nil)
+	req1.AddCookie(sessionCookie)
+	w1 := httptest.NewRecorder()
+	handler.ServeHTTP(w1, req1)
+	var resp1 struct {
+		Success bool        `json:"success"`
+		Data    []db.Device `json:"data"`
+	}
+	_ = json.Unmarshal(w1.Body.Bytes(), &resp1)
+
+	hasHidden1 := false
+	for _, d := range resp1.Data {
+		if d.IsHidden {
+			hasHidden1 = true
+		}
+	}
+	if hasHidden1 {
+		t.Fatalf("expected no hidden devices when show_hidden=false")
+	}
+
+	// Request with show_hidden=true
+	req2 := httptest.NewRequest(http.MethodGet, "/api/v1/devices?unassigned_only=true&show_hidden=true&router_id=1", nil)
+	req2.AddCookie(sessionCookie)
+	w2 := httptest.NewRecorder()
+	handler.ServeHTTP(w2, req2)
+	var resp2 struct {
+		Success bool        `json:"success"`
+		Data    []db.Device `json:"data"`
+	}
+	_ = json.Unmarshal(w2.Body.Bytes(), &resp2)
+
+	hasHidden2 := false
+	for _, d := range resp2.Data {
+		if d.IsHidden {
+			hasHidden2 = true
+		}
+	}
+	if !hasHidden2 {
+		t.Fatalf("expected hidden devices to be included when show_hidden=true")
+	}
+}

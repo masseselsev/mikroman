@@ -356,15 +356,15 @@ func (h *AnalyticsHandler) GetTrafficOverview(w http.ResponseWriter, r *http.Req
 		}
 	}
 
-	// Query router traffic rollups per day
+	// Query router traffic rollups per day (legacy table)
 	routerDailyMap := make(map[string][2]int64)
 	var rQuery string
 	var rArgs []interface{}
 	if routerID != nil {
-		rQuery = `SELECT record_date, SUM(bytes_in), SUM(bytes_out) FROM router_traffic_rollups WHERE router_id = ? AND record_date >= ? AND record_date <= ? GROUP BY record_date`
+		rQuery = `SELECT DATE(record_date), SUM(bytes_in), SUM(bytes_out) FROM router_traffic_rollups WHERE (router_id = ? OR router_id IS NULL) AND DATE(record_date) >= ? AND DATE(record_date) <= ? GROUP BY DATE(record_date)`
 		rArgs = []interface{}{*routerID, startDateStr, endDateStr}
 	} else {
-		rQuery = `SELECT record_date, SUM(bytes_in), SUM(bytes_out) FROM router_traffic_rollups WHERE record_date >= ? AND record_date <= ? GROUP BY record_date`
+		rQuery = `SELECT DATE(record_date), SUM(bytes_in), SUM(bytes_out) FROM router_traffic_rollups WHERE DATE(record_date) >= ? AND DATE(record_date) <= ? GROUP BY DATE(record_date)`
 		rArgs = []interface{}{startDateStr, endDateStr}
 	}
 	rdRows, rdErr := h.database.SqlDB.Query(rQuery, rArgs...)
@@ -374,25 +374,94 @@ func (h *AnalyticsHandler) GetTrafficOverview(w http.ResponseWriter, r *http.Req
 			var dStr string
 			var bIn, bOut int64
 			if err := rdRows.Scan(&dStr, &bIn, &bOut); err == nil {
+				if len(dStr) >= 10 {
+					dStr = dStr[:10]
+				}
 				routerDailyMap[dStr] = [2]int64{bIn, bOut}
 			}
 		}
 	}
 
-	// Query device traffic rollups per day
+	// Query interface traffic rollups per day (where Go collects WAN rollups)
+	ifaceDailyMap := make(map[string][2]int64)
+	var iQuery string
+	var iArgs []interface{}
+	if len(monitoredList) > 0 {
+		placeholders := make([]string, len(monitoredList))
+		for i := range monitoredList {
+			placeholders[i] = "?"
+		}
+		if routerID != nil {
+			iQuery = fmt.Sprintf(`SELECT DATE(record_date), SUM(bytes_in), SUM(bytes_out) FROM interface_traffic_rollups WHERE (router_id = ? OR router_id IS NULL) AND interface_name IN (%s) AND DATE(record_date) >= ? AND DATE(record_date) <= ? GROUP BY DATE(record_date)`, strings.Join(placeholders, ","))
+			iArgs = append(iArgs, *routerID)
+			for _, m := range monitoredList {
+				iArgs = append(iArgs, m)
+			}
+			iArgs = append(iArgs, startDateStr, endDateStr)
+		} else {
+			iQuery = fmt.Sprintf(`SELECT DATE(record_date), SUM(bytes_in), SUM(bytes_out) FROM interface_traffic_rollups WHERE interface_name IN (%s) AND DATE(record_date) >= ? AND DATE(record_date) <= ? GROUP BY DATE(record_date)`, strings.Join(placeholders, ","))
+			for _, m := range monitoredList {
+				iArgs = append(iArgs, m)
+			}
+			iArgs = append(iArgs, startDateStr, endDateStr)
+		}
+	} else {
+		if routerID != nil {
+			iQuery = `SELECT DATE(record_date), SUM(bytes_in), SUM(bytes_out) FROM interface_traffic_rollups WHERE (router_id = ? OR router_id IS NULL) AND DATE(record_date) >= ? AND DATE(record_date) <= ? GROUP BY DATE(record_date)`
+			iArgs = []interface{}{*routerID, startDateStr, endDateStr}
+		} else {
+			iQuery = `SELECT DATE(record_date), SUM(bytes_in), SUM(bytes_out) FROM interface_traffic_rollups WHERE DATE(record_date) >= ? AND DATE(record_date) <= ? GROUP BY DATE(record_date)`
+			iArgs = []interface{}{startDateStr, endDateStr}
+		}
+	}
+	idRows, idErr := h.database.SqlDB.Query(iQuery, iArgs...)
+	if idErr == nil {
+		defer idRows.Close()
+		for idRows.Next() {
+			var dStr string
+			var bIn, bOut int64
+			if err := idRows.Scan(&dStr, &bIn, &bOut); err == nil {
+				if len(dStr) >= 10 {
+					dStr = dStr[:10]
+				}
+				ifaceDailyMap[dStr] = [2]int64{bIn, bOut}
+			}
+		}
+	}
+
+	// Query device traffic rollups per day (scoped by router)
 	deviceDailyMap := make(map[string][2]int64)
-	ddRows, ddErr := h.database.SqlDB.Query(`
-		SELECT record_date, SUM(bytes_in), SUM(bytes_out)
-		FROM device_traffic_rollups
-		WHERE record_date >= ? AND record_date <= ?
-		GROUP BY record_date
-	`, startDateStr, endDateStr)
+	var ddQuery string
+	var ddArgs []interface{}
+	if routerID != nil {
+		ddQuery = `
+			SELECT DATE(dtr.record_date), SUM(dtr.bytes_in), SUM(dtr.bytes_out)
+			FROM device_traffic_rollups dtr
+			JOIN devices d ON d.id = dtr.device_id
+			WHERE (d.router_id = ? OR d.router_id IS NULL)
+			  AND DATE(dtr.record_date) >= ? AND DATE(dtr.record_date) <= ?
+			GROUP BY DATE(dtr.record_date)
+		`
+		ddArgs = []interface{}{*routerID, startDateStr, endDateStr}
+	} else {
+		ddQuery = `
+			SELECT DATE(record_date), SUM(bytes_in), SUM(bytes_out)
+			FROM device_traffic_rollups
+			WHERE DATE(record_date) >= ? AND DATE(record_date) <= ?
+			GROUP BY DATE(record_date)
+		`
+		ddArgs = []interface{}{startDateStr, endDateStr}
+	}
+	ddRows, ddErr := h.database.SqlDB.Query(ddQuery, ddArgs...)
 	if ddErr == nil {
 		defer ddRows.Close()
 		for ddRows.Next() {
 			var dStr string
 			var bIn, bOut int64
 			if err := ddRows.Scan(&dStr, &bIn, &bOut); err == nil {
+				if len(dStr) >= 10 {
+					dStr = dStr[:10]
+				}
 				deviceDailyMap[dStr] = [2]int64{bIn, bOut}
 			}
 		}
@@ -417,9 +486,10 @@ func (h *AnalyticsHandler) GetTrafficOverview(w http.ResponseWriter, r *http.Req
 	for !cur.After(endDt) {
 		curStr := cur.Format("2006-01-02")
 		rTotals := routerDailyMap[curStr]
+		iTotals := ifaceDailyMap[curStr]
 		dTotals := deviceDailyMap[curStr]
-		dayIn := max(rTotals[0], dTotals[0])
-		dayOut := max(rTotals[1], dTotals[1])
+		dayIn := max(max(rTotals[0], iTotals[0]), dTotals[0])
+		dayOut := max(max(rTotals[1], iTotals[1]), dTotals[1])
 		timeline = append(timeline, DailyTrafficPoint{
 			RecordDate: curStr,
 			BytesIn:    dayIn,
@@ -1357,6 +1427,9 @@ func (h *AnalyticsHandler) UserHistory(w http.ResponseWriter, r *http.Request) {
 				var rDate string
 				var bin, bout int64
 				if err := rows.Scan(&rDate, &bin, &bout); err == nil {
+					if len(rDate) >= 10 {
+						rDate = rDate[:10]
+					}
 					rollupsMap[rDate] = [2]int64{bin, bout}
 				}
 			}
@@ -1576,6 +1649,9 @@ func (h *AnalyticsHandler) DeviceHistory(w http.ResponseWriter, r *http.Request)
 				var rDate string
 				var bin, bout int64
 				if err := rows.Scan(&rDate, &bin, &bout); err == nil {
+					if len(rDate) >= 10 {
+						rDate = rDate[:10]
+					}
 					rollupsMap[rDate] = [2]int64{bin, bout}
 				}
 			}

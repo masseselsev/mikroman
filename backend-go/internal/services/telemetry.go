@@ -38,6 +38,12 @@ type TelemetryService struct {
 	prevMangleTime  map[int]time.Time
 	latestRates     map[int]LiveRateSnapshot
 	pubNet          *PublicNetworkService
+	cachedRB        map[int]*routeros.RouterBoard
+	cachedRBAt      map[int]time.Time
+	cachedIPAddrs   map[int][]routeros.IPAddress
+	cachedIPAddrsAt map[int]time.Time
+	cachedPublicIP  map[int]string
+	cachedPubIPAt   map[int]time.Time
 }
 
 func NewTelemetryService(database *db.DB, client *routeros.Client, hub EventBroadcaster) *TelemetryService {
@@ -58,6 +64,12 @@ func NewTelemetryService(database *db.DB, client *routeros.Client, hub EventBroa
 		prevMangleTime:  make(map[int]time.Time),
 		latestRates:     make(map[int]LiveRateSnapshot),
 		pubNet:          NewPublicNetworkService(),
+		cachedRB:        make(map[int]*routeros.RouterBoard),
+		cachedRBAt:      make(map[int]time.Time),
+		cachedIPAddrs:   make(map[int][]routeros.IPAddress),
+		cachedIPAddrsAt: make(map[int]time.Time),
+		cachedPublicIP:  make(map[int]string),
+		cachedPubIPAt:   make(map[int]time.Time),
 	}
 }
 
@@ -289,9 +301,28 @@ func (s *TelemetryService) Collect(ctx context.Context, routerID int) error {
 	s.prevTime[routerID] = now
 	s.mu.Unlock()
 
-	// Resolve WAN IP & Public IP
+	// Resolve WAN IP & Public IP with caching
+	s.mu.Lock()
+	cachedAddrs := s.cachedIPAddrs[routerID]
+	cachedAddrsAt := s.cachedIPAddrsAt[routerID]
+	cachedPub := s.cachedPublicIP[routerID]
+	cachedPubAt := s.cachedPubIPAt[routerID]
+	s.mu.Unlock()
+
+	var ipAddrs []routeros.IPAddress
+	if cachedAddrs != nil && time.Since(cachedAddrsAt) < 30*time.Second {
+		ipAddrs = cachedAddrs
+	} else {
+		ipAddrs, _ = client.GetIPAddresses(ctx)
+		if len(ipAddrs) > 0 {
+			s.mu.Lock()
+			s.cachedIPAddrs[routerID] = ipAddrs
+			s.cachedIPAddrsAt[routerID] = time.Now()
+			s.mu.Unlock()
+		}
+	}
+
 	var wanIP string
-	ipAddrs, _ := client.GetIPAddresses(ctx)
 	if len(monitoredList) > 0 {
 		for _, entry := range ipAddrs {
 			clean := strings.TrimSpace(strings.Split(entry.Address, "/")[0])
@@ -332,7 +363,19 @@ func (s *TelemetryService) Collect(ctx context.Context, routerID int) error {
 			}
 		}
 	}
-	publicIP, _ := client.GetCloudPublicAddress(ctx)
+
+	var publicIP string
+	if cachedPub != "" && time.Since(cachedPubAt) < 60*time.Second {
+		publicIP = cachedPub
+	} else {
+		publicIP, _ = client.GetCloudPublicAddress(ctx)
+		if publicIP != "" {
+			s.mu.Lock()
+			s.cachedPublicIP[routerID] = publicIP
+			s.cachedPubIPAt[routerID] = time.Now()
+			s.mu.Unlock()
+		}
+	}
 	clockStr := now.Format("15:04:05")
 
 	// Differentiate mangle rules for live per-device rates
@@ -403,8 +446,24 @@ func (s *TelemetryService) Collect(ctx context.Context, routerID int) error {
 	s.prevMangleTime[routerID] = now
 	s.mu.Unlock()
 
-	// Fetch hardware details
-	rb, _ := client.GetRouterBoard(ctx)
+	// Fetch hardware details with caching (hardware never changes at runtime)
+	s.mu.Lock()
+	cachedRb := s.cachedRB[routerID]
+	cachedRbAt := s.cachedRBAt[routerID]
+	s.mu.Unlock()
+
+	var rb *routeros.RouterBoard
+	if cachedRb != nil && time.Since(cachedRbAt) < 10*time.Minute {
+		rb = cachedRb
+	} else {
+		rb, _ = client.GetRouterBoard(ctx)
+		if rb != nil {
+			s.mu.Lock()
+			s.cachedRB[routerID] = rb
+			s.cachedRBAt[routerID] = time.Now()
+			s.mu.Unlock()
+		}
+	}
 
 	rbModel := ""
 	rbSerial := ""
@@ -591,14 +650,10 @@ func (s *TelemetryService) StartBackgroundLoop(ctx context.Context, defaultInter
 
 		for {
 			interval := s.getInterval(defaultInterval)
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(interval):
-				routers, err := s.database.GetRouters()
-				if err != nil {
-					continue
-				}
+			start := time.Now()
+
+			routers, err := s.database.GetRouters()
+			if err == nil {
 				for _, r := range routers {
 					if r.IsActive {
 						callCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
@@ -608,6 +663,18 @@ func (s *TelemetryService) StartBackgroundLoop(ctx context.Context, defaultInter
 						cancel()
 					}
 				}
+			}
+
+			elapsed := time.Since(start)
+			sleepDuration := interval - elapsed
+			if sleepDuration < 50*time.Millisecond {
+				sleepDuration = 50 * time.Millisecond
+			}
+
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(sleepDuration):
 			}
 		}
 	}()
