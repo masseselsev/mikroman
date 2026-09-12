@@ -173,6 +173,17 @@ describe('WorldConnectionsModal', () => {
     expect(circle.getAttribute('cx')).toBe('500');
     expect(Number(circle.getAttribute('cy'))).toBeCloseTo(466.67, 1);
   });
+
+  it('does not violate rules of hooks when toggling isOpen from false to true', () => {
+    const { rerender } = render(<WorldConnectionsModal isOpen={false} onClose={vi.fn()} connections={mockGeoConnections} />);
+    expect(screen.queryByText(/Active Connections World Map/i)).not.toBeInTheDocument();
+
+    rerender(<WorldConnectionsModal isOpen={true} onClose={vi.fn()} connections={mockGeoConnections} />);
+    expect(screen.getByText(/Active Connections World Map/i)).toBeInTheDocument();
+
+    rerender(<WorldConnectionsModal isOpen={false} onClose={vi.fn()} connections={mockGeoConnections} />);
+    expect(screen.queryByText(/Active Connections World Map/i)).not.toBeInTheDocument();
+  });
 });
 
 

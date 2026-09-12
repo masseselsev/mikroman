@@ -106,8 +106,6 @@ export function WorldConnectionsModal({
     [geoConnections]
   );
 
-  if (!isOpen) return null;
-
   // Equirectangular projection mapping: width 1000, height 500
   const project = (lat, lng) => {
     const x = ((lng + 180) / 360) * 1000;
@@ -235,6 +233,8 @@ export function WorldConnectionsModal({
   const handleMouseUp = () => {
     setIsDragging(false);
   };
+
+  if (!isOpen) return null;
 
   return (
     <div className="modal-backdrop" onClick={onClose} style={{ zIndex: 1100 }}>
