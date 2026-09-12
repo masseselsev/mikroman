@@ -313,8 +313,6 @@ func (s *TrafficService) ReconcileQueues(ctx context.Context, routerID int) erro
 	for ip, comment := range targetQueuedIPs {
 		if _, exists := queuedMap[ip]; !exists {
 			_ = client.AddToAddressList(ctx, "mikroman_queued", ip, comment)
-			// Flush active connections for newly queued IP so RouterOS immediately throttles
-			_ = client.FlushConnectionsForIP(ctx, ip)
 		}
 	}
 

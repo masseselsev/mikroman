@@ -163,8 +163,6 @@ func (s *DiscoveryService) cleanupIgnoredUnassignedDevices(routerID int, wanIfac
 	if err != nil {
 		return
 	}
-	defer rows.Close()
-
 	var idsToSoftDelete []int
 	for rows.Next() {
 		var id int
@@ -175,9 +173,12 @@ func (s *DiscoveryService) cleanupIgnoredUnassignedDevices(routerID int, wanIfac
 			}
 		}
 	}
+	_ = rows.Close()
 
-	for _, devID := range idsToSoftDelete {
-		_, _ = s.database.SqlDB.Exec(`UPDATE devices SET is_deleted = 1, is_active = 0 WHERE id = ?`, devID)
+	if len(idsToSoftDelete) > 0 {
+		for _, devID := range idsToSoftDelete {
+			_, _ = s.database.SqlDB.Exec(`UPDATE devices SET is_deleted = 1, is_active = 0 WHERE id = ?`, devID)
+		}
 	}
 }
 

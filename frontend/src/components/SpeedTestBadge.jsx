@@ -25,8 +25,7 @@ export function SpeedTestBadge({ routerId, onNavigate }) {
     if (!routerId) return;
     try {
       const res = await api.getSpeedTestStatus(routerId);
-      setStatus(res.data || null);
-      const data = res?.data || res;
+      const data = res?.data !== undefined ? res.data : res;
       setStatus(data || null);
     } catch {
       // Unreachable router, or a RouterOS without the container package. The
