@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -13,11 +14,32 @@ import (
 )
 
 type DeviceHandler struct {
-	database *db.DB
+	database   *db.DB
+	reconciler QueueReconciler
 }
 
-func NewDeviceHandler(database *db.DB) *DeviceHandler {
-	return &DeviceHandler{database: database}
+func NewDeviceHandler(database *db.DB, reconciler QueueReconciler) *DeviceHandler {
+	return &DeviceHandler{database: database, reconciler: reconciler}
+}
+
+func (h *DeviceHandler) triggerReconcile(deviceID int) {
+	if h.reconciler == nil {
+		return
+	}
+	dev, _ := h.database.GetDevice(deviceID)
+	var rID int
+	if dev != nil && dev.RouterID != nil {
+		rID = *dev.RouterID
+	} else if def, err := h.database.GetDefaultRouter(); err == nil && def != nil {
+		rID = def.ID
+	}
+	if rID > 0 {
+		go func(routerID int) {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			_ = h.reconciler.ReconcileQueues(ctx, routerID)
+		}(rID)
+	}
 }
 
 func (h *DeviceHandler) List(w http.ResponseWriter, r *http.Request) {
@@ -147,6 +169,8 @@ func (h *DeviceHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	h.triggerReconcile(id)
+
 	WriteJSON(w, http.StatusOK, map[string]string{"message": "Device updated successfully"})
 }
 
@@ -160,6 +184,8 @@ func (h *DeviceHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusInternalServerError, "Failed to delete device")
 		return
 	}
+
+	h.triggerReconcile(id)
 
 	WriteJSON(w, http.StatusOK, map[string]string{"message": "Device deleted successfully"})
 }
@@ -179,6 +205,8 @@ func (h *DeviceHandler) Pause(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	h.triggerReconcile(id)
+
 	WriteJSON(w, http.StatusOK, map[string]interface{}{"id": id, "is_paused": payload.IsPaused})
 }
 
@@ -196,6 +224,8 @@ func (h *DeviceHandler) Limit(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusInternalServerError, "Failed to update speed limit")
 		return
 	}
+
+	h.triggerReconcile(id)
 
 	WriteJSON(w, http.StatusOK, map[string]interface{}{"id": id, "speed_limit": payload.SpeedLimit})
 }

@@ -23,6 +23,7 @@ type RouterConfig struct {
 	Client           *routeros.Client
 	Hub              *Hub
 	LiveRates        LiveRatesProvider
+	Reconciler       QueueReconciler
 	TelegramReloader TelegramReloader
 	DistDir          string
 }
@@ -165,7 +166,7 @@ func NewRouter(rc RouterConfig) http.Handler {
 		})
 
 		// Devices
-		devH := NewDeviceHandler(rc.DB)
+		devH := NewDeviceHandler(rc.DB, rc.Reconciler)
 		api.Route("/devices", func(d chi.Router) {
 			d.Get("/", devH.List)
 			d.Post("/scan", devH.Scan)
@@ -184,7 +185,7 @@ func NewRouter(rc RouterConfig) http.Handler {
 		})
 
 		// Users
-		userH := NewUserHandler(rc.DB, rc.LiveRates)
+		userH := NewUserHandler(rc.DB, rc.LiveRates, rc.Reconciler)
 		api.Route("/users", func(u chi.Router) {
 			u.Get("/", userH.List)
 			u.Post("/", userH.Create)
@@ -196,7 +197,7 @@ func NewRouter(rc RouterConfig) http.Handler {
 		})
 
 		// Traffic
-		trafficH := NewTrafficHandler(rc.DB)
+		trafficH := NewTrafficHandler(rc.DB, rc.Reconciler)
 		api.Route("/traffic", func(t chi.Router) {
 			t.Post("/users/{id}/limit", trafficH.SetUserLimit)
 			t.Post("/users/{id}/pause", trafficH.ToggleUserPause)

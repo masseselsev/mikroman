@@ -100,8 +100,8 @@ func (h *LogHandler) GetLogs(w http.ResponseWriter, r *http.Request) {
 	limit := 100
 	if l := q.Get("limit"); l != "" {
 		if val, err := strconv.Atoi(l); err == nil && val > 0 {
-			if val > 10000 {
-				limit = 10000
+			if val > 50000 {
+				limit = 50000
 			} else {
 				limit = val
 			}

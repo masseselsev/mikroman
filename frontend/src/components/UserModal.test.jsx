@@ -102,4 +102,30 @@ describe('UserModal device maintenance', () => {
     fireEvent.click(within(row).getByText(/^Delete$/));
     expect(api.deleteDevice).not.toHaveBeenCalled();
   });
+
+  it('displays error banner when onSave fails', async () => {
+    const onSave = vi.fn().mockRejectedValue(new Error('Network error: failed to create user'));
+    renderWithProviders(
+      <UserModal user={null} isOpen onClose={() => {}} onSave={onSave} onDeviceChanged={vi.fn()} />
+    );
+    fireEvent.change(screen.getByPlaceholderText(/Alex, Kids/i), { target: { value: 'Alice' } });
+    fireEvent.click(screen.getByRole('button', { name: /save/i }));
+    await waitFor(() => {
+      expect(screen.getByText('Network error: failed to create user')).toBeInTheDocument();
+    });
+  });
+
+  it('calls onSave and onClose when saving succeeds', async () => {
+    const onSave = vi.fn().mockResolvedValue({});
+    const onClose = vi.fn();
+    renderWithProviders(
+      <UserModal user={null} isOpen onClose={onClose} onSave={onSave} onDeviceChanged={vi.fn()} />
+    );
+    fireEvent.change(screen.getByPlaceholderText(/Alex, Kids/i), { target: { value: 'Bob' } });
+    fireEvent.click(screen.getByRole('button', { name: /save/i }));
+    await waitFor(() => {
+      expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ name: 'Bob' }));
+      expect(onClose).toHaveBeenCalled();
+    });
+  });
 });

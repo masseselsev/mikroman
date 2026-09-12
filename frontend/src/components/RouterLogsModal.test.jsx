@@ -36,6 +36,9 @@ vi.mock('../context/I18nContext', () => ({
         log_rule_builtin: 'built-in',
         delete_rule_btn: 'Delete Rule',
         log_search_ph: 'Search message or topic...',
+        log_limit_label: 'Limit',
+        log_limit_custom: 'Custom...',
+        log_limit_presets: 'Presets',
       };
       let text = trans[k] || k;
       Object.entries(p).forEach(([key, v]) => {
@@ -264,5 +267,41 @@ describe('RouterLogsModal hide-own-logins toggle', () => {
       const last = api.getLogs.mock.calls[api.getLogs.mock.calls.length - 1][0];
       expect(last.hide_container_logs).toBe(true);
     });
+  });
+
+  it('allows changing log limit via presets and custom manual input', async () => {
+    open();
+    await waitFor(() => expect(api.getLogs).toHaveBeenCalled());
+
+    // Switch to Stored History (DB)
+    fireEvent.click(screen.getByText('Stored History (DB)'));
+    await waitFor(() => {
+      expect(screen.getByText('Limit:')).toBeInTheDocument();
+    });
+
+    // Preset select should be present
+    const select = screen.getByRole('combobox');
+    expect(select).toBeInTheDocument();
+
+    // Select custom option
+    fireEvent.change(select, { target: { value: 'custom' } });
+
+    // Custom input should appear
+    const input = screen.getByTitle('10 - 50 000');
+    expect(input).toBeInTheDocument();
+
+    // Enter custom limit and blur
+    fireEvent.change(input, { target: { value: '1250' } });
+    fireEvent.blur(input);
+
+    await waitFor(() => {
+      const last = api.getLogs.mock.calls[api.getLogs.mock.calls.length - 1][0];
+      expect(last.limit).toBe(1250);
+      expect(last.source).toBe('db');
+    });
+
+    // Switch back to presets
+    fireEvent.click(screen.getByText('Presets'));
+    expect(screen.getByRole('combobox')).toBeInTheDocument();
   });
 });

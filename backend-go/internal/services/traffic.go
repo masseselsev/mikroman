@@ -87,7 +87,7 @@ func (s *TrafficService) getClient(routerID int) (*routeros.Client, error) {
 	return newClient, nil
 }
 
-// ReconcileQueues ensures Simple Queues match active user limits and assignments.
+// ReconcileQueues ensures Simple Queues match active user limits, unassigned device limits, and FastTrack exemptions.
 func (s *TrafficService) ReconcileQueues(ctx context.Context, routerID int) error {
 	client, err := s.getClient(routerID)
 	if err != nil || client == nil {
@@ -109,59 +109,174 @@ func (s *TrafficService) ReconcileQueues(ctx context.Context, routerID int) erro
 		return err
 	}
 
-	queueByName := make(map[string]routeros.SimpleQueue)
-	for _, q := range existingQueues {
-		queueByName[q.Name] = q
-	}
+	immunes := client.GetImmuneIPs()
 
 	// Map devices per user
-	immunes := client.GetImmuneIPs()
 	userIPs := make(map[int][]string)
+	userCleanIPs := make(map[int][]string)
 	for _, dev := range devices {
 		if dev.UserID != nil && dev.IPAddress.Valid && dev.IPAddress.String != "" {
 			ip := cleanIP(dev.IPAddress.String)
 			if ip != "" && !immunes[ip] {
 				userIPs[*dev.UserID] = append(userIPs[*dev.UserID], ip+"/32")
+				userCleanIPs[*dev.UserID] = append(userCleanIPs[*dev.UserID], ip)
 			}
 		}
 	}
 
+	targetQueuedIPs := make(map[string]string) // IP -> comment
+
+	// 1. Reconcile user queues
 	for _, u := range users {
 		ips := userIPs[u.ID]
+		cleanList := userCleanIPs[u.ID]
 		qName := fmt.Sprintf("mikroman-%s", u.Name)
-		if len(ips) == 0 {
-			// No active IPs for user
-			if q, exists := queueByName[qName]; exists {
-				_ = client.DeleteSimpleQueue(ctx, q.ID)
+		uComment := fmt.Sprintf("mikroman:user_%d", u.ID)
+		maxLimit := formatRate(u.SpeedLimit)
+
+		var matchedQ *routeros.SimpleQueue
+		for _, q := range existingQueues {
+			if q.Comment == uComment || q.Name == qName {
+				matchedQ = &q
+				break
+			}
+		}
+
+		if len(ips) == 0 || maxLimit == "0/0" {
+			// No active IPs or unlimited limit -> remove simple queue
+			if matchedQ != nil {
+				_ = client.DeleteSimpleQueue(ctx, matchedQ.ID)
 			}
 			continue
 		}
 
 		target := strings.Join(ips, ",")
-		maxLimit := formatRate(u.SpeedLimit)
-
-		existing, exists := queueByName[qName]
-		if !exists {
+		if matchedQ == nil {
 			newQ := routeros.SimpleQueue{
 				Name:     qName,
 				Target:   target,
 				MaxLimit: maxLimit,
 				Disabled: false,
-				Comment:  fmt.Sprintf("mikroman:user_%d", u.ID),
+				Comment:  uComment,
 			}
 			_ = client.CreateSimpleQueue(ctx, &newQ)
-		} else if existing.Target != target || existing.MaxLimit != maxLimit {
-			_ = client.UpdateSimpleQueue(ctx, existing.ID, map[string]interface{}{
+		} else if matchedQ.Target != target || matchedQ.MaxLimit != maxLimit || matchedQ.Name != qName {
+			_ = client.UpdateSimpleQueue(ctx, matchedQ.ID, map[string]interface{}{
+				"name":      qName,
 				"target":    target,
 				"max-limit": maxLimit,
+				"comment":   uComment,
 			})
+		}
+
+		// Add IPs to mikroman_queued so FastTrack doesn't bypass the queue
+		for _, ip := range cleanList {
+			targetQueuedIPs[ip] = fmt.Sprintf("mikroman:queued:user_%d", u.ID)
 		}
 	}
 
-	// Ensure pause rules safely
+	// 2. Reconcile unassigned device queues
+	unassignedLimitStr := "5M/5M"
+	if sVal, err := s.database.GetSetting(fmt.Sprintf("unassigned_device_speed_limit_%d", routerID)); err == nil && sVal != "" {
+		unassignedLimitStr = sVal
+	} else if sVal, err := s.database.GetSetting("unassigned_device_speed_limit"); err == nil && sVal != "" {
+		unassignedLimitStr = sVal
+	}
+
+	for _, dev := range devices {
+		if dev.UserID != nil || dev.IsDeleted || !dev.IPAddress.Valid || dev.IPAddress.String == "" {
+			continue
+		}
+		ip := cleanIP(dev.IPAddress.String)
+		if ip == "" || immunes[ip] {
+			continue
+		}
+
+		devComment := fmt.Sprintf("mikroman:dev_%d", dev.ID)
+		devQName := fmt.Sprintf("mikroman-dev-%d", dev.ID)
+
+		var matchedDevQ *routeros.SimpleQueue
+		for _, q := range existingQueues {
+			if q.Comment == devComment || q.Name == devQName {
+				matchedDevQ = &q
+				break
+			}
+		}
+
+		effLimit := unassignedLimitStr
+		if dev.SpeedLimit != "" && dev.SpeedLimit != "default" {
+			effLimit = dev.SpeedLimit
+		}
+		maxLimit := formatRate(effLimit)
+
+		if maxLimit == "0/0" || !dev.IsActive {
+			if matchedDevQ != nil {
+				_ = client.DeleteSimpleQueue(ctx, matchedDevQ.ID)
+			}
+			continue
+		}
+
+		target := ip + "/32"
+		if matchedDevQ == nil {
+			newQ := routeros.SimpleQueue{
+				Name:     devQName,
+				Target:   target,
+				MaxLimit: maxLimit,
+				Disabled: false,
+				Comment:  devComment,
+			}
+			_ = client.CreateSimpleQueue(ctx, &newQ)
+		} else if matchedDevQ.Target != target || matchedDevQ.MaxLimit != maxLimit {
+			_ = client.UpdateSimpleQueue(ctx, matchedDevQ.ID, map[string]interface{}{
+				"name":      devQName,
+				"target":    target,
+				"max-limit": maxLimit,
+				"comment":   devComment,
+			})
+		}
+
+		targetQueuedIPs[ip] = fmt.Sprintf("mikroman:queued:dev_%d", dev.ID)
+	}
+
+	// 3. Clean up stray dev queues for devices that are now assigned to a user
+	for _, dev := range devices {
+		if dev.UserID != nil {
+			devComment := fmt.Sprintf("mikroman:dev_%d", dev.ID)
+			devQName := fmt.Sprintf("mikroman-dev-%d", dev.ID)
+			for _, q := range existingQueues {
+				if q.Comment == devComment || q.Name == devQName {
+					_ = client.DeleteSimpleQueue(ctx, q.ID)
+				}
+			}
+		}
+	}
+
+	// 4. Reconcile mikroman_queued address list (for FastTrack exemption)
+	currentQueued, _ := client.GetAddressList(ctx, "mikroman_queued")
+	queuedMap := make(map[string]string)
+	for _, item := range currentQueued {
+		queuedMap[item.Address] = item.ID
+	}
+
+	for ip, comment := range targetQueuedIPs {
+		if _, exists := queuedMap[ip]; !exists {
+			_ = client.AddToAddressList(ctx, "mikroman_queued", ip, comment)
+		}
+	}
+
+	for ip, id := range queuedMap {
+		if _, needed := targetQueuedIPs[ip]; !needed {
+			_ = client.RemoveFromAddressList(ctx, id)
+		}
+	}
+
+	// 5. Ensure FastTrack bypass rule excludes mikroman_queued
+	_ = client.EnsureFastTrackExemption(ctx)
+
+	// 6. Ensure pause drop rules safely
 	_ = client.EnsurePauseRules(ctx)
 
-	// Reconcile mikroman_blocked address list
+	// 7. Reconcile mikroman_blocked address list
 	userPaused := make(map[int]bool)
 	for _, u := range users {
 		if u.IsPaused {
@@ -183,18 +298,18 @@ func (s *TrafficService) ReconcileQueues(ctx context.Context, routerID int) erro
 	}
 
 	currentBlocked, _ := client.GetAddressList(ctx, "mikroman_blocked")
-	currentMap := make(map[string]string)
+	currentBlockedMap := make(map[string]string)
 	for _, item := range currentBlocked {
-		currentMap[item.Address] = item.ID
+		currentBlockedMap[item.Address] = item.ID
 	}
 
 	for ip, comment := range targetBlockedIPs {
-		if _, exists := currentMap[ip]; !exists {
+		if _, exists := currentBlockedMap[ip]; !exists {
 			_ = client.AddToAddressList(ctx, "mikroman_blocked", ip, comment)
 		}
 	}
 
-	for ip, id := range currentMap {
+	for ip, id := range currentBlockedMap {
 		if _, needed := targetBlockedIPs[ip]; !needed {
 			_ = client.RemoveFromAddressList(ctx, id)
 		}

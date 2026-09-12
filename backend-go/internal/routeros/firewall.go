@@ -142,6 +142,27 @@ func (c *Client) EnsurePauseRules(ctx context.Context) error {
 	return nil
 }
 
+// EnsureFastTrackExemption ensures FastTrack rule excludes mikroman_queued addresses so Simple Queues take effect.
+func (c *Client) EnsureFastTrackExemption(ctx context.Context) error {
+	filterRules, err := c.GetFilterRules(ctx)
+	if err != nil {
+		return err
+	}
+
+	for _, r := range filterRules {
+		if r.Action == "fasttrack-connection" && r.ID != "" {
+			if r.SrcAddressList != "!mikroman_queued" || r.DstAddressList != "!mikroman_queued" {
+				path := fmt.Sprintf("/ip/firewall/filter/%s", r.ID)
+				_ = c.Patch(ctx, path, map[string]interface{}{
+					"src-address-list": "!mikroman_queued",
+					"dst-address-list": "!mikroman_queued",
+				}, nil)
+			}
+		}
+	}
+	return nil
+}
+
 // GetFirewallConnections reads /ip/firewall/connection
 func (c *Client) GetFirewallConnections(ctx context.Context) ([]FirewallConnection, error) {
 	var conns []FirewallConnection
