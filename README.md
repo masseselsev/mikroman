@@ -64,7 +64,7 @@
   * Precise SoC hardware identification (`services.ResolveCPUIdentity`) mapping RouterOS board names and product codes to exact processor part numbers (e.g. Qualcomm IPQ-5322).
   * Robust RouterOS container detection supporting both boolean and string serialization, with configuration fallback probing.
   * Centralized terminal log viewer with regex event classification (auth, interface, DHCP, wireless, firewall, system), SQLite history storage up to 50,000 entries, depth selector with full custom manual limits, and self-API mutation filtering (`by api:rest`).
-  * Router-native **Speed Test Runner** running single-shot Ookla tests via lightweight RouterOS container (`quay.io/tangent/speedtest-cli:latest`), streaming download/upload/ping metrics into history without external tooling.
+  * Dual-mode **Speed Test Runner**: pure Go in-process engine executing directly when MikroMan is deployed inside a RouterOS container (zero external container or CLI dependencies), with transparent fallback to the on-router container runner (`quay.io/tangent/speedtest-cli:latest`) when running externally, recording latency, jitter, download, and upload metrics into SQLite history.
   * Configurable bandwidth display unit toggle (`Mbps`/`Kbps` vs `MB/s`/`KB/s`) persisting across the application.
   * Multi-router ISP quota isolation: quotas are strictly scoped per-router with unmetered defaults and a first-connect setup prompt.
   * Hardened WAN IP and subnet rotation resilience, preventing rule duplication and protecting loopback/immune targets against malformed masks.

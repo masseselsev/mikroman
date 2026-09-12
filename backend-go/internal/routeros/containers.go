@@ -151,6 +151,28 @@ func (c *Client) GetDisks(ctx context.Context) ([]DiskItem, error) {
 	return list, nil
 }
 
+// VethInterface represents /interface/veth
+type VethInterface struct {
+	ID       string       `json:".id"`
+	Name     string       `json:"name"`
+	Address  string       `json:"address"`
+	Gateway  string       `json:"gateway"`
+	Disabled FlexibleBool `json:"disabled"`
+	Comment  string       `json:"comment"`
+}
+
+// GetVethInterfaces queries /interface/veth
+func (c *Client) GetVethInterfaces(ctx context.Context) ([]VethInterface, error) {
+	var list []VethInterface
+	if err := c.Get(ctx, "/interface/veth", &list); err != nil {
+		if strings.Contains(err.Error(), "404") || strings.Contains(err.Error(), "no such command") {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return list, nil
+}
+
 // RunContainerAction runs start, stop, or remove on a container
 func (c *Client) RunContainerAction(ctx context.Context, id string, action string) error {
 	switch strings.ToLower(action) {

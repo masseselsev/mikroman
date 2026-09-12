@@ -1139,12 +1139,42 @@ func TestRouterSubresourceEndpoints(t *testing.T) {
 	}
 
 	// 2. Speedtest
+	os.Setenv("MIKROMAN_ON_ROUTER", "true")
 	reqSt := httptest.NewRequest(http.MethodGet, "/api/v1/routers/"+rIDStr+"/speedtest", nil)
 	reqSt.AddCookie(sessionCookie)
 	wSt := httptest.NewRecorder()
 	handler.ServeHTTP(wSt, reqSt)
 	if wSt.Code != http.StatusOK {
 		t.Fatalf("expected 200 for speedtest status, got %d", wSt.Code)
+	}
+	var stResp struct {
+		Success bool               `json:"success"`
+		Data    SpeedTestStatusDTO `json:"data"`
+	}
+	if err := json.Unmarshal(wSt.Body.Bytes(), &stResp); err != nil {
+		t.Fatalf("failed to unmarshal speedtest status: %v", err)
+	}
+	if !stResp.Data.CanRun || stResp.Data.Mode != "builtin" {
+		t.Errorf("expected CanRun=true and Mode=builtin when MIKROMAN_ON_ROUTER=true, got %+v", stResp.Data)
+	}
+
+	// When off-router and no container configured
+	os.Setenv("MIKROMAN_ON_ROUTER", "false")
+	reqStOff := httptest.NewRequest(http.MethodGet, "/api/v1/routers/"+rIDStr+"/speedtest", nil)
+	reqStOff.AddCookie(sessionCookie)
+	wStOff := httptest.NewRecorder()
+	handler.ServeHTTP(wStOff, reqStOff)
+	if wStOff.Code != http.StatusOK {
+		t.Fatalf("expected 200 for speedtest status, got %d", wStOff.Code)
+	}
+	var stRespOff struct {
+		Success bool               `json:"success"`
+		Data    SpeedTestStatusDTO `json:"data"`
+	}
+	if err := json.Unmarshal(wStOff.Body.Bytes(), &stRespOff); err == nil {
+		if stRespOff.Data.Mode != "container" {
+			t.Errorf("expected Mode=container when off-router, got %q", stRespOff.Data.Mode)
+		}
 	}
 
 	reqStHist := httptest.NewRequest(http.MethodGet, "/api/v1/routers/"+rIDStr+"/speedtest/history", nil)

@@ -81,6 +81,7 @@ func (h *SpeedTestHandler) getClient(routerID int) (*routeros.Client, error) {
 type SpeedTestStatusDTO struct {
 	CanRun          bool        `json:"can_run"`
 	Reason          string      `json:"reason"`
+	Mode            string      `json:"mode,omitempty"` // "builtin" | "container"
 	ContainerID     *string     `json:"container_id,omitempty"`
 	ContainerStatus *string     `json:"container_status,omitempty"`
 	LoggingEnabled  bool        `json:"logging_enabled"`
@@ -101,6 +102,7 @@ func (h *SpeedTestHandler) Status(w http.ResponseWriter, r *http.Request) {
 		WriteJSON(w, http.StatusOK, SpeedTestStatusDTO{
 			CanRun:     false,
 			Reason:     "unreachable",
+			Mode:       "container",
 			LastResult: lastResult,
 		})
 		return
@@ -109,12 +111,28 @@ func (h *SpeedTestHandler) Status(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
+	// 1. If running as a container on RouterOS itself, use the built-in Go runner directly
+	if services.IsRunningInRouterOSContainer(ctx, client) {
+		statusStr := "running"
+		WriteJSON(w, http.StatusOK, SpeedTestStatusDTO{
+			CanRun:          true,
+			Reason:          "ready",
+			Mode:            "builtin",
+			ContainerStatus: &statusStr,
+			LoggingEnabled:  true,
+			LastResult:      lastResult,
+		})
+		return
+	}
+
+	// 2. Otherwise (external host mode), require the on-router container to measure WAN link accurately
 	runner := services.NewSpeedTestRunner(client)
 	container, err := runner.FindContainer(ctx)
 	if err != nil {
 		WriteJSON(w, http.StatusOK, SpeedTestStatusDTO{
 			CanRun:     false,
 			Reason:     "unreachable",
+			Mode:       "container",
 			LastResult: lastResult,
 		})
 		return
@@ -124,6 +142,7 @@ func (h *SpeedTestHandler) Status(w http.ResponseWriter, r *http.Request) {
 		WriteJSON(w, http.StatusOK, SpeedTestStatusDTO{
 			CanRun:     false,
 			Reason:     "no_container",
+			Mode:       "container",
 			LastResult: lastResult,
 		})
 		return
@@ -138,6 +157,7 @@ func (h *SpeedTestHandler) Status(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, SpeedTestStatusDTO{
 		CanRun:          true,
 		Reason:          "ready",
+		Mode:            "container",
 		ContainerID:     &cID,
 		ContainerStatus: &cStatus,
 		LoggingEnabled:  true,
@@ -158,6 +178,27 @@ func (h *SpeedTestHandler) Run(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// If running inside RouterOS container on this router, execute the in-process Go engine directly
+	if services.IsRunningInRouterOSContainer(r.Context(), client) {
+		reading, err := services.RunBuiltinSpeedTest(r.Context(), nil)
+		if err != nil && reading.Status != "ok" {
+			errMsg := err.Error()
+			if reading.Error != nil && *reading.Error != "" {
+				errMsg = *reading.Error
+			}
+			dbModel := reading.ToDBModel(routerID)
+			_ = h.database.InsertSpeedTestResult(dbModel)
+			WriteJSON(w, http.StatusOK, map[string]interface{}{"result": dbModel, "error": errMsg})
+			return
+		}
+
+		dbModel := reading.ToDBModel(routerID)
+		_ = h.database.InsertSpeedTestResult(dbModel)
+		WriteJSON(w, http.StatusOK, map[string]interface{}{"result": dbModel})
+		return
+	}
+
+	// External host mode: run on-router speedtest container
 	runner := services.NewSpeedTestRunner(client)
 	reading, err := runner.Run(r.Context(), 120*time.Second)
 	if err != nil && reading.Status != "ok" {
