@@ -35,6 +35,32 @@ func (f FlexibleInt64) String() string {
 	return strconv.FormatInt(int64(f), 10)
 }
 
+// FlexibleFloat64 unmarshals both string numbers ("12345.6") and JSON numeric numbers (12345.6).
+type FlexibleFloat64 float64
+
+func (f *FlexibleFloat64) UnmarshalJSON(b []byte) error {
+	s := strings.Trim(string(b), `"`)
+	if s == "" || s == "null" {
+		*f = 0
+		return nil
+	}
+	v, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		*f = 0
+		return nil
+	}
+	*f = FlexibleFloat64(v)
+	return nil
+}
+
+func (f FlexibleFloat64) MarshalJSON() ([]byte, error) {
+	return []byte(strconv.FormatFloat(float64(f), 'f', -1, 64)), nil
+}
+
+func (f FlexibleFloat64) Float64() float64 {
+	return float64(f)
+}
+
 // FlexibleBool unmarshals both boolean (true/false) and string ("true"/"false"/"yes"/"no").
 type FlexibleBool bool
 

@@ -56,25 +56,23 @@ func (h *LogHandler) getClient(routerID int) (*routeros.Client, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	if c, ok := h.clients[routerID]; ok && c != nil {
-		return c, nil
-	}
-
-	defaultRouter, _ := h.database.GetDefaultRouter()
-	if defaultRouter != nil && defaultRouter.ID == routerID && h.client != nil {
-		h.clients[routerID] = h.client
-		return h.client, nil
-	}
-	if (defaultRouter == nil || routerID == 0) && h.client != nil {
-		return h.client, nil
-	}
-
 	router, err := h.database.GetRouter(routerID)
 	if err != nil || router == nil {
 		if h.client != nil {
 			return h.client, nil
 		}
 		return nil, fmt.Errorf("router %d not found", routerID)
+	}
+
+	if c, ok := h.clients[routerID]; ok && c != nil {
+		if c.Matches(router.Host, router.Port) {
+			return c, nil
+		}
+	}
+
+	if h.client != nil && h.client.Matches(router.Host, router.Port) {
+		h.clients[routerID] = h.client
+		return h.client, nil
 	}
 
 	newClient, err := routeros.NewClient(routeros.Config{

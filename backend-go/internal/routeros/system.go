@@ -123,11 +123,11 @@ func (c *Client) Reboot(ctx context.Context) error {
 
 // InterfaceTrafficRate holds instantaneous traffic rates from /interface/monitor-traffic.
 type InterfaceTrafficRate struct {
-	Name               string  `json:"name"`
-	RxBitsPerSecond    float64 `json:"rx-bits-per-second"`
-	TxBitsPerSecond    float64 `json:"tx-bits-per-second"`
-	RxPacketsPerSecond float64 `json:"rx-packets-per-second"`
-	TxPacketsPerSecond float64 `json:"tx-packets-per-second"`
+	Name               string          `json:"name"`
+	RxBitsPerSecond    FlexibleFloat64 `json:"rx-bits-per-second"`
+	TxBitsPerSecond    FlexibleFloat64 `json:"tx-bits-per-second"`
+	RxPacketsPerSecond FlexibleFloat64 `json:"rx-packets-per-second"`
+	TxPacketsPerSecond FlexibleFloat64 `json:"tx-packets-per-second"`
 }
 
 // MonitorInterfaceTraffic fetches live interface bandwidth rates via POST /interface/monitor-traffic once.

@@ -57,6 +57,8 @@ func NewTelemetryService(database *db.DB, client *routeros.Client, hub EventBroa
 	if client != nil {
 		if def, err := database.GetDefaultRouter(); err == nil && def != nil {
 			clients[def.ID] = client
+		} else if routers, err := database.GetRouters(); err == nil && len(routers) == 1 {
+			clients[routers[0].ID] = client
 		}
 	}
 	return &TelemetryService{
@@ -114,25 +116,17 @@ func (s *TelemetryService) getClient(routerID int) (*routeros.Client, error) {
 		return c, nil
 	}
 
-	defaultRouter, _ := s.database.GetDefaultRouter()
-	if defaultRouter != nil && defaultRouter.ID == routerID && s.client != nil {
-		s.clients[routerID] = s.client
-		return s.client, nil
-	}
-	if defaultRouter == nil && s.client != nil {
-		routers, _ := s.database.GetRouters()
-		if len(routers) <= 1 {
-			s.clients[routerID] = s.client
-			return s.client, nil
-		}
-	}
-
 	router, err := s.database.GetRouter(routerID)
 	if err != nil {
 		return nil, err
 	}
 	if router == nil {
 		return nil, fmt.Errorf("router %d not found", routerID)
+	}
+
+	if s.client != nil && s.client.Matches(router.Host, router.Port) {
+		s.clients[routerID] = s.client
+		return s.client, nil
 	}
 
 	newClient, err := routeros.NewClient(routeros.Config{
@@ -366,10 +360,10 @@ func (s *TelemetryService) Collect(ctx context.Context, routerID int) error {
 	var wanRxBps, wanTxBps float64
 	if len(monitoredList) > 0 && len(rates) > 0 {
 		for _, r := range rates {
-			wanRxBps += r.RxBitsPerSecond
-			wanTxBps += r.TxBitsPerSecond
+			wanRxBps += r.RxBitsPerSecond.Float64()
+			wanTxBps += r.TxBitsPerSecond.Float64()
 		}
-	} else if len(monitoredList) == 0 && len(ifaces) > 0 {
+	} else if len(ifaces) > 0 {
 		s.mu.Lock()
 		pIfaces := s.prevIfaces[routerID]
 		pTime := s.prevTime[routerID]
@@ -377,7 +371,14 @@ func (s *TelemetryService) Collect(ctx context.Context, routerID int) error {
 		if pIfaces != nil && !pTime.IsZero() {
 			dt := now.Sub(pTime).Seconds()
 			if dt > 0.1 {
+				monMap := make(map[string]bool, len(monitoredList))
+				for _, m := range monitoredList {
+					monMap[m] = true
+				}
 				for _, iface := range ifaces {
+					if len(monMap) > 0 && !monMap[iface.Name] {
+						continue
+					}
 					rx, _ := strconv.ParseInt(iface.RxByte, 10, 64)
 					txBytes, _ := strconv.ParseInt(iface.TxByte, 10, 64)
 					if prev, ok := pIfaces[iface.Name]; ok {

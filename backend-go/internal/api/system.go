@@ -3,9 +3,11 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"runtime"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/masseselsev/mikroman/internal/config"
@@ -25,15 +27,79 @@ type SystemHandler struct {
 	cfg              *config.Config
 	database         *db.DB
 	client           *routeros.Client
+	mu               sync.Mutex
+	clients          map[int]*routeros.Client
 	telegramReloader TelegramReloader
 }
 
 func NewSystemHandler(cfg *config.Config, database *db.DB, client *routeros.Client) *SystemHandler {
+	clients := make(map[int]*routeros.Client)
+	if client != nil {
+		if def, err := database.GetDefaultRouter(); err == nil && def != nil {
+			clients[def.ID] = client
+		} else if routers, err := database.GetRouters(); err == nil && len(routers) == 1 {
+			clients[routers[0].ID] = client
+		}
+	}
 	return &SystemHandler{
 		cfg:      cfg,
 		database: database,
 		client:   client,
+		clients:  clients,
 	}
+}
+
+func (h *SystemHandler) getClient(routerID *int) (*routeros.Client, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	var targetID int
+	if routerID != nil && *routerID > 0 {
+		targetID = *routerID
+	} else {
+		def, err := h.database.GetDefaultRouter()
+		if err != nil || def == nil {
+			if h.client != nil {
+				return h.client, nil
+			}
+			return nil, fmt.Errorf("no default router configured")
+		}
+		targetID = def.ID
+	}
+
+	if c, ok := h.clients[targetID]; ok && c != nil {
+		return c, nil
+	}
+
+	router, err := h.database.GetRouter(targetID)
+	if err != nil || router == nil {
+		if h.client != nil {
+			return h.client, nil
+		}
+		return nil, fmt.Errorf("router %d not found", targetID)
+	}
+
+	if h.client != nil && h.client.Matches(router.Host, router.Port) {
+		h.clients[targetID] = h.client
+		return h.client, nil
+	}
+
+	newClient, err := routeros.NewClient(routeros.Config{
+		Host:      router.Host,
+		Port:      router.Port,
+		Username:  router.Username,
+		Password:  router.Password,
+		UseSSL:    router.UseSSL,
+		SSLVerify: router.SSLVerify,
+		CACert:    router.CACert.String,
+		Timeout:   5 * time.Second,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	h.clients[targetID] = newClient
+	return newClient, nil
 }
 
 func (h *SystemHandler) SetTelegramReloader(r TelegramReloader) {
@@ -178,12 +244,20 @@ func (h *SystemHandler) SaveSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *SystemHandler) Reboot(w http.ResponseWriter, r *http.Request) {
-	if h.client == nil {
+	var routerID *int
+	if rID := r.URL.Query().Get("router_id"); rID != "" {
+		if id, err := strconv.Atoi(rID); err == nil && id > 0 {
+			routerID = &id
+		}
+	}
+
+	client, err := h.getClient(routerID)
+	if err != nil || client == nil {
 		WriteError(w, http.StatusBadRequest, "No active router connected to reboot")
 		return
 	}
 
-	if err := h.client.Reboot(r.Context()); err != nil {
+	if err := client.Reboot(r.Context()); err != nil {
 		WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -237,7 +311,15 @@ type InterfaceDTO struct {
 
 // GetInterfaces returns interface statistics from the connected router.
 func (h *SystemHandler) GetInterfaces(w http.ResponseWriter, r *http.Request) {
-	if h.client == nil {
+	var routerID *int
+	if rID := r.URL.Query().Get("router_id"); rID != "" {
+		if id, err := strconv.Atoi(rID); err == nil && id > 0 {
+			routerID = &id
+		}
+	}
+
+	client, err := h.getClient(routerID)
+	if err != nil || client == nil {
 		WriteJSON(w, http.StatusOK, []InterfaceDTO{})
 		return
 	}
@@ -245,7 +327,7 @@ func (h *SystemHandler) GetInterfaces(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	rawIfaces, err := h.client.GetInterfaces(ctx)
+	rawIfaces, err := client.GetInterfaces(ctx)
 	if err != nil {
 		WriteJSON(w, http.StatusOK, []InterfaceDTO{})
 		return
@@ -273,7 +355,15 @@ func (h *SystemHandler) GetInterfaces(w http.ResponseWriter, r *http.Request) {
 
 // GetSystemStatus fetches hardware status, RouterBOARD info, and health sensors.
 func (h *SystemHandler) GetSystemStatus(w http.ResponseWriter, r *http.Request) {
-	if h.client == nil {
+	var routerID *int
+	if rID := r.URL.Query().Get("router_id"); rID != "" {
+		if id, err := strconv.Atoi(rID); err == nil && id > 0 {
+			routerID = &id
+		}
+	}
+
+	client, err := h.getClient(routerID)
+	if err != nil || client == nil {
 		WriteJSON(w, http.StatusOK, map[string]interface{}{
 			"connected": false,
 			"error":     "No active router connected",
@@ -284,7 +374,7 @@ func (h *SystemHandler) GetSystemStatus(w http.ResponseWriter, r *http.Request) 
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	res, err := h.client.GetSystemResource(ctx)
+	res, err := client.GetSystemResource(ctx)
 	if err != nil {
 		WriteJSON(w, http.StatusOK, map[string]interface{}{
 			"connected": false,
@@ -293,8 +383,8 @@ func (h *SystemHandler) GetSystemStatus(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	health, _ := h.client.GetSystemHealth(ctx)
-	rb, _ := h.client.GetRouterBoard(ctx)
+	health, _ := client.GetSystemHealth(ctx)
+	rb, _ := client.GetRouterBoard(ctx)
 	temp, volt := routeros.ExtractHealthMetrics(health)
 
 	rbModel := ""

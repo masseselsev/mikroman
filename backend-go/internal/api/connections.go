@@ -30,6 +30,8 @@ func NewConnectionsHandler(database *db.DB, client *routeros.Client) *Connection
 	if client != nil {
 		if def, err := database.GetDefaultRouter(); err == nil && def != nil {
 			clients[def.ID] = client
+		} else if routers, err := database.GetRouters(); err == nil && len(routers) == 1 {
+			clients[routers[0].ID] = client
 		}
 	}
 	return &ConnectionsHandler{
@@ -61,18 +63,18 @@ func (h *ConnectionsHandler) getClient(routerID *int) (*routeros.Client, error) 
 		return c, nil
 	}
 
-	defaultRouter, _ := h.database.GetDefaultRouter()
-	if (defaultRouter == nil || defaultRouter.ID == targetID) && h.client != nil {
-		h.clients[targetID] = h.client
-		return h.client, nil
-	}
-
 	router, err := h.database.GetRouter(targetID)
 	if err != nil || router == nil {
 		if h.client != nil {
 			return h.client, nil
 		}
 		return nil, fmt.Errorf("router %d not found", targetID)
+	}
+
+
+	if h.client != nil && h.client.Matches(router.Host, router.Port) {
+		h.clients[targetID] = h.client
+		return h.client, nil
 	}
 
 	newClient, err := routeros.NewClient(routeros.Config{

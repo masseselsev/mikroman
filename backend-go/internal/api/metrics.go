@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/masseselsev/mikroman/internal/db"
@@ -18,10 +19,77 @@ import (
 type MetricsHandler struct {
 	database *db.DB
 	client   *routeros.Client
+	mu       sync.Mutex
+	clients  map[int]*routeros.Client
 }
 
 func NewMetricsHandler(database *db.DB, client *routeros.Client) *MetricsHandler {
-	return &MetricsHandler{database: database, client: client}
+	clients := make(map[int]*routeros.Client)
+	if client != nil {
+		if def, err := database.GetDefaultRouter(); err == nil && def != nil {
+			clients[def.ID] = client
+		} else if routers, err := database.GetRouters(); err == nil && len(routers) == 1 {
+			clients[routers[0].ID] = client
+		}
+	}
+	return &MetricsHandler{
+		database: database,
+		client:   client,
+		clients:  clients,
+	}
+}
+
+func (h *MetricsHandler) getClient(routerID *int) (*routeros.Client, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	var targetID int
+	if routerID != nil && *routerID > 0 {
+		targetID = *routerID
+	} else {
+		def, err := h.database.GetDefaultRouter()
+		if err != nil || def == nil {
+			if h.client != nil {
+				return h.client, nil
+			}
+			return nil, fmt.Errorf("no default router configured")
+		}
+		targetID = def.ID
+	}
+
+	if c, ok := h.clients[targetID]; ok && c != nil {
+		return c, nil
+	}
+
+	router, err := h.database.GetRouter(targetID)
+	if err != nil || router == nil {
+		if h.client != nil {
+			return h.client, nil
+		}
+		return nil, fmt.Errorf("router %d not found", targetID)
+	}
+
+	if h.client != nil && h.client.Matches(router.Host, router.Port) {
+		h.clients[targetID] = h.client
+		return h.client, nil
+	}
+
+	newClient, err := routeros.NewClient(routeros.Config{
+		Host:      router.Host,
+		Port:      router.Port,
+		Username:  router.Username,
+		Password:  router.Password,
+		UseSSL:    router.UseSSL,
+		SSLVerify: router.SSLVerify,
+		CACert:    router.CACert.String,
+		Timeout:   5 * time.Second,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	h.clients[targetID] = newClient
+	return newClient, nil
 }
 
 type MonitoredInterfacesConfigDTO struct {
@@ -111,7 +179,15 @@ func isTunnelIface(name, ifaceType string) bool {
 }
 
 func (h *MetricsHandler) ListAvailableInterfaces(w http.ResponseWriter, r *http.Request) {
-	if h.client == nil {
+	var routerID *int
+	if rID := r.URL.Query().Get("router_id"); rID != "" {
+		if id, err := strconv.Atoi(rID); err == nil && id > 0 {
+			routerID = &id
+		}
+	}
+
+	client, err := h.getClient(routerID)
+	if err != nil || client == nil {
 		WriteJSON(w, http.StatusOK, []InterfaceDTO{})
 		return
 	}
@@ -119,7 +195,7 @@ func (h *MetricsHandler) ListAvailableInterfaces(w http.ResponseWriter, r *http.
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	rawIfaces, err := h.client.GetInterfaces(ctx)
+	rawIfaces, err := client.GetInterfaces(ctx)
 	if err != nil {
 		WriteJSON(w, http.StatusOK, []InterfaceDTO{})
 		return
