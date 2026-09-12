@@ -167,6 +167,14 @@ func (s *TelemetryService) Collect(ctx context.Context, routerID int) error {
 
 	s.mu.Lock()
 	pTime := s.prevTime[routerID]
+	pIfaces := make(map[string][2]int64)
+	if existing, ok := s.prevIfaces[routerID]; ok {
+		for k, v := range existing {
+			pIfaces[k] = v
+		}
+	}
+	s.mu.Unlock()
+
 	var dt float64
 	if !pTime.IsZero() {
 		dt = now.Sub(pTime).Seconds()
@@ -193,7 +201,6 @@ func (s *TelemetryService) Collect(ctx context.Context, routerID int) error {
 		monitoredList = []string{}
 	}
 
-	pIfaces := s.prevIfaces[routerID]
 	ifacesRatesMap := make(map[string][2]float64)
 
 	// Fetch live rates from RouterOS monitor-traffic for monitored interfaces
@@ -271,6 +278,7 @@ func (s *TelemetryService) Collect(ctx context.Context, routerID int) error {
 		}
 	}
 
+	s.mu.Lock()
 	if s.prevIfaces == nil {
 		s.prevIfaces = make(map[int]map[string][2]int64)
 	}
@@ -565,24 +573,8 @@ func (s *TelemetryService) getInterval(defaultInterval time.Duration) time.Durat
 	return 3 * time.Second
 }
 
-func (s *TelemetryService) backfillInterfaceRollups() {
-	_, _ = s.database.SqlDB.Exec(`
-		INSERT INTO interface_traffic_rollups (router_id, interface_name, record_date, bytes_in, bytes_out)
-		SELECT router_id, interface_name, DATE(timestamp) as rec_date,
-		       MAX(0, MAX(rx_bytes_total) - MIN(rx_bytes_total)) as b_in,
-		       MAX(0, MAX(tx_bytes_total) - MIN(tx_bytes_total)) as b_out
-		FROM interface_metrics
-		GROUP BY router_id, interface_name, DATE(timestamp)
-		HAVING b_in > 0 OR b_out > 0
-		ON CONFLICT(router_id, interface_name, record_date) DO NOTHING;
-	`)
-}
-
 func (s *TelemetryService) StartBackgroundLoop(ctx context.Context, defaultInterval time.Duration) {
 	go func() {
-		// Backfill rollups from historical interface_metrics if table was empty
-		s.backfillInterfaceRollups()
-
 		// Run initial collection immediately
 		routers, err := s.database.GetRouters()
 		if err == nil {

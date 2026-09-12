@@ -46,8 +46,13 @@ func InitGeoIPUpdater(dataDir string) *GeoIPUpdater {
 
 	// 1. Try to load existing local database immediately
 	if err := u.loadLocalFile(); err != nil {
-		log.Printf("[GeoIP] Local database not ready (%v), queuing initial background download", err)
+		log.Printf("[GeoIP] Local database not ready (%v), scheduling background download in 60s", err)
 		go func() {
+			select {
+			case <-u.stopCh:
+				return
+			case <-time.After(60 * time.Second):
+			}
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 			defer cancel()
 			_ = u.Update(ctx)
@@ -55,8 +60,13 @@ func InitGeoIPUpdater(dataDir string) *GeoIPUpdater {
 	} else {
 		// If existing file is older than 30 days, trigger background refresh
 		if info, err := os.Stat(dbPath); err == nil && time.Since(info.ModTime()) > 30*24*time.Hour {
-			log.Printf("[GeoIP] Local database is older than 30 days, scheduling refresh")
+			log.Printf("[GeoIP] Local database is older than 30 days, scheduling refresh in 60s")
 			go func() {
+				select {
+				case <-u.stopCh:
+					return
+				case <-time.After(60 * time.Second):
+				}
 				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 				defer cancel()
 				_ = u.Update(ctx)
