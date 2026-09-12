@@ -60,9 +60,10 @@ export function LiveConnectionsModal({
     if (showLoading) setLoading(true);
     setError(null);
     try {
-      const params = {};
+      const params = { limit: 1000 };
       if (initialRouterId) params.router_id = initialRouterId;
       if (selectedDeviceId) params.device_id = selectedDeviceId;
+      if (protocolFilter !== 'all') params.protocol = protocolFilter;
       const res = await api.getLiveConnections(params);
       if (res?.data) {
         setConnections(res.data.items || []);
@@ -89,7 +90,7 @@ export function LiveConnectionsModal({
       setConnections([]);
       setKillPendingId(null);
     }
-  }, [isOpen, selectedDeviceId, initialRouterId]);
+  }, [isOpen, selectedDeviceId, initialRouterId, protocolFilter]);
 
   // Polling loop
   useEffect(() => {
@@ -103,7 +104,7 @@ export function LiveConnectionsModal({
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
     };
-  }, [isOpen, isAutoRefresh, selectedDeviceId, initialRouterId]);
+  }, [isOpen, isAutoRefresh, selectedDeviceId, initialRouterId, protocolFilter]);
 
   const handleKill = async (conn) => {
     setKillingId(conn.id);
@@ -127,12 +128,13 @@ export function LiveConnectionsModal({
   // Filter connections client-side
   const filteredConnections = useMemo(() => {
     const s = search.trim().toLowerCase();
+    const isPort = (p, ...targets) => targets.includes(Number(p));
     return connections.filter((c) => {
       // Protocol filter
       if (protocolFilter === 'tcp' && c.protocol !== 'tcp') return false;
       if (protocolFilter === 'udp' && c.protocol !== 'udp') return false;
-      if (protocolFilter === 'web' && c.dst_port !== 80 && c.dst_port !== 443) return false;
-      if (protocolFilter === 'dns' && c.dst_port !== 53) return false;
+      if (protocolFilter === 'web' && !isPort(c.dst_port, 80, 443, 8080, 8443) && !isPort(c.src_port, 80, 443, 8080, 8443)) return false;
+      if (protocolFilter === 'dns' && !isPort(c.dst_port, 53, 853) && !isPort(c.src_port, 53, 853)) return false;
 
       // Search match
       if (s) {

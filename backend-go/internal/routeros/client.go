@@ -251,6 +251,16 @@ func unmarshalFlexible(data []byte, target interface{}) error {
 		}
 	}
 
+	// If target is a struct/object and json is a slice: unwrap first element
+	if trimmed[0] == '[' {
+		var list []json.RawMessage
+		if err := json.Unmarshal(trimmed, &list); err == nil && len(list) > 0 {
+			if err := json.Unmarshal(list[0], target); err == nil {
+				return nil
+			}
+		}
+	}
+
 	return json.Unmarshal(trimmed, target)
 }
 

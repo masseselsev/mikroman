@@ -22,7 +22,17 @@ function firstSeenOf(device) {
 }
 
 
-export function DeviceInbox({ devices = [], users = [], activeRouterId, onAssign, onScan, isScanning, onViewTrafficHistory }) {
+export function DeviceInbox({
+  devices = [],
+  users = [],
+  activeRouterId,
+  onAssign,
+  onScan,
+  isScanning,
+  onViewTrafficHistory,
+  showHidden: propShowHidden,
+  onToggleShowHidden,
+}) {
   const { t, lang } = useI18n();
   const [selectedUserMap, setSelectedUserMap] = useState({});
   const [suggestions, setSuggestions] = useState([]);
@@ -33,7 +43,12 @@ export function DeviceInbox({ devices = [], users = [], activeRouterId, onAssign
   const [mergingId, setMergingId] = useState(null);
   const [linkSuggestions, setLinkSuggestions] = useState([]);
   const [linkingId, setLinkingId] = useState(null);
-  const [showHidden, setShowHidden] = useState(false);
+  const [internalShowHidden, setInternalShowHidden] = useState(false);
+  const showHidden = propShowHidden !== undefined ? propShowHidden : internalShowHidden;
+  const setShowHidden = (val) => {
+    if (onToggleShowHidden) onToggleShowHidden(val);
+    setInternalShowHidden(val);
+  };
   const [autoScanEnabled, setAutoScanEnabled] = useState(true);
   // device id -> target device id chosen by hand for a merge
   const [mergeTargetMap, setMergeTargetMap] = useState({});

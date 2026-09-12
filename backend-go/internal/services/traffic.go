@@ -159,14 +159,18 @@ func (s *TrafficService) ReconcileQueues(ctx context.Context, routerID int) erro
 				Disabled: false,
 				Comment:  uComment,
 			}
-			_ = client.CreateSimpleQueue(ctx, &newQ)
+			if err := client.CreateSimpleQueue(ctx, &newQ); err != nil {
+				slog.Error("Failed to create user simple queue on RouterOS", "user", u.Name, "err", err)
+			}
 		} else if matchedQ.Target != target || matchedQ.MaxLimit != maxLimit || matchedQ.Name != qName {
-			_ = client.UpdateSimpleQueue(ctx, matchedQ.ID, map[string]interface{}{
+			if err := client.UpdateSimpleQueue(ctx, matchedQ.ID, map[string]interface{}{
 				"name":      qName,
 				"target":    target,
 				"max-limit": maxLimit,
 				"comment":   uComment,
-			})
+			}); err != nil {
+				slog.Error("Failed to update user simple queue on RouterOS", "user", u.Name, "err", err)
+			}
 		}
 
 		// Add IPs to mikroman_queued so FastTrack doesn't bypass the queue
@@ -225,14 +229,18 @@ func (s *TrafficService) ReconcileQueues(ctx context.Context, routerID int) erro
 				Disabled: false,
 				Comment:  devComment,
 			}
-			_ = client.CreateSimpleQueue(ctx, &newQ)
+			if err := client.CreateSimpleQueue(ctx, &newQ); err != nil {
+				slog.Error("Failed to create device quarantine simple queue on RouterOS", "device_id", dev.ID, "err", err)
+			}
 		} else if matchedDevQ.Target != target || matchedDevQ.MaxLimit != maxLimit {
-			_ = client.UpdateSimpleQueue(ctx, matchedDevQ.ID, map[string]interface{}{
+			if err := client.UpdateSimpleQueue(ctx, matchedDevQ.ID, map[string]interface{}{
 				"name":      devQName,
 				"target":    target,
 				"max-limit": maxLimit,
 				"comment":   devComment,
-			})
+			}); err != nil {
+				slog.Error("Failed to update device quarantine simple queue on RouterOS", "device_id", dev.ID, "err", err)
+			}
 		}
 
 		targetQueuedIPs[ip] = fmt.Sprintf("mikroman:queued:dev_%d", dev.ID)

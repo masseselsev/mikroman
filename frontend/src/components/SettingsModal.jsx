@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useI18n } from '../context/I18nContext';
+import { useSpeedUnit } from '../context/SpeedUnitContext';
 import { api } from '../api/client';
 import { SECRET_PLACEHOLDER } from '../api/secrets';
 import { templateErrorKey } from '../utils/ipLookup';
@@ -19,7 +20,8 @@ export function SettingsModal({
   activeRouter = null,
   initialRouters = [],
 }) {
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
+  const { speedUnit, setSpeedUnit } = useSpeedUnit();
   const [activeTab, setActiveTab] = useState(initialTab);
   const [selectedRouterId, setSelectedRouterId] = useState(activeRouter?.id || null);
   // General Settings
@@ -450,6 +452,27 @@ export function SettingsModal({
               }}>
                 {/* LEFT COLUMN: Intervals, Thresholds, Auto-Scan, Quota & Accounting */}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                  {/* Card: Display & Units */}
+                  <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: 'var(--radius-sm)', padding: '14px 16px' }}>
+                    <h3 style={{ fontSize: 'var(--fs-sm)', fontWeight: 700, marginBottom: 4, color: 'var(--color-primary)' }}>
+                      {t('speed_unit')}
+                    </h3>
+                    <p style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', marginBottom: 10 }}>
+                      {lang === 'ru' ? 'Единица измерения скорости передачи данных в интерфейсе.' : 'Default data rate display unit across dashboard and analytics.'}
+                    </p>
+                    <div className="form-group" style={{ marginBottom: 0 }}>
+                      <select
+                        className="form-select font-mono"
+                        value={speedUnit}
+                        onChange={e => setSpeedUnit(e.target.value)}
+                        style={{ width: '100%', height: 34, fontSize: 'var(--fs-xs)' }}
+                      >
+                        <option value="bits">{t('speed_unit_bits')}</option>
+                        <option value="bytes">{t('speed_unit_bytes')}</option>
+                      </select>
+                    </div>
+                  </div>
+
                   {/* Card 1: Telemetry & Polling Intervals */}
                   <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: 'var(--radius-sm)', padding: '14px 16px' }}>
                     <h3 style={{ fontSize: 'var(--fs-sm)', fontWeight: 700, marginBottom: 4, color: 'var(--color-primary)' }}>

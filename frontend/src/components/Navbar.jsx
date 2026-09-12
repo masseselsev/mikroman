@@ -2,7 +2,6 @@ import React from 'react';
 import { useTheme } from '../context/ThemeContext';
 import { useI18n } from '../context/I18nContext';
 import { useAuth } from '../context/AuthContext';
-import { useSpeedUnit } from '../context/SpeedUnitContext';
 import { RouterSelector } from './RouterSelector';
 import { RouterCommentBar } from './RouterCommentBar';
 import { Sun, Moon, Settings as SettingsIcon, Activity, Clock, Terminal, Archive, Package, LogOut } from 'lucide-react';
@@ -135,7 +134,6 @@ export function Navbar({
   const { theme, toggleTheme } = useTheme();
   const { t, lang, setLang } = useI18n();
   const { authEnabled, isAuthenticated, logout } = useAuth();
-  const { speedUnit, toggleSpeedUnit } = useSpeedUnit();
 
   return (
     <header style={{
@@ -282,17 +280,6 @@ export function Navbar({
             aria-label={lang === 'en' ? 'Переключить на русский' : 'Switch to English'}
           >
             {lang === 'en' ? <FlagGB size={18} /> : <FlagRU size={18} />}
-          </button>
-
-          {/* Speed Unit Toggle (Mbps vs MB/s) */}
-          <button
-            type="button"
-            className="btn btn-secondary btn-sm font-mono"
-            onClick={toggleSpeedUnit}
-            title={speedUnit === 'bits' ? t('switch_to_bytes_hint') : t('switch_to_bits_hint')}
-            style={{ fontSize: 'var(--fs-2xs)', fontWeight: 700, padding: '0 8px', height: 'var(--control-h-sm)' }}
-          >
-            {speedUnit === 'bits' ? 'Mbps' : 'MB/s'}
           </button>
 
           {/* Theme Toggle */}

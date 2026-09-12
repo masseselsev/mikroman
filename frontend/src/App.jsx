@@ -193,6 +193,7 @@ export function App() {
       const reqs = [
         api.getUsers(effectiveId).catch(() => ({ data: [] })),
         api.getDevices(true, showHiddenDevices, 'client', effectiveId).catch(() => ({ data: [] })),
+        api.getDevices(true, true, 'client', effectiveId).catch(() => ({ data: [] })),
         api.getAlerts(effectiveId).catch(() => ({ data: [] }))
       ];
       if (shouldFetchIfaces) {
@@ -689,6 +690,8 @@ export function App() {
             onScan={handleScan}
             isScanning={isScanning}
             onViewTrafficHistory={setTrafficHistoryTarget}
+            showHidden={showHiddenDevices}
+            onToggleShowHidden={setShowHiddenDevices}
           />
         )}
 

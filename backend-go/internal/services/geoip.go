@@ -165,6 +165,9 @@ func init() {
 	addCIDR("77.0.0.0/9", "RU", "Russia", "🇷🇺", 55.7558, 37.6173)
 	addCIDR("79.98.0.0/15", "RU", "Russia", "🇷🇺", 55.7558, 37.6173)
 	addCIDR("85.112.0.0/12", "RU", "Russia", "🇷🇺", 55.7558, 37.6173)
+	addCIDR("93.158.128.0/17", "RU", "Yandex (RU)", "🇷🇺", 55.7558, 37.6173)
+	addCIDR("93.180.0.0/16", "RU", "Russia", "🇷🇺", 55.7558, 37.6173)
+	addCIDR("93.188.0.0/16", "RU", "Russia", "🇷🇺", 55.7558, 37.6173)
 	addCIDR("94.25.0.0/16", "RU", "Russia", "🇷🇺", 55.7558, 37.6173)
 	addCIDR("95.173.136.0/21", "RU", "Russia", "🇷🇺", 55.7558, 37.6173)
 	addCIDR("176.14.0.0/15", "RU", "Russia", "🇷🇺", 55.7558, 37.6173)
@@ -271,23 +274,6 @@ func LookupGeoIP(ipStr string) GeoLocation {
 				Lng:         g.lng,
 				IsLocal:     false,
 			}
-		}
-	}
-
-	// Deterministic pseudo-fallback across continents for unmapped public ranges
-	v4 := ip.To4()
-	if v4 != nil {
-		switch v4[0] % 5 {
-		case 0:
-			return GeoLocation{CountryCode: "US", CountryName: "United States", FlagEmoji: "🇺🇸", Lat: 37.0902, Lng: -95.7129}
-		case 1:
-			return GeoLocation{CountryCode: "DE", CountryName: "Germany", FlagEmoji: "🇩🇪", Lat: 51.1657, Lng: 10.4515}
-		case 2:
-			return GeoLocation{CountryCode: "NL", CountryName: "Netherlands", FlagEmoji: "🇳🇱", Lat: 52.1326, Lng: 5.2913}
-		case 3:
-			return GeoLocation{CountryCode: "SG", CountryName: "Singapore", FlagEmoji: "🇸🇬", Lat: 1.3521, Lng: 103.8198}
-		default:
-			return GeoLocation{CountryCode: "RU", CountryName: "Russia", FlagEmoji: "🇷🇺", Lat: 55.7558, Lng: 37.6173}
 		}
 	}
 

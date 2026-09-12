@@ -230,8 +230,8 @@ func (d *DB) CreateRouter(r *Router) error {
 	}
 
 	res, err := d.SqlDB.Exec(`
-		INSERT INTO routers (name, host, port, use_ssl, ssl_verify, ca_cert, username, password, comment, is_active, is_default)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO routers (name, host, port, use_ssl, ssl_verify, ca_cert, username, password, comment, is_active, is_default, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
 	`, r.Name, r.Host, r.Port, r.UseSSL, r.SSLVerify, r.CACert, r.Username, encPass, r.Comment, r.IsActive, r.IsDefault)
 	if err != nil {
 		return err
@@ -289,8 +289,8 @@ func (d *DB) GetUser(id int) (*User, error) {
 
 func (d *DB) CreateUser(u *User) error {
 	res, err := d.SqlDB.Exec(`
-		INSERT INTO users (router_id, name, avatar_icon, speed_limit, is_paused, priority, sort_order)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO users (router_id, name, avatar_icon, speed_limit, is_paused, priority, sort_order, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
 	`, u.RouterID, u.Name, u.AvatarIcon, u.SpeedLimit, u.IsPaused, u.Priority, u.SortOrder)
 	if err != nil {
 		return err
@@ -327,7 +327,7 @@ func (d *DB) GetDevices(routerID *int) ([]Device, error) {
 		                vendor, last_interface, last_wifi_signal, is_active, is_hidden, is_deleted,
 		                linked_to_device_id, connection_kind, is_container, speed_limit, is_paused,
 		                priority, last_seen
-		         FROM devices WHERE router_id = ? AND is_deleted = 0 ORDER BY last_seen DESC`
+		         FROM devices WHERE (router_id = ? OR router_id IS NULL) AND is_deleted = 0 ORDER BY last_seen DESC`
 		args = append(args, *routerID)
 	} else {
 		query = `SELECT id, user_id, router_id, mac_address, ip_address, hostname, custom_name,

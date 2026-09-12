@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useI18n } from '../context/I18nContext';
 import { api } from '../api/client';
 import { formatBytes } from '../utils/formatters';
+import { CountryFlag } from './CountryFlag';
 import { Globe, ArrowUpDown, Search, RefreshCw } from 'lucide-react';
 
 export function UserDestinationsSection({ userId, deviceId = null }) {
@@ -157,9 +158,7 @@ export function UserDestinationsSection({ userId, deviceId = null }) {
                 <tr key={row.id} style={{ borderBottom: '1px solid var(--border-color)' }} className="table-row-hover">
                   <td style={{ padding: '6px 10px' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                      <span title={row.country_name || row.country_code} style={{ fontSize: '1rem', lineHeight: 1 }}>
-                        {row.flag_emoji || '🌐'}
-                      </span>
+                      <CountryFlag code={row.country_code} size={16} />
                       <div>
                         <div style={{ fontWeight: 600, color: 'var(--text-primary)' }}>
                           {row.domain || row.destination_ip}
