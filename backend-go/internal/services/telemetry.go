@@ -44,7 +44,6 @@ type TelemetryService struct {
 	cachedIPAddrsAt map[int]time.Time
 	cachedPublicIP  map[int]string
 	cachedPubIPAt   map[int]time.Time
-	cachedHealth    map[int]*routeros.SystemHealth
 	cachedHealth    map[int][]routeros.HealthItem
 	cachedHealthAt  map[int]time.Time
 	cachedDevStats  map[int]map[int]db.VolumeStats
@@ -77,7 +76,6 @@ func NewTelemetryService(database *db.DB, client *routeros.Client, hub EventBroa
 		cachedIPAddrsAt: make(map[int]time.Time),
 		cachedPublicIP:  make(map[int]string),
 		cachedPubIPAt:   make(map[int]time.Time),
-		cachedHealth:    make(map[int]*routeros.SystemHealth),
 		cachedHealth:    make(map[int][]routeros.HealthItem),
 		cachedHealthAt:  make(map[int]time.Time),
 		cachedDevStats:  make(map[int]map[int]db.VolumeStats),
@@ -155,7 +153,6 @@ func (s *TelemetryService) getClient(routerID int) (*routeros.Client, error) {
 	return newClient, nil
 }
 
-func (s *TelemetryService) saveMetricsAndRollups(routerID int, now time.Time, res *routeros.SystemResource, health *routeros.SystemHealth, ifaces []routeros.Interface) {
 func (s *TelemetryService) saveMetricsAndRollups(routerID int, now time.Time, res *routeros.Resource, health []routeros.HealthItem, ifaces []routeros.Interface) {
 	if res == nil {
 		return
@@ -262,7 +259,6 @@ func (s *TelemetryService) Collect(ctx context.Context, routerID int) error {
 	s.mu.Unlock()
 
 	shouldSaveMetrics := lastSave.IsZero() || now.Sub(lastSave) >= 10*time.Second
-	shouldFetchHealth := cachedHealth == nil || now.Sub(cachedHealthAt) >= 5*time.Second
 	shouldFetchHealth := cachedHealthAt.IsZero() || now.Sub(cachedHealthAt) >= 5*time.Second
 
 	// Read monitored interfaces configuration
@@ -280,10 +276,8 @@ func (s *TelemetryService) Collect(ctx context.Context, routerID int) error {
 	}
 
 	var (
-		res         *routeros.SystemResource
 		res         *routeros.Resource
 		resErr      error
-		health      *routeros.SystemHealth
 		health      []routeros.HealthItem
 		rates       []routeros.InterfaceTrafficRate
 		mangleRules []routeros.MangleRule
@@ -778,11 +772,6 @@ func (s *TelemetryService) StartBackgroundLoop(ctx context.Context, defaultInter
 				var wg sync.WaitGroup
 				for _, r := range routers {
 					if r.IsActive {
-						callCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-						if err := s.Collect(callCtx, r.ID); err != nil {
-							slog.Debug("Telemetry collection failed", "router_id", r.ID, "err", err)
-						}
-						cancel()
 						wg.Add(1)
 						go func(rID int) {
 							defer wg.Done()
@@ -799,8 +788,6 @@ func (s *TelemetryService) StartBackgroundLoop(ctx context.Context, defaultInter
 
 			elapsed := time.Since(start)
 			sleepDuration := interval - elapsed
-			if sleepDuration < 50*time.Millisecond {
-				sleepDuration = 50 * time.Millisecond
 			if sleepDuration < 20*time.Millisecond {
 				sleepDuration = 20 * time.Millisecond
 			}

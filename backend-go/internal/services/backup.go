@@ -2,7 +2,6 @@ package services
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"log"
 	"os"
@@ -99,10 +98,6 @@ func (s *BackupService) RunRouterBackup(ctx context.Context, routerID int, sourc
 			CreatedAt:    startedAt.UTC(),
 			Outcome:      "failed",
 			Source:       source,
-			Model:        db.NullString{sql.NullString{String: model, Valid: model != ""}},
-			Serial:       db.NullString{sql.NullString{String: serial, Valid: serial != ""}},
-			OSVersion:    db.NullString{sql.NullString{String: osVersion, Valid: osVersion != ""}},
-			ErrorMessage: db.NullString{sql.NullString{String: err.Error(), Valid: true}},
 			Model:        db.NewNullString(model),
 			Serial:       db.NewNullString(serial),
 			OSVersion:    db.NewNullString(osVersion),
@@ -122,16 +117,6 @@ func (s *BackupService) RunRouterBackup(ctx context.Context, routerID int, sourc
 	latest, _ := s.database.GetLatestSuccessfulBackup(routerID)
 	if latest != nil && latest.Fingerprint.Valid && latest.Fingerprint.String == fingerprint {
 		unchangedRec := &db.RouterBackup{
-			RouterID:     routerID,
-			CreatedAt:    startedAt.UTC(),
-			Outcome:      "unchanged",
-			Source:       source,
-			Fingerprint:  db.NullString{sql.NullString{String: fingerprint, Valid: true}},
-			RSCBytes:     int64(len([]byte(normalizedRSC))),
-			Model:        db.NullString{sql.NullString{String: model, Valid: model != ""}},
-			Serial:       db.NullString{sql.NullString{String: serial, Valid: serial != ""}},
-			OSVersion:    db.NullString{sql.NullString{String: osVersion, Valid: osVersion != ""}},
-			DurationMS:   durationMS,
 			RouterID:    routerID,
 			CreatedAt:   startedAt.UTC(),
 			Outcome:     "unchanged",
@@ -161,11 +146,6 @@ func (s *BackupService) RunRouterBackup(ctx context.Context, routerID int, sourc
 			CreatedAt:    startedAt.UTC(),
 			Outcome:      "failed",
 			Source:       source,
-			Fingerprint:  db.NullString{sql.NullString{String: fingerprint, Valid: true}},
-			Model:        db.NullString{sql.NullString{String: model, Valid: model != ""}},
-			Serial:       db.NullString{sql.NullString{String: serial, Valid: serial != ""}},
-			OSVersion:    db.NullString{sql.NullString{String: osVersion, Valid: osVersion != ""}},
-			ErrorMessage: db.NullString{sql.NullString{String: bErr.Error(), Valid: true}},
 			Fingerprint:  db.NewNullString(fingerprint),
 			Model:        db.NewNullString(model),
 			Serial:       db.NewNullString(serial),
@@ -203,18 +183,11 @@ func (s *BackupService) RunRouterBackup(ctx context.Context, routerID int, sourc
 		CreatedAt:      startedAt.UTC(),
 		Outcome:        "changed",
 		Source:         source,
-		Fingerprint:    db.NullString{sql.NullString{String: fingerprint, Valid: true}},
-		RSCContent:     db.NullString{sql.NullString{String: normalizedRSC, Valid: true}},
 		Fingerprint:    db.NewNullString(fingerprint),
 		RSCContent:     db.NewNullString(normalizedRSC),
 		RSCBytes:       int64(len([]byte(normalizedRSC))),
-		BackupFilePath: db.NullString{sql.NullString{String: relPath, Valid: true}},
 		BackupFilePath: db.NewNullString(relPath),
 		BackupBytes:    int64(len(binaryBytes)),
-		BackupPassword: db.NullString{sql.NullString{String: backupPW, Valid: true}},
-		Model:          db.NullString{sql.NullString{String: model, Valid: model != ""}},
-		Serial:         db.NullString{sql.NullString{String: serial, Valid: serial != ""}},
-		OSVersion:      db.NullString{sql.NullString{String: osVersion, Valid: osVersion != ""}},
 		BackupPassword: db.NewNullString(backupPW),
 		Model:          db.NewNullString(model),
 		Serial:         db.NewNullString(serial),
