@@ -30,7 +30,7 @@ type Config struct {
 func Load() *Config {
 	cfg := &Config{
 		AppName:                  getEnv("APP_NAME", "MikroMan"),
-		AppVersion:               getEnv("APP_VERSION", "0.3.13"),
+		AppVersion:               getEnv("APP_VERSION", "0.3.14"),
 		Host:                     getEnv("HOST", "0.0.0.0"),
 		Port:                     getEnvInt("PORT", 1928),
 		DatabaseURL:              getEnv("DATABASE_URL", "sqlite:///data/app.db"),

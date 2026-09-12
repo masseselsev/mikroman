@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -32,6 +33,44 @@ var defaultSpeedTestEndpoints = BuiltinSpeedTestEndpoints{
 	UpURL:    "https://speed.cloudflare.com/__up",
 }
 
+func createResilientSpeedTestClient() *http.Client {
+	dialer := &net.Dialer{
+		Timeout:   6 * time.Second,
+		KeepAlive: 30 * time.Second,
+		Resolver: &net.Resolver{
+			PreferGo: true,
+			Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+				d := net.Dialer{Timeout: 3 * time.Second}
+				conn, err := d.DialContext(ctx, network, address)
+				if err == nil {
+					return conn, nil
+				}
+				// Fallback to Cloudflare DNS 1.1.1.1:53 or Google 8.8.8.8:53
+				conn, err = d.DialContext(ctx, "udp", "1.1.1.1:53")
+				if err == nil {
+					return conn, nil
+				}
+				return d.DialContext(ctx, "udp", "8.8.8.8:53")
+			},
+		},
+	}
+
+	transport := &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
+		DialContext:           dialer.DialContext,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          20,
+		IdleConnTimeout:       30 * time.Second,
+		TLSHandshakeTimeout:   5 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	}
+
+	return &http.Client{
+		Transport: transport,
+		Timeout:   25 * time.Second,
+	}
+}
+
 // RunBuiltinSpeedTest executes a pure-Go network throughput and latency test.
 func RunBuiltinSpeedTest(ctx context.Context, endpoints *BuiltinSpeedTestEndpoints) (SpeedTestReading, error) {
 	builtinSpeedTestMu.Lock()
@@ -49,12 +88,12 @@ func RunBuiltinSpeedTest(ctx context.Context, endpoints *BuiltinSpeedTestEndpoin
 		builtinSpeedTestMu.Unlock()
 	}()
 
+	var client *http.Client
 	if endpoints == nil {
 		endpoints = &defaultSpeedTestEndpoints
-	}
-
-	client := &http.Client{
-		Timeout: 20 * time.Second,
+		client = createResilientSpeedTestClient()
+	} else {
+		client = &http.Client{Timeout: 20 * time.Second}
 	}
 
 	reading := SpeedTestReading{
@@ -119,6 +158,7 @@ func probeTrace(ctx context.Context, client *http.Client, traceURL string) (stri
 	if err != nil {
 		return "", ""
 	}
+	req.Header.Set("User-Agent", "MikroMan-SpeedTest/1.0")
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", ""
@@ -165,6 +205,9 @@ func measureLatency(ctx context.Context, client *http.Client, url string, sample
 		req, err := http.NewRequestWithContext(ctx, http.MethodHead, url, nil)
 		if err != nil {
 			req, _ = http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		}
+		if req != nil {
+			req.Header.Set("User-Agent", "MikroMan-SpeedTest/1.0")
 		}
 		resp, err := client.Do(req)
 		if err == nil {
@@ -220,6 +263,7 @@ func measureDownload(ctx context.Context, client *http.Client, downURL string) (
 			if err != nil {
 				return
 			}
+			req.Header.Set("User-Agent", "MikroMan-SpeedTest/1.0")
 			resp, err := client.Do(req)
 			if err != nil {
 				return
@@ -277,6 +321,7 @@ func measureUpload(ctx context.Context, client *http.Client, upURL string) (floa
 				if err != nil {
 					return
 				}
+				req.Header.Set("User-Agent", "MikroMan-SpeedTest/1.0")
 				req.Header.Set("Content-Type", "application/octet-stream")
 				resp, err := client.Do(req)
 				if err != nil {

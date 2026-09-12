@@ -2,6 +2,8 @@ package services
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -82,6 +84,103 @@ func (s *DiscoveryService) getClient(routerID int) (*routeros.Client, error) {
 	return newClient, nil
 }
 
+func (s *DiscoveryService) getWanInterfaces(routerID int) []string {
+	key := fmt.Sprintf("monitored_interfaces_%d", routerID)
+	val, err := s.database.GetSetting(key)
+	var ifaces []string
+	if err == nil && val != "" {
+		_ = json.Unmarshal([]byte(val), &ifaces)
+	}
+	if len(ifaces) == 0 {
+		defVal, _ := s.database.GetSetting("monitored_interfaces_default")
+		if defVal != "" {
+			_ = json.Unmarshal([]byte(defVal), &ifaces)
+		}
+	}
+	return ifaces
+}
+
+func (s *DiscoveryService) getIgnoredDiscoveryInterfaces(routerID int) []string {
+	key := fmt.Sprintf("ignored_discovery_interfaces_%d", routerID)
+	val, err := s.database.GetSetting(key)
+	var ifaces []string
+	if err == nil && val != "" {
+		_ = json.Unmarshal([]byte(val), &ifaces)
+	}
+	if len(ifaces) == 0 {
+		defVal, _ := s.database.GetSetting("ignored_discovery_interfaces_default")
+		if defVal != "" {
+			_ = json.Unmarshal([]byte(defVal), &ifaces)
+		}
+	}
+	return ifaces
+}
+
+// IsIgnoredDiscoveryInterface checks whether an interface should be excluded from client device discovery.
+func IsIgnoredDiscoveryInterface(iface string, wanIfaces []string, userIgnored []string) bool {
+	trimmed := strings.TrimSpace(iface)
+	if trimmed == "" {
+		return false
+	}
+	lower := strings.ToLower(trimmed)
+
+	// 1. Known tunnel, VPN and overlay interfaces (e.g. ZeroTier, WireGuard, OpenVPN, PPP)
+	if strings.HasPrefix(lower, "zerotier") || strings.HasPrefix(lower, "zt") ||
+		strings.HasPrefix(lower, "wg") || strings.HasPrefix(lower, "wireguard") ||
+		strings.HasPrefix(lower, "ovpn") || strings.HasPrefix(lower, "tun") ||
+		strings.HasPrefix(lower, "tap") || strings.HasPrefix(lower, "gre") ||
+		strings.HasPrefix(lower, "eoip") || strings.HasPrefix(lower, "ppp") ||
+		strings.HasPrefix(lower, "sstp") || strings.HasPrefix(lower, "l2tp") ||
+		strings.HasPrefix(lower, "ipip") {
+		return true
+	}
+
+	// 2. Container interfaces (veth pairs)
+	if strings.HasPrefix(lower, "veth") {
+		return true
+	}
+
+	// 3. Monitored WAN interfaces (facing upstream ISP gateway)
+	for _, w := range wanIfaces {
+		if strings.EqualFold(strings.TrimSpace(w), trimmed) {
+			return true
+		}
+	}
+
+	// 4. User-configured ignored interfaces
+	for _, ign := range userIgnored {
+		if strings.EqualFold(strings.TrimSpace(ign), trimmed) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func (s *DiscoveryService) cleanupIgnoredUnassignedDevices(routerID int, wanIfaces []string, userIgnored []string) {
+	query := `SELECT id, last_interface FROM devices WHERE user_id IS NULL AND is_deleted = 0 AND router_id = ?`
+	rows, err := s.database.SqlDB.Query(query, routerID)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+
+	var idsToSoftDelete []int
+	for rows.Next() {
+		var id int
+		var lastIface sql.NullString
+		if err := rows.Scan(&id, &lastIface); err == nil {
+			if lastIface.Valid && IsIgnoredDiscoveryInterface(lastIface.String, wanIfaces, userIgnored) {
+				idsToSoftDelete = append(idsToSoftDelete, id)
+			}
+		}
+	}
+
+	for _, devID := range idsToSoftDelete {
+		_, _ = s.database.SqlDB.Exec(`UPDATE devices SET is_deleted = 1, is_active = 0 WHERE id = ?`, devID)
+	}
+}
+
 // SyncDevices performs one full discovery sweep across DHCP, ARP, and WiFi tables.
 func (s *DiscoveryService) SyncDevices(ctx context.Context, routerID int) (int, error) {
 	client, err := s.getClient(routerID)
@@ -89,9 +188,15 @@ func (s *DiscoveryService) SyncDevices(ctx context.Context, routerID int) (int, 
 		return 0, err
 	}
 
+	wanIfaces := s.getWanInterfaces(routerID)
+	ignoredIfaces := s.getIgnoredDiscoveryInterfaces(routerID)
+
 	leases, _ := client.GetDHCPLeases(ctx)
 	arps, _ := client.GetARPTable(ctx)
 	wifis, _ := client.GetWiFiRegistrations(ctx)
+
+	// Clean up any unassigned stray devices previously discovered on now-ignored interfaces
+	s.cleanupIgnoredUnassignedDevices(routerID, wanIfaces, ignoredIfaces)
 
 	// Index by MAC
 	type DiscoveredInfo struct {
@@ -105,6 +210,9 @@ func (s *DiscoveryService) SyncDevices(ctx context.Context, routerID int) (int, 
 	discovered := make(map[string]*DiscoveredInfo)
 
 	for _, l := range leases {
+		if bool(l.Disabled) {
+			continue
+		}
 		mac := strings.ToUpper(strings.TrimSpace(l.MacAddress))
 		if mac == "" {
 			continue
@@ -117,6 +225,12 @@ func (s *DiscoveryService) SyncDevices(ctx context.Context, routerID int) (int, 
 	}
 
 	for _, a := range arps {
+		if a.Complete == "false" || bool(a.Disabled) {
+			continue
+		}
+		if IsIgnoredDiscoveryInterface(a.Interface, wanIfaces, ignoredIfaces) {
+			continue
+		}
 		mac := strings.ToUpper(strings.TrimSpace(a.MacAddress))
 		if mac == "" {
 			continue
@@ -135,6 +249,9 @@ func (s *DiscoveryService) SyncDevices(ctx context.Context, routerID int) (int, 
 	}
 
 	for _, w := range wifis {
+		if IsIgnoredDiscoveryInterface(w.Interface, wanIfaces, ignoredIfaces) {
+			continue
+		}
 		mac := strings.ToUpper(strings.TrimSpace(w.MacAddress))
 		if mac == "" {
 			continue

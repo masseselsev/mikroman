@@ -99,10 +99,10 @@ func LookupMMDB(ip net.IP) (*GeoLocation, bool) {
 
 	meta, hasMeta := countryCentroids[iso]
 	if !hasMeta {
-		// Fallback centroid for recognized country code
+		// Fallback centroid for unrecognized country code (Antarctica ice shelf)
 		meta = CountryMeta{
 			Name: iso,
-			Lat:  20.0,
+			Lat:  -78.0,
 			Lng:  0.0,
 		}
 	}

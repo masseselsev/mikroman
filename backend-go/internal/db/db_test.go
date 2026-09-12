@@ -172,3 +172,90 @@ func TestNullSerialization(t *testing.T) {
 	}
 }
 
+func TestSpeedTestDBOperations(t *testing.T) {
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "test_speedtest.db")
+
+	fernet, err := crypto.NewFernet("cw_z4pYJ2-8_9V18R5v6R1XbJ9i9w9G1R1XbJ9i9w9E=")
+	if err != nil {
+		t.Fatalf("failed to create Fernet: %v", err)
+	}
+
+	database, err := Open(dbPath, fernet)
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer database.Close()
+
+	// Create a router first to satisfy foreign key constraint
+	router := &Router{
+		Name:      "Test-Router",
+		Host:      "192.168.1.1",
+		Port:      443,
+		UseSSL:    true,
+		SSLVerify: false,
+		Username:  "admin",
+		Password:  "secret",
+		IsActive:  true,
+		IsDefault: true,
+	}
+	if err := database.CreateRouter(router); err != nil {
+		t.Fatalf("failed to create router: %v", err)
+	}
+
+	// Initial latest should be nil
+	latest, err := database.GetLatestSpeedTestResult(router.ID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if latest != nil {
+		t.Fatalf("expected nil latest result, got %+v", latest)
+	}
+
+	down := 85.5
+	up := 42.1
+	ping := 12.3
+	jitter := 1.5
+	loss := 0.0
+
+	res := &SpeedTestResult{
+		RouterID:      router.ID,
+		DownloadMbps:  &down,
+		UploadMbps:    &up,
+		PingMs:        &ping,
+		JitterMs:      &jitter,
+		PacketLossPct: &loss,
+		ServerName:    NewNullString("Cloudflare Edge (WAW)"),
+		ISP:           NewNullString("ISP Test"),
+		Status:        "ok",
+	}
+
+	if err := database.InsertSpeedTestResult(res); err != nil {
+		t.Fatalf("failed to insert speed test result: %v", err)
+	}
+
+	if res.ID <= 0 {
+		t.Fatalf("expected positive result ID, got %d", res.ID)
+	}
+
+	// Now latest should exist
+	latest, err = database.GetLatestSpeedTestResult(router.ID)
+	if err != nil {
+		t.Fatalf("failed to get latest result: %v", err)
+	}
+	if latest == nil || latest.DownloadMbps == nil || *latest.DownloadMbps != down {
+		t.Fatalf("expected download %.1f, got %+v", down, latest)
+	}
+	if latest.UploadMbps == nil || *latest.UploadMbps != up {
+		t.Fatalf("expected upload %.1f, got %+v", up, latest)
+	}
+
+	history, err := database.GetSpeedTestHistory(router.ID, 10)
+	if err != nil {
+		t.Fatalf("failed to get history: %v", err)
+	}
+	if len(history) != 1 {
+		t.Fatalf("expected 1 history entry, got %d", len(history))
+	}
+}
+

@@ -223,6 +223,15 @@ func isPrivateOrLocal(ip net.IP) bool {
 	if v4 == nil {
 		return false
 	}
+	// Broadcast 255.255.255.255
+	if v4[0] == 255 && v4[1] == 255 && v4[2] == 255 && v4[3] == 255 {
+		return true
+	}
+	// RFC 6598 Carrier-Grade NAT (CGNAT / Tailscale): 100.64.0.0/10 (100.64.0.0 - 100.127.255.255)
+	if v4[0] == 100 && (v4[1]&0xC0) == 64 {
+		return true
+	}
+	// RFC 5737 Test-Net ranges
 	// 192.0.2.0/24 (TEST-NET-1)
 	if v4[0] == 192 && v4[1] == 0 && v4[2] == 2 {
 		return true
@@ -287,7 +296,7 @@ func LookupGeoIP(ipStr string) GeoLocation {
 		CountryCode: "UN",
 		CountryName: "Global Internet",
 		FlagEmoji:   "🌐",
-		Lat:         20.0,
+		Lat:         -78.0,
 		Lng:         0.0,
 		IsLocal:     false,
 	}

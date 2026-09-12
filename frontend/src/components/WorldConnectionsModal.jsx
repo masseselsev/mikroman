@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useCallback, useRef, useEffect } from 'react';
 import { useI18n } from '../context/I18nContext';
 import { useSpeedUnit } from '../context/SpeedUnitContext';
 import { formatBytes, formatSpeed } from '../utils/formatters';
@@ -10,6 +10,9 @@ import {
   ArrowUpRight,
   ArrowDownLeft,
   Search,
+  Plus,
+  Minus,
+  RotateCcw,
 } from 'lucide-react';
 
 /**
@@ -29,6 +32,14 @@ export function WorldConnectionsModal({
   const [selectedCountryCode, setSelectedCountryCode] = useState(null);
   const [search, setSearch] = useState('');
 
+  // Map Zoom and Pan State
+  const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [isDragging, setIsDragging] = useState(false);
+  const [dragStart, setDragStart] = useState({ x: 0, y: 0, panX: 0, panY: 0 });
+  const mapContainerRef = useRef(null);
+  const hasDraggedRef = useRef(false);
+
   // Filter connections to only those with valid geo coordinates
   const geoConnections = useMemo(() => {
     return (connections || []).filter(
@@ -36,17 +47,18 @@ export function WorldConnectionsModal({
     );
   }, [connections]);
 
-  // Aggregate by country code
+  // Aggregate by country code (Unknown 'UN' always pinned to Antarctica: -78.0, 0.0)
   const countryGroups = useMemo(() => {
     const groups = {};
     for (const c of geoConnections) {
       const code = c.country_code || 'UN';
+      const isUnknown = code === 'UN';
       if (!groups[code]) {
         groups[code] = {
           code,
-          name: c.country_name || code,
-          lat: c.lat,
-          lng: c.lng,
+          name: c.country_name || (isUnknown ? 'Unknown' : code),
+          lat: isUnknown ? -78.0 : c.lat,
+          lng: isUnknown ? 0.0 : c.lng,
           count: 0,
           uploadRate: 0,
           downloadRate: 0,
@@ -101,6 +113,127 @@ export function WorldConnectionsModal({
     const x = ((lng + 180) / 360) * 1000;
     const y = ((90 - lat) / 180) * 500;
     return { x: Math.max(15, Math.min(985, x)), y: Math.max(15, Math.min(485, y)) };
+  };
+
+  // Clamping helper for Pan
+  const clampPan = useCallback((newPan, currentZoom) => {
+    const vbW = 1000 / currentZoom;
+    const vbH = 500 / currentZoom;
+    const maxX = Math.max(0, 1000 - vbW);
+    const maxY = Math.max(0, 500 - vbH);
+    return {
+      x: Math.max(0, Math.min(maxX, newPan.x)),
+      y: Math.max(0, Math.min(maxY, newPan.y)),
+    };
+  }, []);
+
+  const setZoomAndCenter = useCallback((targetZoom, centerPoint = null) => {
+    const nextZoom = Math.max(1, Math.min(6, targetZoom));
+    if (nextZoom === 1) {
+      setZoom(1);
+      setPan({ x: 0, y: 0 });
+      return;
+    }
+
+    const currentVbW = 1000 / zoom;
+    const currentVbH = 500 / zoom;
+    const nextVbW = 1000 / nextZoom;
+    const nextVbH = 500 / nextZoom;
+
+    const cx = centerPoint ? centerPoint.x : pan.x + currentVbW / 2;
+    const cy = centerPoint ? centerPoint.y : pan.y + currentVbH / 2;
+
+    const nextPan = {
+      x: cx - nextVbW / 2,
+      y: cy - nextVbH / 2,
+    };
+
+    setZoom(nextZoom);
+    setPan(clampPan(nextPan, nextZoom));
+  }, [zoom, pan, clampPan]);
+
+  const handleZoomIn = () => setZoomAndCenter(zoom * 1.5);
+  const handleZoomOut = () => setZoomAndCenter(zoom / 1.5);
+  const handleResetZoom = () => {
+    setZoom(1);
+    setPan({ x: 0, y: 0 });
+  };
+
+  // Mouse wheel zoom on map canvas
+  useEffect(() => {
+    const el = mapContainerRef.current;
+    if (!el) return;
+
+    const onWheel = (e) => {
+      e.preventDefault();
+      const rect = el.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return;
+
+      const rx = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+      const ry = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
+
+      const currentVbW = 1000 / zoom;
+      const currentVbH = 500 / zoom;
+      const cursorSvgX = pan.x + rx * currentVbW;
+      const cursorSvgY = pan.y + ry * currentVbH;
+
+      const factor = e.deltaY < 0 ? 1.25 : 0.8;
+      const nextZoom = Math.max(1, Math.min(6, zoom * factor));
+      if (nextZoom === 1) {
+        setZoom(1);
+        setPan({ x: 0, y: 0 });
+        return;
+      }
+
+      const nextVbW = 1000 / nextZoom;
+      const nextVbH = 500 / nextZoom;
+      const nextPan = {
+        x: cursorSvgX - rx * nextVbW,
+        y: cursorSvgY - ry * nextVbH,
+      };
+
+      setZoom(nextZoom);
+      setPan(clampPan(nextPan, nextZoom));
+    };
+
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, [zoom, pan, clampPan]);
+
+  // Mouse Drag / Pan handlers
+  const handleMouseDown = (e) => {
+    if (e.button !== 0 || zoom <= 1) return;
+    setIsDragging(true);
+    hasDraggedRef.current = false;
+    setDragStart({ x: e.clientX, y: e.clientY, panX: pan.x, panY: pan.y });
+  };
+
+  const handleMouseMove = (e) => {
+    if (!isDragging || zoom <= 1) return;
+    const el = mapContainerRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return;
+
+    const dxPix = e.clientX - dragStart.x;
+    const dyPix = e.clientY - dragStart.y;
+    if (Math.abs(dxPix) > 3 || Math.abs(dyPix) > 3) {
+      hasDraggedRef.current = true;
+    }
+
+    const currentVbW = 1000 / zoom;
+    const currentVbH = 500 / zoom;
+    const dx = dxPix * (currentVbW / rect.width);
+    const dy = dyPix * (currentVbH / rect.height);
+
+    setPan(clampPan({
+      x: dragStart.panX - dx,
+      y: dragStart.panY - dy,
+    }, zoom));
+  };
+
+  const handleMouseUp = () => {
+    setIsDragging(false);
   };
 
   return (
@@ -256,6 +389,11 @@ export function WorldConnectionsModal({
         <div style={{ display: 'flex', flexDirection: 'column', gap: 14, flex: 1, overflow: 'hidden' }}>
           {/* SVG Canvas Container */}
           <div
+            ref={mapContainerRef}
+            onMouseDown={handleMouseDown}
+            onMouseMove={handleMouseMove}
+            onMouseUp={handleMouseUp}
+            onMouseLeave={handleMouseUp}
             style={{
               position: 'relative',
               width: '100%',
@@ -264,10 +402,103 @@ export function WorldConnectionsModal({
               border: '1px solid rgba(255, 255, 255, 0.08)',
               overflow: 'hidden',
               boxShadow: 'inset 0 2px 12px rgba(0,0,0,0.7)',
+              cursor: isDragging ? 'grabbing' : zoom > 1 ? 'grab' : 'default',
+              userSelect: 'none',
             }}
           >
+            {/* Zoom / Pan Controls Overlay */}
+            <div
+              style={{
+                position: 'absolute',
+                top: 12,
+                right: 12,
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 4,
+                background: 'rgba(10, 15, 29, 0.85)',
+                backdropFilter: 'blur(8px)',
+                padding: 4,
+                borderRadius: 8,
+                border: '1px solid rgba(255, 255, 255, 0.15)',
+                zIndex: 10,
+                boxShadow: '0 4px 12px rgba(0,0,0,0.5)',
+              }}
+            >
+              <button
+                type="button"
+                onClick={handleZoomIn}
+                title="Zoom in"
+                disabled={zoom >= 6}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  color: zoom >= 6 ? 'var(--text-muted, #475569)' : '#ffffff',
+                  cursor: zoom >= 6 ? 'default' : 'pointer',
+                  padding: 4,
+                  borderRadius: 4,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+              >
+                <Plus size={14} />
+              </button>
+              <div
+                style={{
+                  fontSize: '9px',
+                  fontWeight: 600,
+                  textAlign: 'center',
+                  color: 'var(--text-secondary, #94a3b8)',
+                  padding: '2px 0',
+                  userSelect: 'none',
+                  fontFamily: 'monospace',
+                }}
+              >
+                {Math.round(zoom * 100)}%
+              </div>
+              <button
+                type="button"
+                onClick={handleZoomOut}
+                title="Zoom out"
+                disabled={zoom <= 1}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  color: zoom <= 1 ? 'var(--text-muted, #475569)' : '#ffffff',
+                  cursor: zoom <= 1 ? 'default' : 'pointer',
+                  padding: 4,
+                  borderRadius: 4,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+              >
+                <Minus size={14} />
+              </button>
+              {zoom > 1 && (
+                <button
+                  type="button"
+                  onClick={handleResetZoom}
+                  title="Reset view"
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    color: '#38bdf8',
+                    cursor: 'pointer',
+                    padding: 4,
+                    borderRadius: 4,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  }}
+                >
+                  <RotateCcw size={12} />
+                </button>
+              )}
+            </div>
+
             <svg
-              viewBox="0 0 1000 500"
+              viewBox={`${pan.x} ${pan.y} ${1000 / zoom} ${500 / zoom}`}
               style={{ width: '100%', height: 'auto', display: 'block' }}
               aria-label="World Connections Map"
             >
@@ -315,12 +546,18 @@ export function WorldConnectionsModal({
               {filteredGroups.map((g) => {
                 const { x, y } = project(g.lat, g.lng);
                 const isSelected = activeSelected && activeSelected.code === g.code;
-                const nodeRadius = Math.min(18, Math.max(7, 5 + Math.log2(g.count + 1) * 3));
+                const scaleFactor = Math.pow(zoom, 0.45);
+                const nodeRadius = Math.min(18, Math.max(5.5, (5 + Math.log2(g.count + 1) * 3) / scaleFactor));
+                const badgeScale = Math.pow(zoom, 0.35);
 
                 return (
                   <g
                     key={g.code}
-                    onClick={() => setSelectedCountryCode(g.code)}
+                    onClick={(e) => {
+                      if (hasDraggedRef.current) return;
+                      e.stopPropagation();
+                      setSelectedCountryCode(g.code);
+                    }}
                     style={{ cursor: 'pointer' }}
                     className="map-node"
                     data-testid={`map-node-${g.code}`}
@@ -340,7 +577,7 @@ export function WorldConnectionsModal({
                       r={nodeRadius * 1.5}
                       fill="none"
                       stroke={isSelected ? '#f59e0b' : '#38bdf8'}
-                      strokeWidth="1.5"
+                      strokeWidth={1.5 / badgeScale}
                       opacity={isSelected ? 0.9 : 0.6}
                     />
 
@@ -351,16 +588,16 @@ export function WorldConnectionsModal({
                       r={nodeRadius}
                       fill={isSelected ? '#f59e0b' : '#0284c7'}
                       stroke="#ffffff"
-                      strokeWidth="2"
+                      strokeWidth={2 / badgeScale}
                     />
 
                     {/* Socket Count Badge inside circle */}
                     <text
                       x={x}
-                      y={y + 3.5}
+                      y={y + (3.5 / badgeScale)}
                       textAnchor="middle"
                       fill="#ffffff"
-                      fontSize={nodeRadius > 10 ? '10px' : '8px'}
+                      fontSize={`${Math.max(6, (nodeRadius > 10 ? 10 : 8) / badgeScale)}px`}
                       fontWeight="bold"
                       pointerEvents="none"
                     >
@@ -368,22 +605,22 @@ export function WorldConnectionsModal({
                     </text>
 
                     {/* Map Badge with ISO code */}
-                    <g transform={`translate(${x + nodeRadius + 4}, ${y + 4})`}>
+                    <g transform={`translate(${x + nodeRadius + (4 / badgeScale)}, ${y + (4 / badgeScale)})`}>
                       <rect
-                        x="-2"
-                        y="-11"
-                        width={g.code.length * 8 + 14}
-                        height="16"
-                        rx="4"
+                        x={-2 / badgeScale}
+                        y={-11 / badgeScale}
+                        width={(g.code.length * 8 + 14) / badgeScale}
+                        height={16 / badgeScale}
+                        rx={4 / badgeScale}
                         fill="rgba(10, 15, 29, 0.9)"
                         stroke={isSelected ? '#f59e0b' : 'rgba(255, 255, 255, 0.25)'}
-                        strokeWidth="1"
+                        strokeWidth={1 / badgeScale}
                       />
                       <text
-                        x="5"
-                        y="1"
+                        x={5 / badgeScale}
+                        y={1 / badgeScale}
                         fill="#ffffff"
-                        fontSize="10px"
+                        fontSize={`${Math.max(7, 10 / badgeScale)}px`}
                         fontWeight="700"
                         letterSpacing="0.5px"
                         pointerEvents="none"

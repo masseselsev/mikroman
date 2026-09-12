@@ -231,6 +231,8 @@ type InterfaceDTO struct {
 	RxByte    int64  `json:"rx_byte"`
 	TxByte    int64  `json:"tx_byte"`
 	ActualMTU string `json:"actual_mtu,omitempty"`
+	IsWAN     bool   `json:"is_wan,omitempty"`
+	IsTunnel  bool   `json:"is_tunnel,omitempty"`
 }
 
 // GetInterfaces returns interface statistics from the connected router.

@@ -4,8 +4,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 )
+
+func cleanIP(addr string) string {
+	s := strings.TrimSpace(addr)
+	if idx := strings.Index(s, ":"); idx != -1 && !strings.Contains(s, "]") {
+		s = s[:idx]
+	}
+	return strings.TrimSpace(strings.Split(s, "/")[0])
+}
 
 // GetMangleRules reads /ip/firewall/mangle
 func (c *Client) GetMangleRules(ctx context.Context) ([]MangleRule, error) {
@@ -153,10 +162,15 @@ func (c *Client) EnsureFastTrackExemption(ctx context.Context) error {
 		if r.Action == "fasttrack-connection" && r.ID != "" {
 			if r.SrcAddressList != "!mikroman_queued" || r.DstAddressList != "!mikroman_queued" {
 				path := fmt.Sprintf("/ip/firewall/filter/%s", r.ID)
-				_ = c.Patch(ctx, path, map[string]interface{}{
+				err := c.Patch(ctx, path, map[string]interface{}{
 					"src-address-list": "!mikroman_queued",
 					"dst-address-list": "!mikroman_queued",
 				}, nil)
+				if err != nil {
+					slog.Warn("Failed to patch FastTrack exemption on RouterOS", "id", r.ID, "err", err)
+				} else {
+					slog.Info("Configured FastTrack exemption rule with !mikroman_queued", "id", r.ID)
+				}
 			}
 		}
 	}
@@ -172,8 +186,54 @@ func (c *Client) GetFirewallConnections(ctx context.Context) ([]FirewallConnecti
 	return conns, nil
 }
 
-// DeleteFirewallConnection removes an active connection via DELETE /ip/firewall/connection/{id}
+// DeleteFirewallConnection removes an active connection via POST /ip/firewall/connection/remove or DELETE fallback
 func (c *Client) DeleteFirewallConnection(ctx context.Context, id string) error {
-	path := fmt.Sprintf("/ip/firewall/connection/%s", id)
+	cleanID := strings.TrimSpace(id)
+	if cleanID == "" {
+		return nil
+	}
+	// Try REST POST command first
+	payload := map[string]string{"numbers": cleanID}
+	if err := c.Post(ctx, "/ip/firewall/connection/remove", payload, nil); err == nil {
+		return nil
+	}
+	// Fallback to DELETE
+	path := fmt.Sprintf("/ip/firewall/connection/%s", cleanID)
 	return c.Delete(ctx, path)
+}
+
+// FlushConnectionsForIP removes active connections involving an IP so queues take immediate effect without waiting for timeouts
+func (c *Client) FlushConnectionsForIP(ctx context.Context, ip string) error {
+	cleanTarget := strings.TrimSpace(ip)
+	if cleanTarget == "" {
+		return nil
+	}
+	immunes := c.GetImmuneIPs()
+	if immunes[cleanTarget] {
+		return nil
+	}
+
+	conns, err := c.GetFirewallConnections(ctx)
+	if err != nil {
+		return err
+	}
+
+	for _, conn := range conns {
+		src := cleanIP(conn.SrcAddress)
+		dst := cleanIP(conn.DstAddress)
+		rSrc := cleanIP(conn.ReplySrcAddress)
+		rDst := cleanIP(conn.ReplyDstAddress)
+
+		// Never kill management connections to immune IPs
+		if immunes[src] || immunes[dst] || immunes[rSrc] || immunes[rDst] {
+			continue
+		}
+
+		if src == cleanTarget || dst == cleanTarget || rSrc == cleanTarget || rDst == cleanTarget {
+			if conn.ID != "" {
+				_ = c.DeleteFirewallConnection(ctx, conn.ID)
+			}
+		}
+	}
+	return nil
 }
