@@ -25,6 +25,15 @@ func (c *Client) GetMangleRules(ctx context.Context) ([]MangleRule, error) {
 	return rules, nil
 }
 
+// GetMangleAccountingRules reads /ip/firewall/mangle with .proplist=.id,comment,bytes for minimal latency
+func (c *Client) GetMangleAccountingRules(ctx context.Context) ([]MangleRule, error) {
+	var rules []MangleRule
+	if err := c.Get(ctx, "/ip/firewall/mangle?.proplist=.id,comment,bytes", &rules); err != nil {
+		return c.GetMangleRules(ctx)
+	}
+	return rules, nil
+}
+
 // CreateMangleRule adds a rule via PUT /ip/firewall/mangle
 func (c *Client) CreateMangleRule(ctx context.Context, r *MangleRule) error {
 	var res MangleRule
