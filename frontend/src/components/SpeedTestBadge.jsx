@@ -44,10 +44,15 @@ export function SpeedTestBadge({ routerId, onNavigate }) {
     try {
       const res = await api.runSpeedTest(routerId);
       const result = res?.data?.result || res?.result;
-      if (result && result.status !== 'ok') {
+      if (result && result.status === 'failed') {
         setError(result.error || t('speedtest_failed'));
-      } else if (result && result.download_mbps != null) {
+      } else if (result && (result.download_mbps != null || result.upload_mbps != null)) {
         setStatus(prev => ({ ...(prev || {}), last_result: result, can_run: true }));
+      }
+      if (res?.error || result?.error) {
+        if (!result || (result.download_mbps == null && result.upload_mbps == null)) {
+          setError(res?.error || result?.error || t('speedtest_failed'));
+        }
       }
       await load();
     } catch (err) {
@@ -60,7 +65,7 @@ export function SpeedTestBadge({ routerId, onNavigate }) {
   if (!routerId || !status) return null;
 
   const last = status.last_result;
-  const hasFigures = last && last.download_mbps != null;
+  const hasFigures = last && (last.download_mbps != null || last.upload_mbps != null);
 
   // Not runnable: say why in one line rather than showing a button that fails.
   if (!status.can_run) {
@@ -83,7 +88,7 @@ export function SpeedTestBadge({ routerId, onNavigate }) {
       >
         {hasFigures ? (
           <span className="font-mono">
-            ↓{Math.round(last.download_mbps)} ↑{Math.round(last.upload_mbps ?? 0)}
+            ↓{last.download_mbps != null ? Math.round(last.download_mbps) : '—'} ↑{last.upload_mbps != null ? Math.round(last.upload_mbps) : '—'}
           </span>
         ) : null}
         <AlertCircle size={11} />
@@ -98,17 +103,17 @@ export function SpeedTestBadge({ routerId, onNavigate }) {
         <span
           className="font-mono speedtest-figures"
           title={[
-            `${t('speedtest_download')}: ${last.download_mbps} Mbps`,
-            `${t('speedtest_upload')}: ${last.upload_mbps ?? '—'} Mbps`,
+            `${t('speedtest_download')}: ${last.download_mbps != null ? last.download_mbps : '—'} Mbps`,
+            `${t('speedtest_upload')}: ${last.upload_mbps != null ? last.upload_mbps : '—'} Mbps`,
             last.ping_ms != null ? `${t('speedtest_ping')}: ${last.ping_ms} ms` : null,
             last.jitter_ms != null ? `${t('speedtest_jitter')}: ${last.jitter_ms} ms` : null,
             last.server_name || null,
             last.created_at ? new Date(last.created_at).toLocaleString() : null,
           ].filter(Boolean).join('\n')}
         >
-          ↓{Math.round(last.download_mbps)}
+          ↓{last.download_mbps != null ? Math.round(last.download_mbps) : '—'}
           <span className="speedtest-sep">/</span>
-          ↑{Math.round(last.upload_mbps ?? 0)}
+          ↑{last.upload_mbps != null ? Math.round(last.upload_mbps) : '—'}
           <span className="speedtest-unit"> Mbps</span>
         </span>
       )}

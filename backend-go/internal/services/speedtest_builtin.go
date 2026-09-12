@@ -242,43 +242,63 @@ func measureLatency(ctx context.Context, client *http.Client, url string, sample
 }
 
 func measureDownload(ctx context.Context, client *http.Client, downURL string) (float64, error) {
+	// Standard Cloudflare speedtest chunk sizes (bytes parameter):
+	// 25000000 (25 MB), 10000000 (10 MB). Cloudflare returns HTTP 403 on arbitrary non-standard sizes like 15000000.
 	targetURL := downURL
 	if !strings.Contains(targetURL, "?") {
-		targetURL += "?bytes=15000000" // ~15 MB stream per worker
+		targetURL += "?bytes=25000000"
 	}
 
-	workers := 3
+	workers := 2
 	var totalBytes int64
 	var wg sync.WaitGroup
 
 	start := time.Now()
-	testCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	testCtx, cancel := context.WithTimeout(ctx, 6*time.Second)
 	defer cancel()
 
 	for i := 0; i < workers; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			req, err := http.NewRequestWithContext(testCtx, http.MethodGet, targetURL, nil)
-			if err != nil {
-				return
-			}
-			req.Header.Set("User-Agent", "MikroMan-SpeedTest/1.0")
-			resp, err := client.Do(req)
-			if err != nil {
-				return
-			}
-			defer resp.Body.Close()
-
-			buf := make([]byte, 32*1024)
+			buf := make([]byte, 64*1024)
 			for {
-				n, err := resp.Body.Read(buf)
-				if n > 0 {
-					atomic.AddInt64(&totalBytes, int64(n))
+				select {
+				case <-testCtx.Done():
+					return
+				default:
 				}
+
+				req, err := http.NewRequestWithContext(testCtx, http.MethodGet, targetURL, nil)
 				if err != nil {
-					break
+					return
 				}
+				req.Header.Set("User-Agent", "MikroMan-SpeedTest/1.0")
+				resp, err := client.Do(req)
+				if err != nil {
+					return
+				}
+
+				if resp.StatusCode != http.StatusOK {
+					resp.Body.Close()
+					// If 25MB fails with 403 or non-200, try 10MB chunk fallback
+					if strings.Contains(targetURL, "25000000") {
+						targetURL = strings.Replace(targetURL, "25000000", "10000000", 1)
+						continue
+					}
+					return
+				}
+
+				for {
+					n, err := resp.Body.Read(buf)
+					if n > 0 {
+						atomic.AddInt64(&totalBytes, int64(n))
+					}
+					if err != nil {
+						break
+					}
+				}
+				resp.Body.Close()
 			}
 		}()
 	}
@@ -325,6 +345,10 @@ func measureUpload(ctx context.Context, client *http.Client, upURL string) (floa
 				req.Header.Set("Content-Type", "application/octet-stream")
 				resp, err := client.Do(req)
 				if err != nil {
+					return
+				}
+				if resp.StatusCode != http.StatusOK {
+					resp.Body.Close()
 					return
 				}
 				_, _ = io.Copy(io.Discard, resp.Body)
