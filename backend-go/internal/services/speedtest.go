@@ -334,3 +334,4 @@ func (r *SpeedTestReading) ToDBModel(routerID int) *db.SpeedTestResult {
 
 	return res
 }
+

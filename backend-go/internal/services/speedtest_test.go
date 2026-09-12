@@ -87,3 +87,4 @@ func TestParseEmptySpeedTestOutput(t *testing.T) {
 		t.Fatalf("expected HasAnyFigure to be false")
 	}
 }
+

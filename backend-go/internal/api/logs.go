@@ -100,8 +100,8 @@ func (h *LogHandler) GetLogs(w http.ResponseWriter, r *http.Request) {
 	limit := 100
 	if l := q.Get("limit"); l != "" {
 		if val, err := strconv.Atoi(l); err == nil && val > 0 {
-			if val > 1000 {
-				limit = 1000
+			if val > 10000 {
+				limit = 10000
 			} else {
 				limit = val
 			}
@@ -147,7 +147,9 @@ func (h *LogHandler) GetLogs(w http.ResponseWriter, r *http.Request) {
 					mLower := strings.ToLower(e.Message)
 
 					if hideSelfApi {
-						if strings.Contains(mLower, "logged in") || strings.Contains(mLower, "logged out") || strings.Contains(mLower, "login failure") {
+						if strings.Contains(mLower, "logged in") || strings.Contains(mLower, "logged out") || strings.Contains(mLower, "login failure") ||
+							strings.Contains(mLower, "by api:rest") || strings.Contains(mLower, "by api@") || strings.Contains(mLower, "by api:") ||
+							strings.Contains(mLower, "by api") || strings.Contains(mLower, "api:rest@") {
 							continue
 						}
 					}
@@ -212,7 +214,7 @@ func (h *LogHandler) GetLogs(w http.ResponseWriter, r *http.Request) {
 		args = append(args, severityFilter)
 	}
 	if hideSelfApi {
-		where = append(where, "message NOT LIKE '%logged in%' AND message NOT LIKE '%logged out%' AND message NOT LIKE '%login failure%'")
+		where = append(where, "(message NOT LIKE '%logged in%' AND message NOT LIKE '%logged out%' AND message NOT LIKE '%login failure%' AND message NOT LIKE '%by api:rest%' AND message NOT LIKE '%by api@%' AND message NOT LIKE '%by api:%' AND message NOT LIKE '%by api %' AND message NOT LIKE '%api:rest@%')")
 	}
 	if hideContainerLogs {
 		where = append(where, "NOT (topics LIKE '%container%' AND message LIKE '%mikroman%')")

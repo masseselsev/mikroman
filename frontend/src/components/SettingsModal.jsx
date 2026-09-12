@@ -881,14 +881,14 @@ export function SettingsModal({
                       {t('backup_settings_desc')}
                     </p>
 
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8, marginBottom: 8 }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1.25fr 1fr 1fr', gap: 8, marginBottom: 8 }}>
                       <div className="form-group">
                         <label className="form-label" style={{ fontSize: 'var(--fs-3xs)' }}>{t('backup_interval_label')}</label>
                         <select
                           className="form-select font-mono"
                           value={settings.backup_interval_hours || '24'}
                           onChange={e => setSettings({ ...settings, backup_interval_hours: e.target.value })}
-                          style={{ width: '100%', height: 32, fontSize: 'var(--fs-3xs)' }}
+                          style={{ width: '100%', height: 34, fontSize: 'var(--fs-2xs)', padding: '4px 26px 4px 8px' }}
                         >
                           <option value="6">6h</option>
                           <option value="12">12h</option>
@@ -908,7 +908,7 @@ export function SettingsModal({
                           value={settings.backup_retention_days || '90'}
                           onChange={e => setSettings({ ...settings, backup_retention_days: e.target.value })}
                           placeholder="90"
-                          style={{ height: 32, fontSize: 'var(--fs-3xs)' }}
+                          style={{ height: 34, fontSize: 'var(--fs-2xs)' }}
                         />
                       </div>
 
@@ -922,7 +922,7 @@ export function SettingsModal({
                           value={settings.backup_max_count || '30'}
                           onChange={e => setSettings({ ...settings, backup_max_count: e.target.value })}
                           placeholder="30"
-                          style={{ height: 32, fontSize: 'var(--fs-3xs)' }}
+                          style={{ height: 34, fontSize: 'var(--fs-2xs)' }}
                         />
                       </div>
                     </div>

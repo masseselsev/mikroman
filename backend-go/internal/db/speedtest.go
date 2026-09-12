@@ -128,3 +128,4 @@ func (db *DB) GetSpeedTestHistory(routerID int, limit int) ([]SpeedTestResult, e
 	}
 	return list, nil
 }
+
