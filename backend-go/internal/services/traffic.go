@@ -168,14 +168,6 @@ func (s *TrafficService) ReconcileQueues(ctx context.Context, routerID int) erro
 			if err := client.CreateSimpleQueue(ctx, &newQ); err != nil {
 				slog.Error("Failed to create user simple queue on RouterOS", "user", u.Name, "err", err)
 			}
-		} else if matchedQ.Target != target || matchedQ.MaxLimit != maxLimit || matchedQ.Name != qName {
-			if err := client.UpdateSimpleQueue(ctx, matchedQ.ID, map[string]interface{}{
-				"name":      qName,
-				"target":    target,
-				"max-limit": maxLimit,
-				"comment":   uComment,
-			}); err != nil {
-				slog.Error("Failed to update user simple queue on RouterOS", "user", u.Name, "err", err)
 		} else {
 			needsUpdate := matchedQ.Name != qName ||
 				normalizeRateLimit(matchedQ.MaxLimit) != normalizeRateLimit(maxLimit) ||
@@ -262,15 +254,6 @@ func (s *TrafficService) ReconcileQueues(ctx context.Context, routerID int) erro
 				if err := client.CreateSimpleQueue(ctx, &newQ); err != nil {
 					slog.Error("Failed to create device custom simple queue on RouterOS", "device_id", dev.ID, "user", u.Name, "err", err)
 				}
-			} else if matchedDevQ.Target != target || matchedDevQ.MaxLimit != devMaxLimit || matchedDevQ.Parent != parentName {
-				if err := client.UpdateSimpleQueue(ctx, matchedDevQ.ID, map[string]interface{}{
-					"name":      devQName,
-					"target":    target,
-					"max-limit": devMaxLimit,
-					"parent":    parentName,
-					"comment":   devComment,
-				}); err != nil {
-					slog.Error("Failed to update device custom simple queue on RouterOS", "device_id", dev.ID, "err", err)
 			} else {
 				needsUpdate := matchedDevQ.Name != devQName ||
 					normalizeRateLimit(matchedDevQ.MaxLimit) != normalizeRateLimit(devMaxLimit) ||
@@ -318,14 +301,6 @@ func (s *TrafficService) ReconcileQueues(ctx context.Context, routerID int) erro
 				if err := client.CreateSimpleQueue(ctx, &newQ); err != nil {
 					slog.Error("Failed to create device quarantine simple queue on RouterOS", "device_id", dev.ID, "err", err)
 				}
-			} else if matchedDevQ.Target != target || matchedDevQ.MaxLimit != maxLimit {
-				if err := client.UpdateSimpleQueue(ctx, matchedDevQ.ID, map[string]interface{}{
-					"name":      devQName,
-					"target":    target,
-					"max-limit": maxLimit,
-					"comment":   devComment,
-				}); err != nil {
-					slog.Error("Failed to update device quarantine simple queue on RouterOS", "device_id", dev.ID, "err", err)
 			} else {
 				needsUpdate := matchedDevQ.Name != devQName ||
 					normalizeRateLimit(matchedDevQ.MaxLimit) != normalizeRateLimit(maxLimit) ||
