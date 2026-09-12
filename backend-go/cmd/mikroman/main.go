@@ -132,6 +132,10 @@ func main() {
 	telegramSvc := services.NewTelegramBotService(database, client)
 	telegramSvc.Start()
 
+	// GeoIP Updater service (loads local MMDB and maintains background updates)
+	geoUpdater := services.InitGeoIPUpdater(cfg.DataDir)
+	defer geoUpdater.Close()
+
 	// 8. Build HTTP Router
 	distDir := *distDirFlag
 	if _, err := os.Stat(distDir); os.IsNotExist(err) {

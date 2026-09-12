@@ -63,3 +63,38 @@ func TestLookupGeoIP(t *testing.T) {
 	}
 }
 
+func TestISOFlagEmoji(t *testing.T) {
+	cases := map[string]string{
+		"US": "🇺🇸",
+		"NL": "🇳🇱",
+		"RU": "🇷🇺",
+		"DE": "🇩🇪",
+		"UZ": "🇺🇿",
+		"KZ": "🇰🇿",
+		"FR": "🇫🇷",
+		"JP": "🇯🇵",
+		"BR": "🇧🇷",
+		"12": "🌐",
+		"":   "🌐",
+		"USA": "🌐",
+	}
+
+	for code, expected := range cases {
+		actual := ISOFlagEmoji(code)
+		if actual != expected {
+			t.Errorf("expected %s for %s, got %s", expected, code, actual)
+		}
+	}
+}
+
+func TestGeoIPUpdater_Status(t *testing.T) {
+	tmpDir := t.TempDir()
+	updater := InitGeoIPUpdater(tmpDir)
+	defer updater.Close()
+
+	status := updater.GetStatus()
+	if status.Path == "" {
+		t.Errorf("expected non-empty path in status")
+	}
+}
+
