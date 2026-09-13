@@ -290,6 +290,27 @@ class DeviceManager(DeviceConsolidationMixin):
                 logger.debug(f"Could not parse {key}; falling back to default WAN interface")
         return {"ether1"}
 
+    async def _get_arp_discovery_interfaces(self, session: AsyncSession) -> set:
+        """Specific LAN interfaces to scan for unassigned devices via ARP.
+        Empty set means unconstrained (all non-WAN interfaces).
+        """
+        key = f"arp_discovery_interfaces_{self.router_id}" if self.router_id else "arp_discovery_interfaces"
+        setting = await session.get(AppSetting, key)
+        if not setting and not self.router_id:
+            setting = await session.get(AppSetting, "arp_discovery_interfaces_1")
+        if not setting:
+            setting = await session.get(AppSetting, "arp_discovery_interfaces")
+        if setting and setting.value:
+            try:
+                names = json.loads(setting.value)
+                if isinstance(names, list) and names:
+                    return {str(n).lower() for n in names}
+            except (json.JSONDecodeError, TypeError):
+                parts = [p.strip().lower() for p in setting.value.split(",") if p.strip()]
+                if parts:
+                    return set(parts)
+        return set()
+
     async def _get_container_interfaces(self) -> set:
         """Names of ``veth`` interfaces - the router-side end of a container.
 
@@ -421,9 +442,11 @@ class DeviceManager(DeviceConsolidationMixin):
         # unresolved ones, which RouterOS keeps after a host has left the network
         # and which are therefore no evidence that the device is still online.
         wan_interfaces = await self._get_wan_interfaces(session)
+        arp_allowed_ifaces = await self._get_arp_discovery_interfaces(session)
         arps = [
             a for a in arps
             if (a.interface or "") not in wan_interfaces and a.complete
+            and (not arp_allowed_ifaces or (a.interface or "").lower() in arp_allowed_ifaces)
         ]
 
         # Interfaces that carry a container rather than a client. A container's

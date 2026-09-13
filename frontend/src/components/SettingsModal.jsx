@@ -7,7 +7,7 @@ import { templateErrorKey } from '../utils/ipLookup';
 import { RouterConnectionForm } from './RouterConnectionForm';
 import { RouterDeleteDialog, ChangeRouterModal, ArchivedRoutersSection } from './RouterLifecycle';
 import { PauseNetworksModal, parseNetworksList } from './PauseNetworksModal';
-import { X, Settings as SettingsIcon, Send, CheckCircle2, AlertTriangle, Power, Server, Plus, Pencil, Trash2, Check, Loader2, Network, Repeat } from 'lucide-react';
+import { X, Settings as SettingsIcon, Bell, Send, CheckCircle2, AlertTriangle, Power, Server, Plus, Pencil, Trash2, Check, Loader2, Network, Repeat } from 'lucide-react';
 
 export function SettingsModal({
   isOpen,
@@ -59,6 +59,41 @@ export function SettingsModal({
   const [lifecycleBusy, setLifecycleBusy] = useState(false);
   const [archivedBusyId, setArchivedBusyId] = useState(null);
   const [switchingProtocolId, setSwitchingProtocolId] = useState(null);
+  const [availableInterfaces, setAvailableInterfaces] = useState([]);
+
+  const selectedArpInterfaces = React.useMemo(() => {
+    const raw = settings.arp_discovery_interfaces;
+    if (!raw) return [];
+    if (Array.isArray(raw)) return raw;
+    if (typeof raw === 'string') {
+      try {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) return parsed;
+      } catch (_) {}
+      return raw.split(',').map(s => s.trim()).filter(Boolean);
+    }
+    return [];
+  }, [settings.arp_discovery_interfaces]);
+
+  const toggleArpInterface = (ifaceName) => {
+    let next;
+    if (selectedArpInterfaces.includes(ifaceName)) {
+      next = selectedArpInterfaces.filter(i => i !== ifaceName);
+    } else {
+      next = [...selectedArpInterfaces, ifaceName];
+    }
+    setSettings(prev => ({
+      ...prev,
+      arp_discovery_interfaces: JSON.stringify(next)
+    }));
+  };
+
+  const clearArpInterfaces = () => {
+    setSettings(prev => ({
+      ...prev,
+      arp_discovery_interfaces: '[]'
+    }));
+  };
 
   const loadSettingsAndRouters = async (routerId = selectedRouterId) => {
     try {
@@ -77,6 +112,11 @@ export function SettingsModal({
           setSelectedRouterId(act.id);
         }
       }
+      api.getAvailableInterfaces(routerId).then(res => {
+        if (res?.data && Array.isArray(res.data)) {
+          setAvailableInterfaces(res.data);
+        }
+      }).catch(() => {});
     } catch (e) {
       console.error('Failed to load settings or routers', e);
     } finally {
@@ -408,7 +448,7 @@ export function SettingsModal({
         </div>
 
         {/* Settings Tab Navigation */}
-        <div style={{ display: 'flex', borderBottom: '1px solid var(--border-color)', padding: '0 20px', background: 'var(--bg-secondary)' }}>
+        <div style={{ display: 'flex', borderBottom: '1px solid var(--border-color)', padding: '0 20px', background: 'var(--bg-secondary)', gap: 4 }}>
           <button
             type="button"
             className="btn btn-ghost"
@@ -416,11 +456,32 @@ export function SettingsModal({
               borderRadius: 0,
               borderBottom: activeTab === 'general' ? '2px solid var(--color-primary)' : '2px solid transparent',
               color: activeTab === 'general' ? 'var(--color-primary)' : 'var(--text-secondary)',
-              fontWeight: activeTab === 'general' ? 700 : 500
+              fontWeight: activeTab === 'general' ? 700 : 500,
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6
             }}
             onClick={() => setActiveTab('general')}
           >
-            General & Bot
+            <SettingsIcon size={14} />
+            {t('tab_general')}
+          </button>
+          <button
+            type="button"
+            className="btn btn-ghost"
+            style={{
+              borderRadius: 0,
+              borderBottom: activeTab === 'telegram' ? '2px solid var(--color-primary)' : '2px solid transparent',
+              color: activeTab === 'telegram' ? 'var(--color-primary)' : 'var(--text-secondary)',
+              fontWeight: activeTab === 'telegram' ? 700 : 500,
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6
+            }}
+            onClick={() => setActiveTab('telegram')}
+          >
+            <Bell size={14} />
+            {t('tab_telegram_alerts')}
           </button>
           <button
             type="button"
@@ -441,701 +502,868 @@ export function SettingsModal({
           </button>
         </div>
 
-        {activeTab === 'general' && (
+        {(activeTab === 'general' || activeTab === 'telegram') && (
           <form onSubmit={handleSaveGeneral} style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
             <div className="modal-body" style={{ overflowY: 'auto', padding: '16px 20px' }}>
-              <div style={{
-                display: 'grid',
-                gridTemplateColumns: 'repeat(auto-fit, minmax(360px, 1fr))',
-                gap: 16,
-                alignItems: 'start'
-              }}>
-                {/* LEFT COLUMN: Intervals, Thresholds, Auto-Scan, Quota & Accounting */}
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-                  {/* Card: Display & Units */}
-                  <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: 'var(--radius-sm)', padding: '14px 16px' }}>
-                    <h3 style={{ fontSize: 'var(--fs-sm)', fontWeight: 700, marginBottom: 4, color: 'var(--color-primary)' }}>
-                      {t('speed_unit')}
-                    </h3>
-                    <p style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', marginBottom: 10 }}>
-                      {lang === 'ru' ? 'Единица измерения скорости передачи данных в интерфейсе.' : 'Default data rate display unit across dashboard and analytics.'}
-                    </p>
-                    <div className="form-group" style={{ marginBottom: 0 }}>
-                      <select
-                        className="form-select font-mono"
-                        value={speedUnit}
-                        onChange={e => setSpeedUnit(e.target.value)}
-                        style={{ width: '100%', height: 34, fontSize: 'var(--fs-xs)' }}
-                      >
-                        <option value="bits">{t('speed_unit_bits')}</option>
-                        <option value="bytes">{t('speed_unit_bytes')}</option>
-                      </select>
-                    </div>
-                  </div>
-
-                  {/* Card 1: Telemetry & Polling Intervals */}
-                  <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: 'var(--radius-sm)', padding: '14px 16px' }}>
-                    <h3 style={{ fontSize: 'var(--fs-sm)', fontWeight: 700, marginBottom: 4, color: 'var(--color-primary)' }}>
-                      {t('poll_interval_title')}
-                    </h3>
-                    <p style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', marginBottom: 10 }}>
-                      {t('poll_interval_desc')}
-                    </p>
-                    <div className="form-group" style={{ marginBottom: 8 }}>
-                      <label className="form-label" style={{ fontSize: 'var(--fs-xs)' }}>Dashboard Stream Interval</label>
-                      <select
-                        className="form-select font-mono"
-                        value={settings.telemetry_interval_seconds || '3'}
-                        onChange={e => setSettings({ ...settings, telemetry_interval_seconds: e.target.value })}
-                        style={{ width: '100%', height: 34, fontSize: 'var(--fs-xs)' }}
-                      >
-                        <option value="1">1s — Most responsive, highest router load</option>
-                        <option value="2">2s — Responsive</option>
-                        <option value="3">3s — Balanced (recommended)</option>
-                        <option value="5">5s — Light</option>
-                        <option value="10">10s — Minimal router load</option>
-                      </select>
-                    </div>
-
-                    <div className="form-group" style={{ marginBottom: 8 }}>
-                      <label className="form-label" style={{ fontSize: 'var(--fs-xs)' }}>{t('poll_telemetry_label')}</label>
-                      <select
-                        className="form-select font-mono"
-                        value={settings.poll_interval_seconds || '10'}
-                        onChange={e => setSettings({ ...settings, poll_interval_seconds: e.target.value })}
-                        style={{ width: '100%', height: 34, fontSize: 'var(--fs-xs)' }}
-                      >
-                        <option value="5">5s</option>
-                        <option value="10">10s — {t('poll_telemetry_default')}</option>
-                        <option value="30">30s</option>
-                        <option value="60">60s</option>
-                        <option value="300">5 min</option>
-                      </select>
-                      <div className="form-hint" style={{ fontSize: 'var(--fs-3xs)' }}>{t('poll_telemetry_hint')}</div>
-                    </div>
-
-                    <div className="form-group">
-                      <label className="form-label" style={{ fontSize: 'var(--fs-xs)' }}>{t('poll_heavy_label')}</label>
-                      <select
-                        className="form-select font-mono"
-                        value={settings.heavy_sync_interval_seconds || '60'}
-                        onChange={e => setSettings({ ...settings, heavy_sync_interval_seconds: e.target.value })}
-                        style={{ width: '100%', height: 34, fontSize: 'var(--fs-xs)' }}
-                      >
-                        <option value="10">10s — {t('poll_heavy_legacy')}</option>
-                        <option value="30">30s</option>
-                        <option value="60">60s — {t('poll_heavy_default')}</option>
-                        <option value="300">5 min</option>
-                        <option value="900">15 min</option>
-                      </select>
-                      <div className="form-hint" style={{ fontSize: 'var(--fs-3xs)' }}>{t('poll_heavy_hint')}</div>
-                    </div>
-                  </div>
-
-                  {/* Card 2: Alerts & Thresholds */}
-                  <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: 'var(--radius-sm)', padding: '14px 16px' }}>
-                    <h3 style={{ fontSize: 'var(--fs-sm)', fontWeight: 700, marginBottom: 4, color: 'var(--color-warning, #f59e0b)' }}>
-                      {t('temp_warning_title')}
-                    </h3>
-                    <p style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', marginBottom: 8 }}>
-                      {t('temp_warning_desc')}
-                    </p>
-
-                    <div className="form-group" style={{ marginBottom: 10 }}>
-                      <label className="form-label" style={{ fontSize: 'var(--fs-xs)' }}>{t('temp_threshold_label')}</label>
-                      <select
-                        className="form-select font-mono"
-                        value={settings.temp_warning_threshold || '80'}
-                        onChange={e => setSettings({ ...settings, temp_warning_threshold: e.target.value })}
-                        style={{ width: '100%', height: 34, fontSize: 'var(--fs-xs)' }}
-                      >
-                        <option value="65">65°C — Sensitive</option>
-                        <option value="70">70°C — Low</option>
-                        <option value="75">75°C — Moderate</option>
-                        <option value="80">80°C — Standard Default</option>
-                        <option value="85">85°C — High</option>
-                        <option value="90">90°C — Critical</option>
-                      </select>
-                    </div>
-
-                    <div style={{ height: 1, background: 'var(--border-color)', margin: '10px 0' }}></div>
-
-                    <h4 style={{ fontSize: 'var(--fs-xs)', fontWeight: 700, marginBottom: 4, color: 'var(--color-primary)' }}>
-                      {t('unassigned_quarantine_title')}
-                    </h4>
-                    <p style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', marginBottom: 8 }}>
-                      {t('unassigned_quarantine_desc')}
-                    </p>
-
-                    <div className="form-group">
-                      <label className="form-label" style={{ fontSize: 'var(--fs-xs)' }}>{t('quarantine_speed_limit')}</label>
-                      <select
-                        className="form-select font-mono"
-                        value={settings.unassigned_device_speed_limit || '5M/5M'}
-                        onChange={e => setSettings({ ...settings, unassigned_device_speed_limit: e.target.value })}
-                        style={{ width: '100%', height: 34, fontSize: 'var(--fs-xs)' }}
-                      >
-                        <option value="1M/1M">1 Mbps (1M/1M) — Strict</option>
-                        <option value="2M/2M">2 Mbps (2M/2M) — Low</option>
-                        <option value="5M/5M">5 Mbps (5M/5M) — Recommended</option>
-                        <option value="10M/10M">10 Mbps (10M/10M) — Moderate</option>
-                        <option value="20M/20M">20 Mbps (20M/20M) — Fast</option>
-                        <option value="unlimited">Unlimited (0/0) — No Cap</option>
-                      </select>
-                    </div>
-                  </div>
-
-                  {/* Card 3: Auto-Discovery */}
-                  <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: 'var(--radius-sm)', padding: '14px 16px' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-                      <h3 style={{ fontSize: 'var(--fs-sm)', fontWeight: 700, color: 'var(--color-primary)' }}>
-                        {t('auto_scan_title')}
+              {activeTab === 'general' && (
+                <div style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(360px, 1fr))',
+                  gap: 16,
+                  alignItems: 'start'
+                }}>
+                  {/* LEFT COLUMN: Units, Intervals, Auto-Discovery with ARP interfaces, Quota & Accounting */}
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                    {/* Card: Display & Units */}
+                    <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: 'var(--radius-sm)', padding: '14px 16px' }}>
+                      <h3 style={{ fontSize: 'var(--fs-sm)', fontWeight: 700, marginBottom: 4, color: 'var(--color-primary)' }}>
+                        {t('speed_unit')}
                       </h3>
-                      <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
-                        <input
-                          type="checkbox"
-                          checked={settings.auto_scan_enabled !== 'false'}
-                          onChange={e => setSettings({ ...settings, auto_scan_enabled: e.target.checked ? 'true' : 'false' })}
-                          style={{ width: 16, height: 16, cursor: 'pointer', accentColor: 'var(--color-primary)' }}
-                        />
-                        <span style={{ fontSize: 'var(--fs-xs)', fontWeight: 600 }}>
-                          {settings.auto_scan_enabled !== 'false' ? t('enable_auto_scan') : t('auto_scan_paused')}
-                        </span>
-                      </label>
-                    </div>
-                    <p style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', margin: 0 }}>
-                      {t('auto_scan_desc')}
-                    </p>
-                  </div>
-
-                  {/* Card 4: Monthly Quota & Accounting Scope */}
-                  <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: 'var(--radius-sm)', padding: '14px 16px' }}>
-                    <h3 style={{ fontSize: 'var(--fs-sm)', fontWeight: 700, marginBottom: 4, color: 'var(--color-success)' }}>
-                      {t('quota_title')}
-                    </h3>
-                    <p style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', marginBottom: 10 }}>
-                      {t('quota_desc')}
-                    </p>
-
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 10 }}>
-                      <div className="form-group">
-                        <label className="form-label" style={{ fontSize: 'var(--fs-xs)' }}>{t('quota_limit')}</label>
-                        <div className="input-with-suffix">
-                          <input
-                            type="number"
-                            min="0"
-                            step="1"
-                            inputMode="numeric"
-                            className="form-input font-mono"
-                            value={quota.limit_gb || ''}
-                            placeholder="0"
-                            onChange={e => {
-                              const parsed = Number(e.target.value);
-                              setQuota({
-                                ...quota,
-                                limit_gb: Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 0,
-                              });
-                            }}
-                            style={{ height: 34, fontSize: 'var(--fs-xs)' }}
-                          />
-                          <span className="input-suffix">GB</span>
-                        </div>
-                        <div className="form-hint" style={{ fontSize: 'var(--fs-3xs)' }}>
-                          {quota.limit_gb > 0 ? t('quota_limit_hint') : t('quota_unlimited')}
-                        </div>
+                      <p style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', marginBottom: 10 }}>
+                        {lang === 'ru' ? 'Единица измерения скорости передачи данных в интерфейсе.' : 'Default data rate display unit across dashboard and analytics.'}
+                      </p>
+                      <div className="form-group" style={{ marginBottom: 0 }}>
+                        <select
+                          className="form-select font-mono"
+                          value={speedUnit}
+                          onChange={e => setSpeedUnit(e.target.value)}
+                          style={{ width: '100%', height: 34, fontSize: 'var(--fs-xs)' }}
+                        >
+                          <option value="bits">{t('speed_unit_bits')}</option>
+                          <option value="bytes">{t('speed_unit_bytes')}</option>
+                        </select>
                       </div>
+                    </div>
+
+                    {/* Card: Telemetry & Polling Intervals */}
+                    <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: 'var(--radius-sm)', padding: '14px 16px' }}>
+                      <h3 style={{ fontSize: 'var(--fs-sm)', fontWeight: 700, marginBottom: 4, color: 'var(--color-primary)' }}>
+                        {t('poll_interval_title')}
+                      </h3>
+                      <p style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', marginBottom: 10 }}>
+                        {t('poll_interval_desc')}
+                      </p>
+                      <div className="form-group" style={{ marginBottom: 8 }}>
+                        <label className="form-label" style={{ fontSize: 'var(--fs-xs)' }}>{t('poll_stream_label')}</label>
+                        <select
+                          className="form-select font-mono"
+                          value={settings.telemetry_interval_seconds || '3'}
+                          onChange={e => setSettings({ ...settings, telemetry_interval_seconds: e.target.value })}
+                          style={{ width: '100%', height: 34, fontSize: 'var(--fs-xs)' }}
+                        >
+                          <option value="1">{t('poll_stream_responsive_max')}</option>
+                          <option value="2">{t('poll_stream_responsive')}</option>
+                          <option value="3">{t('poll_stream_balanced')}</option>
+                          <option value="5">{t('poll_stream_light')}</option>
+                          <option value="10">{t('poll_stream_minimal')}</option>
+                        </select>
+                      </div>
+
+                      <div className="form-group" style={{ marginBottom: 8 }}>
+                        <label className="form-label" style={{ fontSize: 'var(--fs-xs)' }}>{t('poll_telemetry_label')}</label>
+                        <select
+                          className="form-select font-mono"
+                          value={settings.poll_interval_seconds || '10'}
+                          onChange={e => setSettings({ ...settings, poll_interval_seconds: e.target.value })}
+                          style={{ width: '100%', height: 34, fontSize: 'var(--fs-xs)' }}
+                        >
+                          <option value="5">5s</option>
+                          <option value="10">10s — {t('poll_telemetry_default')}</option>
+                          <option value="30">30s</option>
+                          <option value="60">60s</option>
+                          <option value="300">5 min</option>
+                        </select>
+                        <div className="form-hint" style={{ fontSize: 'var(--fs-3xs)' }}>{t('poll_telemetry_hint')}</div>
+                      </div>
+
                       <div className="form-group">
-                        <label className="form-label" style={{ fontSize: 'var(--fs-xs)' }}>{t('quota_thresholds')}</label>
-                        <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', alignItems: 'center', minHeight: 34 }}>
-                          {[50, 75, 80, 90, 100].map(th => {
-                            const on = quota.thresholds.includes(th);
+                        <label className="form-label" style={{ fontSize: 'var(--fs-xs)' }}>{t('poll_heavy_label')}</label>
+                        <select
+                          className="form-select font-mono"
+                          value={settings.heavy_sync_interval_seconds || '60'}
+                          onChange={e => setSettings({ ...settings, heavy_sync_interval_seconds: e.target.value })}
+                          style={{ width: '100%', height: 34, fontSize: 'var(--fs-xs)' }}
+                        >
+                          <option value="10">10s — {t('poll_heavy_legacy')}</option>
+                          <option value="30">30s</option>
+                          <option value="60">60s — {t('poll_heavy_default')}</option>
+                          <option value="300">5 min</option>
+                          <option value="900">15 min</option>
+                        </select>
+                        <div className="form-hint" style={{ fontSize: 'var(--fs-3xs)' }}>{t('poll_heavy_hint')}</div>
+                      </div>
+                    </div>
+
+                    {/* Card: Auto-Discovery & Quarantine */}
+                    <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: 'var(--radius-sm)', padding: '14px 16px' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                        <h3 style={{ fontSize: 'var(--fs-sm)', fontWeight: 700, color: 'var(--color-primary)' }}>
+                          {t('auto_scan_title')}
+                        </h3>
+                        <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
+                          <input
+                            type="checkbox"
+                            checked={settings.auto_scan_enabled !== 'false'}
+                            onChange={e => setSettings({ ...settings, auto_scan_enabled: e.target.checked ? 'true' : 'false' })}
+                            style={{ width: 16, height: 16, cursor: 'pointer', accentColor: 'var(--color-primary)' }}
+                          />
+                          <span style={{ fontSize: 'var(--fs-xs)', fontWeight: 600 }}>
+                            {settings.auto_scan_enabled !== 'false' ? t('enable_auto_scan') : t('auto_scan_paused')}
+                          </span>
+                        </label>
+                      </div>
+                      <p style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', marginBottom: 10 }}>
+                        {t('auto_scan_desc')}
+                      </p>
+
+                      {/* ARP Discovery Interfaces selector */}
+                      <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--border-color)' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                          <label className="form-label" style={{ fontSize: 'var(--fs-xs)', fontWeight: 600, margin: 0 }}>
+                            {t('discovery_interfaces_title')}
+                          </label>
+                          {selectedArpInterfaces.length > 0 && (
+                            <button
+                              type="button"
+                              onClick={clearArpInterfaces}
+                              className="btn-link"
+                              style={{ fontSize: 'var(--fs-3xs)', color: 'var(--color-primary)', cursor: 'pointer', background: 'none', border: 'none', padding: 0 }}
+                            >
+                              {t('discovery_interfaces_all')}
+                            </button>
+                          )}
+                        </div>
+                        <div style={{ fontSize: 'var(--fs-3xs)', color: 'var(--text-muted)', marginBottom: 8 }}>
+                          {t('discovery_interfaces_desc')}
+                        </div>
+                        <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', alignItems: 'center' }}>
+                          <button
+                            type="button"
+                            onClick={clearArpInterfaces}
+                            className="badge"
+                            style={{
+                              cursor: 'pointer',
+                              padding: '3px 8px',
+                              fontSize: 'var(--fs-3xs)',
+                              border: `1px solid ${selectedArpInterfaces.length === 0 ? 'var(--color-primary)' : 'var(--border-color)'}`,
+                              background: selectedArpInterfaces.length === 0 ? 'var(--color-primary-light)' : 'transparent',
+                              color: selectedArpInterfaces.length === 0 ? 'var(--color-primary)' : 'var(--text-muted)',
+                              fontWeight: selectedArpInterfaces.length === 0 ? 700 : 500
+                            }}
+                          >
+                            {t('discovery_interfaces_all')}
+                          </button>
+                          {availableInterfaces.map(iface => {
+                            const isSelected = selectedArpInterfaces.includes(iface.name);
                             return (
                               <button
-                                key={th}
+                                key={iface.name}
                                 type="button"
-                                onClick={() => setQuota({
-                                  ...quota,
-                                  thresholds: on
-                                    ? quota.thresholds.filter(x => x !== th)
-                                    : [...quota.thresholds, th].sort((a, b) => a - b)
-                                })}
-                                className="badge"
+                                onClick={() => toggleArpInterface(iface.name)}
+                                className="badge font-mono"
                                 style={{
                                   cursor: 'pointer',
-                                  padding: '2px 6px',
+                                  padding: '3px 8px',
                                   fontSize: 'var(--fs-3xs)',
-                                  border: `1px solid ${on ? 'var(--color-primary)' : 'var(--border-color)'}`,
-                                  background: on ? 'var(--color-primary-light)' : 'transparent',
-                                  color: on ? 'var(--color-primary)' : 'var(--text-muted)',
-                                  fontFamily: 'var(--font-mono)'
+                                  border: `1px solid ${isSelected ? 'var(--color-primary)' : 'var(--border-color)'}`,
+                                  background: isSelected ? 'var(--color-primary-light)' : 'transparent',
+                                  color: isSelected ? 'var(--color-primary)' : 'var(--text-secondary)',
+                                  fontWeight: isSelected ? 700 : 500
                                 }}
                               >
-                                {th}%
+                                {isSelected ? '✓ ' : ''}{iface.name}
                               </button>
                             );
                           })}
                         </div>
                       </div>
+
+                      {/* Quarantine limit */}
+                      <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--border-color)' }}>
+                        <h4 style={{ fontSize: 'var(--fs-xs)', fontWeight: 700, marginBottom: 4, color: 'var(--color-primary)' }}>
+                          {t('unassigned_quarantine_title')}
+                        </h4>
+                        <p style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', marginBottom: 8 }}>
+                          {t('unassigned_quarantine_desc')}
+                        </p>
+                        <div className="form-group" style={{ marginBottom: 0 }}>
+                          <label className="form-label" style={{ fontSize: 'var(--fs-xs)' }}>{t('quarantine_speed_limit')}</label>
+                          <select
+                            className="form-select font-mono"
+                            value={settings.unassigned_device_speed_limit || '5M/5M'}
+                            onChange={e => setSettings({ ...settings, unassigned_device_speed_limit: e.target.value })}
+                            style={{ width: '100%', height: 34, fontSize: 'var(--fs-xs)' }}
+                          >
+                            <option value="1M/1M">1 Mbps (1M/1M) — Strict</option>
+                            <option value="2M/2M">2 Mbps (2M/2M) — Low</option>
+                            <option value="5M/5M">5 Mbps (5M/5M) — Recommended</option>
+                            <option value="10M/10M">10 Mbps (10M/10M) — Moderate</option>
+                            <option value="20M/20M">20 Mbps (20M/20M) — Fast</option>
+                            <option value="unlimited">Unlimited (0/0) — No Cap</option>
+                          </select>
+                        </div>
+                      </div>
                     </div>
 
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 10 }}>
-                      <div className="form-group">
-                        <label className="form-label" style={{ fontSize: 'var(--fs-xs)' }}>{t('billing_anchor_day')} (1 - 31)</label>
+                    {/* Card: Monthly Quota & Accounting Scope */}
+                    <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: 'var(--radius-sm)', padding: '14px 16px' }}>
+                      <h3 style={{ fontSize: 'var(--fs-sm)', fontWeight: 700, marginBottom: 4, color: 'var(--color-success)' }}>
+                        {t('quota_title')}
+                      </h3>
+                      <p style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', marginBottom: 10 }}>
+                        {t('quota_desc')}
+                      </p>
+
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 10 }}>
+                        <div className="form-group">
+                          <label className="form-label" style={{ fontSize: 'var(--fs-xs)' }}>{t('quota_limit')}</label>
+                          <div className="input-with-suffix">
+                            <input
+                              type="number"
+                              min="0"
+                              step="1"
+                              inputMode="numeric"
+                              className="form-input font-mono"
+                              value={quota.limit_gb || ''}
+                              placeholder="0"
+                              onChange={e => {
+                                const parsed = Number(e.target.value);
+                                setQuota({
+                                  ...quota,
+                                  limit_gb: Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 0,
+                                });
+                              }}
+                              style={{ height: 34, fontSize: 'var(--fs-xs)' }}
+                            />
+                            <span className="input-suffix">GB</span>
+                          </div>
+                          <div className="form-hint" style={{ fontSize: 'var(--fs-3xs)' }}>
+                            {quota.limit_gb > 0 ? t('quota_limit_hint') : t('quota_unlimited')}
+                          </div>
+                        </div>
+                        <div className="form-group">
+                          <label className="form-label" style={{ fontSize: 'var(--fs-xs)' }}>{t('quota_thresholds')}</label>
+                          <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', alignItems: 'center', minHeight: 34 }}>
+                            {[50, 75, 80, 90, 100].map(th => {
+                              const on = quota.thresholds.includes(th);
+                              return (
+                                <button
+                                  key={th}
+                                  type="button"
+                                  onClick={() => setQuota({
+                                    ...quota,
+                                    thresholds: on
+                                      ? quota.thresholds.filter(x => x !== th)
+                                      : [...quota.thresholds, th].sort((a, b) => a - b)
+                                  })}
+                                  className="badge"
+                                  style={{
+                                    cursor: 'pointer',
+                                    padding: '2px 6px',
+                                    fontSize: 'var(--fs-3xs)',
+                                    border: `1px solid ${on ? 'var(--color-primary)' : 'var(--border-color)'}`,
+                                    background: on ? 'var(--color-primary-light)' : 'transparent',
+                                    color: on ? 'var(--color-primary)' : 'var(--text-muted)',
+                                    fontFamily: 'var(--font-mono)'
+                                  }}
+                                >
+                                  {th}%
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 10 }}>
+                        <div className="form-group">
+                          <label className="form-label" style={{ fontSize: 'var(--fs-xs)' }}>{t('billing_anchor_day')} (1 - 31)</label>
+                          <input
+                            type="number"
+                            min="1"
+                            max="31"
+                            className="form-input font-mono"
+                            value={billingCycle.anchor_day || 1}
+                            onChange={e => {
+                              const val = parseInt(e.target.value, 10);
+                              setBillingCycle(prev => ({
+                                ...prev,
+                                anchor_day: Number.isFinite(val) ? Math.min(31, Math.max(1, val)) : 1,
+                              }));
+                            }}
+                            style={{ height: 34, fontSize: 'var(--fs-xs)' }}
+                          />
+                          <div className="form-hint" style={{ fontSize: 'var(--fs-3xs)' }}>
+                            {t('billing_anchor_desc')}
+                          </div>
+                        </div>
+                        <div className="form-group">
+                          <label className="form-label" style={{ fontSize: 'var(--fs-xs)' }} htmlFor="settings-billing-time">{t('billing_anchor_time')}</label>
+                          <input
+                            id="settings-billing-time"
+                            type="time"
+                            aria-label={t('billing_anchor_time')}
+                            className="form-input font-mono"
+                            value={`${String(billingCycle.anchor_hour).padStart(2, '0')}:${String(billingCycle.anchor_minute).padStart(2, '0')}`}
+                            onChange={e => {
+                              const [h, m] = (e.target.value || '0:0').split(':').map(Number);
+                              setBillingCycle(prev => ({
+                                ...prev,
+                                anchor_hour: Number.isFinite(h) ? Math.min(23, Math.max(0, h)) : 0,
+                                anchor_minute: Number.isFinite(m) ? Math.min(59, Math.max(0, m)) : 0,
+                              }));
+                            }}
+                            style={{ height: 34, fontSize: 'var(--fs-xs)' }}
+                          />
+                          <div className="form-hint" style={{ fontSize: 'var(--fs-3xs)' }}>
+                            {t('billing_anchor_time_hint')}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 8, marginBottom: 8 }}>
+                        <div>
+                          <label className="form-label" style={{ fontSize: 'var(--fs-xs)' }}>{t('quota_portal_url')}</label>
+                          <input
+                            type="url"
+                            className="form-input font-mono"
+                            placeholder="https://my.isp.example/usage"
+                            value={quota.portal_url}
+                            onChange={e => setQuota({ ...quota, portal_url: e.target.value })}
+                            style={{ height: 34, fontSize: 'var(--fs-xs)' }}
+                          />
+                        </div>
+                        <div>
+                          <label className="form-label" style={{ fontSize: 'var(--fs-xs)' }}>{t('quota_portal_label')}</label>
+                          <input
+                            type="text"
+                            className="form-input"
+                            maxLength={40}
+                            placeholder={t('quota_portal_label_ph')}
+                            value={quota.portal_label}
+                            onChange={e => setQuota({ ...quota, portal_label: e.target.value })}
+                            style={{ height: 34, fontSize: 'var(--fs-xs)' }}
+                          />
+                        </div>
+                      </div>
+
+                      <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--border-color)' }}>
+                        <label className="form-label" style={{ fontWeight: 600, fontSize: 'var(--fs-xs)', marginBottom: 6 }}>
+                          {t('accounting_scope_title')}
+                        </label>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--fs-xs)', cursor: 'pointer' }}>
+                            <input
+                              type="radio"
+                              name="traffic_accounting_scope"
+                              value="wan_only"
+                              checked={(settings.traffic_accounting_scope || 'wan_only') === 'wan_only'}
+                              onChange={e => setSettings(s => ({ ...s, traffic_accounting_scope: e.target.value }))}
+                              style={{ accentColor: 'var(--color-primary)' }}
+                            />
+                            <span>{t('accounting_scope_wan_only')}</span>
+                          </label>
+                          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--fs-xs)', cursor: 'pointer' }}>
+                            <input
+                              type="radio"
+                              name="traffic_accounting_scope"
+                              value="all_routed"
+                              checked={settings.traffic_accounting_scope === 'all_routed'}
+                              onChange={e => setSettings(s => ({ ...s, traffic_accounting_scope: e.target.value }))}
+                              style={{ accentColor: 'var(--color-primary)' }}
+                            />
+                            <span>{t('accounting_scope_all_routed')}</span>
+                          </label>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* RIGHT COLUMN: Backups, Logs, Pause Networks, IP Lookup */}
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                    {/* Card 1: Automated Backups & Retention Policy */}
+                    <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: 'var(--radius-sm)', padding: '14px 16px' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                        <h3 style={{ fontSize: 'var(--fs-sm)', fontWeight: 700, color: 'var(--color-primary)' }}>
+                          {t('backup_settings_title')}
+                        </h3>
+                        <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
+                          <input
+                            type="checkbox"
+                            checked={settings.backup_enabled !== 'false'}
+                            onChange={e => setSettings({ ...settings, backup_enabled: e.target.checked ? 'true' : 'false' })}
+                            style={{ width: 16, height: 16, cursor: 'pointer', accentColor: 'var(--color-primary)' }}
+                          />
+                          <span style={{ fontSize: 'var(--fs-xs)', fontWeight: 600 }}>
+                            {settings.backup_enabled !== 'false' ? t('backup_enabled_label') : 'Backups Disabled'}
+                          </span>
+                        </label>
+                      </div>
+                      <p style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', marginBottom: 8 }}>
+                        {t('backup_settings_desc')}
+                      </p>
+
+                      <div style={{ display: 'grid', gridTemplateColumns: '1.25fr 1fr 1fr', gap: 8, marginBottom: 8 }}>
+                        <div className="form-group">
+                          <label className="form-label" style={{ fontSize: 'var(--fs-3xs)' }}>{t('backup_interval_label')}</label>
+                          <select
+                            className="form-select font-mono"
+                            value={settings.backup_interval_hours || '24'}
+                            onChange={e => setSettings({ ...settings, backup_interval_hours: e.target.value })}
+                            style={{ width: '100%', height: 34, fontSize: 'var(--fs-2xs)', padding: '4px 26px 4px 8px' }}
+                          >
+                            <option value="6">6h</option>
+                            <option value="12">12h</option>
+                            <option value="24">Daily (24h)</option>
+                            <option value="48">48h</option>
+                            <option value="168">Weekly (7d)</option>
+                          </select>
+                        </div>
+
+                        <div className="form-group">
+                          <label className="form-label" style={{ fontSize: 'var(--fs-3xs)' }}>{t('backup_retention_days_label')}</label>
+                          <input
+                            type="number"
+                            min="7"
+                            max="365"
+                            className="form-input font-mono"
+                            value={settings.backup_retention_days || '90'}
+                            onChange={e => setSettings({ ...settings, backup_retention_days: e.target.value })}
+                            placeholder="90"
+                            style={{ height: 34, fontSize: 'var(--fs-2xs)' }}
+                          />
+                        </div>
+
+                        <div className="form-group">
+                          <label className="form-label" style={{ fontSize: 'var(--fs-3xs)' }}>{t('backup_max_count_label')}</label>
+                          <input
+                            type="number"
+                            min="5"
+                            max="100"
+                            className="form-input font-mono"
+                            value={settings.backup_max_count || '30'}
+                            onChange={e => setSettings({ ...settings, backup_max_count: e.target.value })}
+                            placeholder="30"
+                            style={{ height: 34, fontSize: 'var(--fs-2xs)' }}
+                          />
+                        </div>
+                      </div>
+
+                      <p style={{ fontSize: 'var(--fs-3xs)', color: 'var(--text-muted)', margin: 0 }}>
+                        📌 {t('backup_pinning_hint')}
+                      </p>
+                    </div>
+
+                    {/* Card 2: Log Collection & Retention */}
+                    <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: 'var(--radius-sm)', padding: '14px 16px' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                        <h3 style={{ fontSize: 'var(--fs-sm)', fontWeight: 700, color: 'var(--color-primary)' }}>
+                          {t('log_scraping_enabled_label')}
+                        </h3>
+                        <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
+                          <input
+                            type="checkbox"
+                            checked={settings.log_scraping_enabled !== 'false'}
+                            onChange={e => setSettings({ ...settings, log_scraping_enabled: e.target.checked ? 'true' : 'false' })}
+                            style={{ width: 16, height: 16, cursor: 'pointer', accentColor: 'var(--color-primary)' }}
+                          />
+                          <span style={{ fontSize: 'var(--fs-xs)', fontWeight: 600 }}>
+                            {settings.log_scraping_enabled !== 'false' ? t('enabled') : t('disabled')}
+                          </span>
+                        </label>
+                      </div>
+                      <p style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', marginBottom: 8 }}>
+                        {t('log_scraping_enabled_desc')}
+                      </p>
+                      <div className="form-group" style={{ maxWidth: 180 }}>
+                        <label className="form-label" style={{ fontSize: 'var(--fs-xs)' }}>{t('log_retention_days_label')}</label>
                         <input
                           type="number"
                           min="1"
-                          max="31"
-                          className="form-input font-mono"
-                          value={billingCycle.anchor_day || 1}
-                          onChange={e => {
-                            const val = parseInt(e.target.value, 10);
-                            setBillingCycle(prev => ({
-                              ...prev,
-                              anchor_day: Number.isFinite(val) ? Math.min(31, Math.max(1, val)) : 1,
-                            }));
-                          }}
-                          style={{ height: 34, fontSize: 'var(--fs-xs)' }}
-                        />
-                        <div className="form-hint" style={{ fontSize: 'var(--fs-3xs)' }}>
-                          {t('billing_anchor_desc')}
-                        </div>
-                      </div>
-                      <div className="form-group">
-                        <label className="form-label" style={{ fontSize: 'var(--fs-xs)' }} htmlFor="settings-billing-time">{t('billing_anchor_time')}</label>
-                        <input
-                          id="settings-billing-time"
-                          type="time"
-                          aria-label={t('billing_anchor_time')}
-                          className="form-input font-mono"
-                          value={`${String(billingCycle.anchor_hour).padStart(2, '0')}:${String(billingCycle.anchor_minute).padStart(2, '0')}`}
-                          onChange={e => {
-                            const [h, m] = (e.target.value || '0:0').split(':').map(Number);
-                            setBillingCycle(prev => ({
-                              ...prev,
-                              anchor_hour: Number.isFinite(h) ? Math.min(23, Math.max(0, h)) : 0,
-                              anchor_minute: Number.isFinite(m) ? Math.min(59, Math.max(0, m)) : 0,
-                            }));
-                          }}
-                          style={{ height: 34, fontSize: 'var(--fs-xs)' }}
-                        />
-                        <div className="form-hint" style={{ fontSize: 'var(--fs-3xs)' }}>
-                          {t('billing_anchor_time_hint')}
-                        </div>
-                      </div>
-                    </div>
-
-                    <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--fs-xs)', cursor: 'pointer', color: 'var(--text-secondary)', marginBottom: 10 }}>
-                      <input
-                        type="checkbox"
-                        checked={quota.notify_telegram}
-                        onChange={e => setQuota({ ...quota, notify_telegram: e.target.checked })}
-                        style={{ width: 14, height: 14, accentColor: 'var(--color-primary)' }}
-                      />
-                      {t('quota_notify_tg')}
-                    </label>
-
-                    <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 8, marginBottom: 8 }}>
-                      <div>
-                        <label className="form-label" style={{ fontSize: 'var(--fs-xs)' }}>{t('quota_portal_url')}</label>
-                        <input
-                          type="url"
-                          className="form-input font-mono"
-                          placeholder="https://my.isp.example/usage"
-                          value={quota.portal_url}
-                          onChange={e => setQuota({ ...quota, portal_url: e.target.value })}
-                          style={{ height: 34, fontSize: 'var(--fs-xs)' }}
-                        />
-                      </div>
-                      <div>
-                        <label className="form-label" style={{ fontSize: 'var(--fs-xs)' }}>{t('quota_portal_label')}</label>
-                        <input
-                          type="text"
-                          className="form-input"
-                          maxLength={40}
-                          placeholder={t('quota_portal_label_ph')}
-                          value={quota.portal_label}
-                          onChange={e => setQuota({ ...quota, portal_label: e.target.value })}
-                          style={{ height: 34, fontSize: 'var(--fs-xs)' }}
-                        />
-                      </div>
-                    </div>
-
-                    <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--border-color)' }}>
-                      <label className="form-label" style={{ fontWeight: 600, fontSize: 'var(--fs-xs)', marginBottom: 6 }}>
-                        {t('accounting_scope_title')}
-                      </label>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                        <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--fs-xs)', cursor: 'pointer' }}>
-                          <input
-                            type="radio"
-                            name="traffic_accounting_scope"
-                            value="wan_only"
-                            checked={(settings.traffic_accounting_scope || 'wan_only') === 'wan_only'}
-                            onChange={e => setSettings(s => ({ ...s, traffic_accounting_scope: e.target.value }))}
-                            style={{ accentColor: 'var(--color-primary)' }}
-                          />
-                          <span>{t('accounting_scope_wan_only')}</span>
-                        </label>
-                        <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--fs-xs)', cursor: 'pointer' }}>
-                          <input
-                            type="radio"
-                            name="traffic_accounting_scope"
-                            value="all_routed"
-                            checked={settings.traffic_accounting_scope === 'all_routed'}
-                            onChange={e => setSettings(s => ({ ...s, traffic_accounting_scope: e.target.value }))}
-                            style={{ accentColor: 'var(--color-primary)' }}
-                          />
-                          <span>{t('accounting_scope_all_routed')}</span>
-                        </label>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                {/* RIGHT COLUMN: Telegram Bot, Backups, Logs, Pause Networks, IP Lookup */}
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-                  {/* Card 1: Telegram Bot Companion */}
-                  <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: 'var(--radius-sm)', padding: '14px 16px' }}>
-                    <h3 style={{ fontSize: 'var(--fs-sm)', fontWeight: 700, marginBottom: 10, color: 'var(--color-primary)' }}>
-                      Telegram Bot Companion
-                    </h3>
-                    <div className="form-group" style={{ marginBottom: 10 }}>
-                      <label className="form-label" style={{ fontSize: 'var(--fs-xs)' }}>{t('telegram_bot_token')}</label>
-                      <input
-                        type="password"
-                        className="form-input font-mono"
-                        value={settings.telegram_bot_token || ''}
-                        onChange={e => setSettings({ ...settings, telegram_bot_token: e.target.value })}
-                        placeholder="123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
-                        style={{ height: 34, fontSize: 'var(--fs-xs)' }}
-                      />
-                      {settings.telegram_bot_token === SECRET_PLACEHOLDER && (
-                        <div className="form-hint" style={{ fontSize: 'var(--fs-3xs)' }}>{t('telegram_token_masked')}</div>
-                      )}
-                    </div>
-
-                    <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 10, marginBottom: 10 }}>
-                      <div className="form-group">
-                        <label className="form-label" style={{ fontSize: 'var(--fs-xs)' }}>{t('tg_admin_ids')}</label>
-                        <input
-                          type="text"
-                          className="form-input font-mono"
-                          value={settings.telegram_admin_ids || ''}
-                          onChange={e => setSettings({ ...settings, telegram_admin_ids: e.target.value })}
-                          placeholder="12345678, 87654321"
-                          style={{ height: 34, fontSize: 'var(--fs-xs)' }}
-                        />
-                      </div>
-                      <div className="form-group">
-                        <label className="form-label" style={{ fontSize: 'var(--fs-xs)' }}>{t('tg_mode')}</label>
-                        <select
-                          className="form-select"
-                          value={settings.telegram_mode || 'polling'}
-                          onChange={e => setSettings({ ...settings, telegram_mode: e.target.value })}
-                          style={{ height: 34, fontSize: 'var(--fs-xs)' }}
-                        >
-                          <option value="polling">Long Polling</option>
-                          <option value="webhook">Webhook</option>
-                        </select>
-                      </div>
-                    </div>
-
-                    {settings.telegram_mode === 'webhook' && (
-                      <div className="form-group" style={{ marginBottom: 10 }}>
-                        <label className="form-label" style={{ fontSize: 'var(--fs-xs)' }}>{t('tg_webhook_url')}</label>
-                        <input
-                          type="text"
-                          className="form-input font-mono"
-                          value={settings.telegram_webhook_url || ''}
-                          onChange={e => setSettings({ ...settings, telegram_webhook_url: e.target.value })}
-                          placeholder="https://your-domain.example/api/v1/telegram/webhook"
-                          style={{ height: 34, fontSize: 'var(--fs-xs)' }}
-                        />
-                        <div style={{ fontSize: 'var(--fs-3xs)', color: 'var(--text-muted)', marginTop: 4, lineHeight: 1.4 }}>
-                          {t('tg_webhook_help')}
-                        </div>
-                      </div>
-                    )}
-
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                      <button
-                        type="button"
-                        className="btn btn-secondary btn-sm"
-                        onClick={handleTestTelegram}
-                      >
-                        <Send size={13} />
-                        {t('tg_test_btn')}
-                      </button>
-
-                      {testResult && (
-                        <span style={{
-                          fontSize: 'var(--fs-xs)',
-                          color: testResult.ok ? 'var(--color-success)' : 'var(--color-danger)',
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: 4
-                        }}>
-                          {testResult.ok ? <CheckCircle2 size={14} /> : <AlertTriangle size={14} />}
-                          {testResult.msg}
-                        </span>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Card 2: Automated Backups & Retention Policy */}
-                  <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: 'var(--radius-sm)', padding: '14px 16px' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-                      <h3 style={{ fontSize: 'var(--fs-sm)', fontWeight: 700, color: 'var(--color-primary)' }}>
-                        {t('backup_settings_title')}
-                      </h3>
-                      <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
-                        <input
-                          type="checkbox"
-                          checked={settings.backup_enabled !== 'false'}
-                          onChange={e => setSettings({ ...settings, backup_enabled: e.target.checked ? 'true' : 'false' })}
-                          style={{ width: 16, height: 16, cursor: 'pointer', accentColor: 'var(--color-primary)' }}
-                        />
-                        <span style={{ fontSize: 'var(--fs-xs)', fontWeight: 600 }}>
-                          {settings.backup_enabled !== 'false' ? t('backup_enabled_label') : 'Backups Disabled'}
-                        </span>
-                      </label>
-                    </div>
-                    <p style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', marginBottom: 8 }}>
-                      {t('backup_settings_desc')}
-                    </p>
-
-                    <div style={{ display: 'grid', gridTemplateColumns: '1.25fr 1fr 1fr', gap: 8, marginBottom: 8 }}>
-                      <div className="form-group">
-                        <label className="form-label" style={{ fontSize: 'var(--fs-3xs)' }}>{t('backup_interval_label')}</label>
-                        <select
-                          className="form-select font-mono"
-                          value={settings.backup_interval_hours || '24'}
-                          onChange={e => setSettings({ ...settings, backup_interval_hours: e.target.value })}
-                          style={{ width: '100%', height: 34, fontSize: 'var(--fs-2xs)', padding: '4px 26px 4px 8px' }}
-                        >
-                          <option value="6">6h</option>
-                          <option value="12">12h</option>
-                          <option value="24">Daily (24h)</option>
-                          <option value="48">48h</option>
-                          <option value="168">Weekly (7d)</option>
-                        </select>
-                      </div>
-
-                      <div className="form-group">
-                        <label className="form-label" style={{ fontSize: 'var(--fs-3xs)' }}>{t('backup_retention_days_label')}</label>
-                        <input
-                          type="number"
-                          min="7"
                           max="365"
                           className="form-input font-mono"
-                          value={settings.backup_retention_days || '90'}
-                          onChange={e => setSettings({ ...settings, backup_retention_days: e.target.value })}
-                          placeholder="90"
-                          style={{ height: 34, fontSize: 'var(--fs-2xs)' }}
-                        />
-                      </div>
-
-                      <div className="form-group">
-                        <label className="form-label" style={{ fontSize: 'var(--fs-3xs)' }}>{t('backup_max_count_label')}</label>
-                        <input
-                          type="number"
-                          min="5"
-                          max="100"
-                          className="form-input font-mono"
-                          value={settings.backup_max_count || '30'}
-                          onChange={e => setSettings({ ...settings, backup_max_count: e.target.value })}
-                          placeholder="30"
-                          style={{ height: 34, fontSize: 'var(--fs-2xs)' }}
+                          value={settings.log_retention_days || '14'}
+                          onChange={e => setSettings({ ...settings, log_retention_days: e.target.value })}
+                          style={{ height: 32, fontSize: 'var(--fs-xs)' }}
                         />
                       </div>
                     </div>
 
-                    <p style={{ fontSize: 'var(--fs-3xs)', color: 'var(--text-muted)', margin: 0 }}>
-                      📌 {t('backup_pinning_hint')}
-                    </p>
-                  </div>
+                    {/* Card 3: Pause Allowed Networks */}
+                    <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: 'var(--radius-sm)', padding: '14px 16px' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                        <h3 style={{ fontSize: 'var(--fs-sm)', fontWeight: 700, color: 'var(--color-primary)' }}>
+                          {t('pause_networks_title')}
+                        </h3>
+                        <button
+                          type="button"
+                          className="btn btn-secondary btn-sm"
+                          onClick={() => setShowPauseNetworksModal(true)}
+                          style={{ padding: '3px 8px', fontSize: 'var(--fs-xs)' }}
+                        >
+                          <Network size={12} style={{ marginRight: 4 }} />
+                          {t('configure_pause_networks')}
+                        </button>
+                      </div>
+                      <p style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', marginBottom: 8 }}>
+                        {t('pause_networks_desc')}
+                      </p>
 
-                  {/* Card 3: Log Collection & Retention */}
-                  <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: 'var(--radius-sm)', padding: '14px 16px' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-                      <h3 style={{ fontSize: 'var(--fs-sm)', fontWeight: 700, color: 'var(--color-primary)' }}>
-                        {t('log_scraping_enabled_label')}
+                      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+                        {parseNetworksList(settings.pause_allowed_networks).map(net => (
+                          <span key={net} className="badge badge-neutral font-mono" style={{ fontSize: 'var(--fs-3xs)', padding: '2px 6px' }}>
+                            {net}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Card 4: External IP Lookup Services */}
+                    <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: 'var(--radius-sm)', padding: '14px 16px' }}>
+                      <h3 style={{ fontSize: 'var(--fs-sm)', fontWeight: 700, marginBottom: 4, color: 'var(--color-primary)' }}>
+                        {t('ip_lookup_title')}
                       </h3>
-                      <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
-                        <input
-                          type="checkbox"
-                          checked={settings.log_scraping_enabled !== 'false'}
-                          onChange={e => setSettings({ ...settings, log_scraping_enabled: e.target.checked ? 'true' : 'false' })}
-                          style={{ width: 16, height: 16, cursor: 'pointer', accentColor: 'var(--color-primary)' }}
-                        />
-                        <span style={{ fontSize: 'var(--fs-xs)', fontWeight: 600 }}>
-                          {settings.log_scraping_enabled !== 'false' ? t('enabled') : t('disabled')}
-                        </span>
-                      </label>
-                    </div>
-                    <p style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', marginBottom: 8 }}>
-                      {t('log_scraping_enabled_desc')}
-                    </p>
-                    <div className="form-group" style={{ maxWidth: 180 }}>
-                      <label className="form-label" style={{ fontSize: 'var(--fs-xs)' }}>{t('log_retention_days_label')}</label>
-                      <input
-                        type="number"
-                        min="1"
-                        max="365"
-                        className="form-input font-mono"
-                        value={settings.log_retention_days || '14'}
-                        onChange={e => setSettings({ ...settings, log_retention_days: e.target.value })}
-                        style={{ height: 32, fontSize: 'var(--fs-xs)' }}
-                      />
-                    </div>
-                  </div>
+                      <p style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', marginBottom: 8 }}>
+                        {t('ip_lookup_desc')}
+                      </p>
 
-                  {/* Card 4: Pause Allowed Networks */}
-                  <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: 'var(--radius-sm)', padding: '14px 16px' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-                      <h3 style={{ fontSize: 'var(--fs-sm)', fontWeight: 700, color: 'var(--color-primary)' }}>
-                        {t('pause_networks_title')}
-                      </h3>
-                      <button
-                        type="button"
-                        className="btn btn-secondary btn-sm"
-                        onClick={() => setShowPauseNetworksModal(true)}
-                        style={{ padding: '3px 8px', fontSize: 'var(--fs-xs)' }}
-                      >
-                        <Network size={12} style={{ marginRight: 4 }} />
-                        {t('configure_pause_networks')}
-                      </button>
-                    </div>
-                    <p style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', marginBottom: 8 }}>
-                      {t('pause_networks_desc')}
-                    </p>
-
-                    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
-                      {parseNetworksList(settings.pause_allowed_networks).map(net => (
-                        <span key={net} className="badge badge-neutral font-mono" style={{ fontSize: 'var(--fs-3xs)', padding: '2px 6px' }}>
-                          {net}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* Card 5: External IP Lookup Services */}
-                  <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: 'var(--radius-sm)', padding: '14px 16px' }}>
-                    <h3 style={{ fontSize: 'var(--fs-sm)', fontWeight: 700, marginBottom: 4, color: 'var(--color-primary)' }}>
-                      {t('ip_lookup_title')}
-                    </h3>
-                    <p style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', marginBottom: 8 }}>
-                      {t('ip_lookup_desc')}
-                    </p>
-
-                    <div className="list-box" style={{ maxHeight: 150, marginBottom: 8, overflowY: 'auto' }}>
-                      {ipLookup.services.map(svc => {
-                        const selected = ipLookup.default_id === svc.id;
-                        return (
-                          <label
-                            key={svc.id}
-                            className={`list-row${selected ? ' is-selected' : ''}`}
-                            style={{ cursor: 'pointer', padding: '6px 8px' }}
-                          >
-                            <span style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, flex: 1 }}>
-                              <input
-                                type="radio"
-                                name="ip_lookup_service"
-                                checked={selected}
-                                onChange={() => selectLookupService(svc.id)}
-                                style={{ cursor: 'pointer', accentColor: 'var(--color-primary)' }}
-                              />
-                              <span style={{ minWidth: 0 }}>
-                                <span style={{ fontWeight: selected ? 700 : 500, fontSize: 'var(--fs-xs)' }}>{svc.name}</span>
-                                <span className="font-mono truncate" style={{
-                                  display: 'block',
-                                  fontSize: 'var(--fs-3xs)',
-                                  color: 'var(--text-muted)'
-                                }}>
-                                  {svc.url_template}
+                      <div className="list-box" style={{ maxHeight: 150, marginBottom: 8, overflowY: 'auto' }}>
+                        {ipLookup.services.map(svc => {
+                          const selected = ipLookup.default_id === svc.id;
+                          return (
+                            <label
+                              key={svc.id}
+                              className={`list-row${selected ? ' is-selected' : ''}`}
+                              style={{ cursor: 'pointer', padding: '6px 8px' }}
+                            >
+                              <span style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, flex: 1 }}>
+                                <input
+                                  type="radio"
+                                  name="ip_lookup_service"
+                                  checked={selected}
+                                  onChange={() => selectLookupService(svc.id)}
+                                  style={{ cursor: 'pointer', accentColor: 'var(--color-primary)' }}
+                                />
+                                <span style={{ minWidth: 0 }}>
+                                  <span style={{ fontWeight: selected ? 700 : 500, fontSize: 'var(--fs-xs)' }}>{svc.name}</span>
+                                  <span className="font-mono truncate" style={{
+                                    display: 'block',
+                                    fontSize: 'var(--fs-3xs)',
+                                    color: 'var(--text-muted)'
+                                  }}>
+                                    {svc.url_template}
+                                  </span>
                                 </span>
                               </span>
-                            </span>
 
-                            {!svc.builtin && (
-                              <button
-                                type="button"
-                                className="btn-icon"
-                                style={{ width: 22, height: 22, color: 'var(--color-danger)' }}
-                                onClick={e => { e.preventDefault(); removeCustomService(svc.id); }}
-                                title={t('delete')}
-                              >
-                                <Trash2 size={12} />
-                              </button>
-                            )}
-                          </label>
-                        );
-                      })}
+                              {!svc.builtin && (
+                                <button
+                                  type="button"
+                                  className="btn-icon"
+                                  style={{ width: 22, height: 22, color: 'var(--color-danger)' }}
+                                  onClick={e => { e.preventDefault(); removeCustomService(svc.id); }}
+                                  title={t('delete')}
+                                >
+                                  <Trash2 size={12} />
+                                </button>
+                              )}
+                            </label>
+                          );
+                        })}
+                      </div>
+
+                      <div className="form-row" style={{ gridTemplateColumns: '1fr 2fr auto', alignItems: 'end', gap: 6 }}>
+                        <div className="form-group" style={{ marginBottom: 0 }}>
+                          <label className="form-label" style={{ fontSize: 'var(--fs-3xs)' }}>{t('ip_lookup_custom_name')}</label>
+                          <input
+                            type="text"
+                            className="form-input"
+                            value={customLookup.name}
+                            onChange={e => setCustomLookup({ ...customLookup, name: e.target.value })}
+                            placeholder={t('ip_lookup_name_placeholder')}
+                            style={{ height: 30, fontSize: 'var(--fs-3xs)' }}
+                          />
+                        </div>
+                        <div className="form-group" style={{ marginBottom: 0 }}>
+                          <label className="form-label" style={{ fontSize: 'var(--fs-3xs)' }}>{t('ip_lookup_custom_url')}</label>
+                          <input
+                            type="text"
+                            className="form-input font-mono"
+                            value={customLookup.url_template}
+                            onChange={e => setCustomLookup({ ...customLookup, url_template: e.target.value })}
+                            placeholder="https://example.com/lookup/{ip}"
+                            style={{ height: 30, fontSize: 'var(--fs-3xs)' }}
+                          />
+                        </div>
+                        <button
+                          type="button"
+                          className="btn btn-secondary btn-sm"
+                          onClick={addCustomService}
+                          disabled={!customLookup.name.trim() || !!templateErrorKey(customLookup.url_template)}
+                          style={{ height: 30, padding: '0 8px', fontSize: 'var(--fs-3xs)' }}
+                        >
+                          <Plus size={12} />
+                          {t('add')}
+                        </button>
+                      </div>
+
+                      {customLookup.url_template.trim() && templateErrorKey(customLookup.url_template) && (
+                        <div className="alert alert-warning" style={{ marginTop: 6, padding: '4px 8px', fontSize: 'var(--fs-3xs)' }}>
+                          {t(templateErrorKey(customLookup.url_template))}
+                        </div>
+                      )}
+                      {ipLookupError && (
+                        <div className="alert alert-danger" style={{ marginTop: 6, padding: '4px 8px', fontSize: 'var(--fs-3xs)' }}>{ipLookupError}</div>
+                      )}
                     </div>
-
-                    <div className="form-row" style={{ gridTemplateColumns: '1fr 2fr auto', alignItems: 'end', gap: 6 }}>
-                      <div className="form-group" style={{ marginBottom: 0 }}>
-                        <label className="form-label" style={{ fontSize: 'var(--fs-3xs)' }}>{t('ip_lookup_custom_name')}</label>
-                        <input
-                          type="text"
-                          className="form-input"
-                          value={customLookup.name}
-                          onChange={e => setCustomLookup({ ...customLookup, name: e.target.value })}
-                          placeholder={t('ip_lookup_name_placeholder')}
-                          style={{ height: 30, fontSize: 'var(--fs-3xs)' }}
-                        />
-                      </div>
-                      <div className="form-group" style={{ marginBottom: 0 }}>
-                        <label className="form-label" style={{ fontSize: 'var(--fs-3xs)' }}>{t('ip_lookup_custom_url')}</label>
-                        <input
-                          type="text"
-                          className="form-input font-mono"
-                          value={customLookup.url_template}
-                          onChange={e => setCustomLookup({ ...customLookup, url_template: e.target.value })}
-                          placeholder="https://example.com/lookup/{ip}"
-                          style={{ height: 30, fontSize: 'var(--fs-3xs)' }}
-                        />
-                      </div>
-                      <button
-                        type="button"
-                        className="btn btn-secondary btn-sm"
-                        onClick={addCustomService}
-                        disabled={!customLookup.name.trim() || !!templateErrorKey(customLookup.url_template)}
-                        style={{ height: 30, padding: '0 8px', fontSize: 'var(--fs-3xs)' }}
-                      >
-                        <Plus size={12} />
-                        {t('add')}
-                      </button>
-                    </div>
-
-                    {customLookup.url_template.trim() && templateErrorKey(customLookup.url_template) && (
-                      <div className="alert alert-warning" style={{ marginTop: 6, padding: '4px 8px', fontSize: 'var(--fs-3xs)' }}>
-                        {t(templateErrorKey(customLookup.url_template))}
-                      </div>
-                    )}
-                    {ipLookupError && (
-                      <div className="alert alert-danger" style={{ marginTop: 6, padding: '4px 8px', fontSize: 'var(--fs-3xs)' }}>{ipLookupError}</div>
-                    )}
                   </div>
                 </div>
-              </div>
+              )}
 
-              {/* Full-width System Actions */}
-              <div style={{ height: 1, background: 'var(--border-color)', margin: '14px 0 10px 0' }}></div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <div>
-                  <div style={{ fontWeight: 600, fontSize: 'var(--fs-sm)' }}>{t('reboot_router')}</div>
-                  <div style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)' }}>Dispatches a reboot signal to the active MikroTik router</div>
+              {/* System Actions (Reboot Router) on General tab */}
+              {activeTab === 'general' && (
+                <>
+                  <div style={{ height: 1, background: 'var(--border-color)', margin: '14px 0 10px 0' }}></div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div>
+                      <div style={{ fontWeight: 600, fontSize: 'var(--fs-sm)' }}>{t('reboot_router')}</div>
+                      <div style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)' }}>{t('reboot_router_desc')}</div>
+                    </div>
+                    <button
+                      type="button"
+                      className="btn btn-danger btn-sm"
+                      onClick={() => {
+                        if (window.confirm(t('reboot_confirm'))) {
+                          onReboot();
+                        }
+                      }}
+                    >
+                      <Power size={14} />
+                      {t('reboot_router')}
+                    </button>
+                  </div>
+                </>
+              )}
+
+              {/* TELEGRAM & ALERTS TAB */}
+              {activeTab === 'telegram' && (
+                <div style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(360px, 1fr))',
+                  gap: 16,
+                  alignItems: 'start'
+                }}>
+                  {/* LEFT COLUMN: Bot Token, Polling/Webhook Mode, Test Notification */}
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                    <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: 'var(--radius-sm)', padding: '14px 16px' }}>
+                      <h3 style={{ fontSize: 'var(--fs-sm)', fontWeight: 700, marginBottom: 10, color: 'var(--color-primary)' }}>
+                        {t('telegram_integration')}
+                      </h3>
+                      <div className="form-group" style={{ marginBottom: 10 }}>
+                        <label className="form-label" style={{ fontSize: 'var(--fs-xs)' }}>{t('telegram_bot_token')}</label>
+                        <input
+                          type="password"
+                          className="form-input font-mono"
+                          value={settings.telegram_bot_token || ''}
+                          onChange={e => setSettings({ ...settings, telegram_bot_token: e.target.value })}
+                          placeholder="123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
+                          style={{ height: 34, fontSize: 'var(--fs-xs)' }}
+                        />
+                        {settings.telegram_bot_token === SECRET_PLACEHOLDER && (
+                          <div className="form-hint" style={{ fontSize: 'var(--fs-3xs)' }}>{t('telegram_token_masked')}</div>
+                        )}
+                      </div>
+
+                      <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 10, marginBottom: 10 }}>
+                        <div className="form-group">
+                          <label className="form-label" style={{ fontSize: 'var(--fs-xs)' }}>{t('tg_admin_ids')}</label>
+                          <input
+                            type="text"
+                            className="form-input font-mono"
+                            value={settings.telegram_admin_ids || ''}
+                            onChange={e => setSettings({ ...settings, telegram_admin_ids: e.target.value })}
+                            placeholder="12345678, 87654321"
+                            style={{ height: 34, fontSize: 'var(--fs-xs)' }}
+                          />
+                        </div>
+                        <div className="form-group">
+                          <label className="form-label" style={{ fontSize: 'var(--fs-xs)' }}>{t('tg_mode')}</label>
+                          <select
+                            className="form-select"
+                            value={settings.telegram_mode || 'polling'}
+                            onChange={e => setSettings({ ...settings, telegram_mode: e.target.value })}
+                            style={{ height: 34, fontSize: 'var(--fs-xs)' }}
+                          >
+                            <option value="polling">Long Polling</option>
+                            <option value="webhook">Webhook</option>
+                          </select>
+                        </div>
+                      </div>
+
+                      {settings.telegram_mode === 'webhook' && (
+                        <div className="form-group" style={{ marginBottom: 10 }}>
+                          <label className="form-label" style={{ fontSize: 'var(--fs-xs)' }}>{t('tg_webhook_url')}</label>
+                          <input
+                            type="text"
+                            className="form-input font-mono"
+                            value={settings.telegram_webhook_url || ''}
+                            onChange={e => setSettings({ ...settings, telegram_webhook_url: e.target.value })}
+                            placeholder="https://your-domain.example/api/v1/telegram/webhook"
+                            style={{ height: 34, fontSize: 'var(--fs-xs)' }}
+                          />
+                          <div style={{ fontSize: 'var(--fs-3xs)', color: 'var(--text-muted)', marginTop: 4, lineHeight: 1.4 }}>
+                            {t('tg_webhook_help')}
+                          </div>
+                        </div>
+                      )}
+
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                        <button
+                          type="button"
+                          className="btn btn-secondary btn-sm"
+                          onClick={handleTestTelegram}
+                        >
+                          <Send size={13} />
+                          {t('tg_test_btn')}
+                        </button>
+
+                        {testResult && (
+                          <span style={{
+                            fontSize: 'var(--fs-xs)',
+                            color: testResult.ok ? 'var(--color-success)' : 'var(--color-danger)',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 4
+                          }}>
+                            {testResult.ok ? <CheckCircle2 size={14} /> : <AlertTriangle size={14} />}
+                            {testResult.msg}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Card: Bot Language */}
+                    <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: 'var(--radius-sm)', padding: '14px 16px' }}>
+                      <label className="form-label" style={{ fontSize: 'var(--fs-xs)', fontWeight: 600 }}>
+                        {t('telegram_lang_label')}
+                      </label>
+                      <select
+                        className="form-select"
+                        value={settings.telegram_lang || 'en'}
+                        onChange={e => setSettings({ ...settings, telegram_lang: e.target.value })}
+                        style={{ width: '100%', height: 34, fontSize: 'var(--fs-xs)' }}
+                      >
+                        <option value="en">English</option>
+                        <option value="ru">Русский</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  {/* RIGHT COLUMN: Alert Checkboxes & Thresholds */}
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                    {/* Card: Alert Events */}
+                    <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: 'var(--radius-sm)', padding: '14px 16px' }}>
+                      <h3 style={{ fontSize: 'var(--fs-sm)', fontWeight: 700, marginBottom: 4, color: 'var(--color-primary)' }}>
+                        {t('alert_events_title')}
+                      </h3>
+                      <p style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', marginBottom: 10 }}>
+                        {t('alert_events_desc')}
+                      </p>
+
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                        <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--fs-xs)', cursor: 'pointer' }}>
+                          <input
+                            type="checkbox"
+                            checked={quota.notify_telegram}
+                            onChange={e => setQuota({ ...quota, notify_telegram: e.target.checked })}
+                            style={{ width: 15, height: 15, accentColor: 'var(--color-primary)' }}
+                          />
+                          <span>{t('quota_notify_tg')}</span>
+                        </label>
+                        <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--fs-xs)', cursor: 'pointer' }}>
+                          <input
+                            type="checkbox"
+                            checked={settings.alert_new_device_enabled !== 'false'}
+                            onChange={e => setSettings({ ...settings, alert_new_device_enabled: e.target.checked ? 'true' : 'false' })}
+                            style={{ width: 15, height: 15, accentColor: 'var(--color-primary)' }}
+                          />
+                          <span>{t('alert_new_device_label')}</span>
+                        </label>
+                        <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--fs-xs)', cursor: 'pointer' }}>
+                          <input
+                            type="checkbox"
+                            checked={settings.alert_router_offline !== 'false'}
+                            onChange={e => setSettings({ ...settings, alert_router_offline: e.target.checked ? 'true' : 'false' })}
+                            style={{ width: 15, height: 15, accentColor: 'var(--color-primary)' }}
+                          />
+                          <span>{t('alert_router_offline_label')}</span>
+                        </label>
+                        <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--fs-xs)', cursor: 'pointer' }}>
+                          <input
+                            type="checkbox"
+                            checked={settings.alert_wan_ip_changed !== 'false'}
+                            onChange={e => setSettings({ ...settings, alert_wan_ip_changed: e.target.checked ? 'true' : 'false' })}
+                            style={{ width: 15, height: 15, accentColor: 'var(--color-primary)' }}
+                          />
+                          <span>{t('alert_wan_ip_label')}</span>
+                        </label>
+                      </div>
+                    </div>
+
+                    {/* Card: Hardware Warning Thresholds */}
+                    <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: 'var(--radius-sm)', padding: '14px 16px' }}>
+                      <h3 style={{ fontSize: 'var(--fs-sm)', fontWeight: 700, marginBottom: 4, color: 'var(--color-warning, #f59e0b)' }}>
+                        {t('temp_warning_title')}
+                      </h3>
+                      <p style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', marginBottom: 8 }}>
+                        {t('temp_warning_desc')}
+                      </p>
+
+                      <div className="form-group" style={{ marginBottom: 12 }}>
+                        <label className="form-label" style={{ fontSize: 'var(--fs-xs)' }}>{t('temp_threshold_label')}</label>
+                        <select
+                          className="form-select font-mono"
+                          value={settings.temp_warning_threshold || '80'}
+                          onChange={e => setSettings({ ...settings, temp_warning_threshold: e.target.value })}
+                          style={{ width: '100%', height: 34, fontSize: 'var(--fs-xs)' }}
+                        >
+                          <option value="65">65°C — Sensitive</option>
+                          <option value="70">70°C — Low</option>
+                          <option value="75">75°C — Moderate</option>
+                          <option value="80">80°C — Standard Default</option>
+                          <option value="85">85°C — High</option>
+                          <option value="90">90°C — Critical</option>
+                        </select>
+                      </div>
+
+                      <div style={{ height: 1, background: 'var(--border-color)', margin: '10px 0' }}></div>
+
+                      <h4 style={{ fontSize: 'var(--fs-xs)', fontWeight: 700, marginBottom: 4, color: 'var(--color-primary)' }}>
+                        {t('alert_cpu_threshold_title')}
+                      </h4>
+                      <p style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', marginBottom: 8 }}>
+                        {t('alert_cpu_threshold_desc')}
+                      </p>
+
+                      <div className="form-group" style={{ marginBottom: 0 }}>
+                        <label className="form-label" style={{ fontSize: 'var(--fs-xs)' }}>{t('alert_cpu_threshold_label')}</label>
+                        <select
+                          className="form-select font-mono"
+                          value={settings.alert_cpu_threshold || '90'}
+                          onChange={e => setSettings({ ...settings, alert_cpu_threshold: e.target.value })}
+                          style={{ width: '100%', height: 34, fontSize: 'var(--fs-xs)' }}
+                        >
+                          <option value="70">70% — Sensitive</option>
+                          <option value="80">80% — Moderate</option>
+                          <option value="85">85% — High</option>
+                          <option value="90">90% — Standard Default</option>
+                          <option value="95">95% — Critical</option>
+                        </select>
+                      </div>
+                    </div>
+                  </div>
                 </div>
-                <button
-                  type="button"
-                  className="btn btn-danger btn-sm"
-                  onClick={onReboot}
-                >
-                  <Power size={14} />
-                  {t('reboot_router')}
-                </button>
-              </div>
+              )}
 
               {statusMsg && (
                 <div style={{ fontSize: 'var(--fs-sm)', fontWeight: 600, color: 'var(--color-primary)', textAlign: 'center', marginTop: 8 }}>
@@ -1149,7 +1377,7 @@ export function SettingsModal({
                 {t('cancel')}
               </button>
               <button type="submit" className="btn btn-primary btn-sm" disabled={isSaving}>
-                {t('save')}
+                {isSaving ? t('saving') : t('save')}
               </button>
             </div>
           </form>
@@ -1236,32 +1464,30 @@ export function SettingsModal({
                   </div>
 
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0, marginLeft: 12 }}>
-                    {r.is_online && (
-                      <button
-                        type="button"
-                        className="btn btn-secondary btn-sm"
-                        onClick={() => handleToggleProtocol(r.id, !r.use_ssl)}
-                        disabled={switchingProtocolId === r.id}
-                        style={{
-                          fontSize: 'var(--fs-xs)',
-                          padding: '3px 8px',
-                          color: r.use_ssl ? 'var(--text-main)' : 'var(--color-success)',
-                          borderColor: r.use_ssl ? 'var(--border-color)' : 'rgba(16, 185, 129, 0.3)'
-                        }}
-                        title={r.use_ssl ? t('switch_to_http_hint') : t('switch_to_https_hint')}
-                      >
-                        {switchingProtocolId === r.id ? (
-                          <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                            <Loader2 size={12} className="spin" />
-                            {t('protocol_switching')}
-                          </span>
-                        ) : r.use_ssl ? (
-                          <>🔓 {t('switch_to_http')}</>
-                        ) : (
-                          <>🔒 {t('switch_to_https')}</>
-                        )}
-                      </button>
-                    )}
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-sm"
+                      onClick={() => handleToggleProtocol(r.id, !r.use_ssl)}
+                      disabled={switchingProtocolId === r.id}
+                      style={{
+                        fontSize: 'var(--fs-xs)',
+                        padding: '3px 8px',
+                        color: r.use_ssl ? 'var(--text-main)' : 'var(--color-success)',
+                        borderColor: r.use_ssl ? 'var(--border-color)' : 'rgba(16, 185, 129, 0.3)'
+                      }}
+                      title={r.use_ssl ? t('switch_to_http_hint') : t('switch_to_https_hint')}
+                    >
+                      {switchingProtocolId === r.id ? (
+                        <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                          <Loader2 size={12} className="spin" />
+                          {t('protocol_switching')}
+                        </span>
+                      ) : r.use_ssl ? (
+                        <>🔓 {t('switch_to_http')}</>
+                      ) : (
+                        <>🔒 {t('switch_to_https')}</>
+                      )}
+                    </button>
                     {!r.is_default && (
                       <button
                         type="button"

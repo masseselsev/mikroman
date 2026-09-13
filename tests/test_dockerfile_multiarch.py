@@ -9,9 +9,11 @@ builder stage that owns the toolchain and compiles a local wheelhouse, and a
 runtime stage that installs from that wheelhouse offline.
 """
 
+import os
 import re
 
-DOCKERFILE = "Dockerfile"
+DOCKERFILE = "Dockerfile.python" if os.path.exists("Dockerfile.python") else "Dockerfile"
+
 
 
 def _stages():
