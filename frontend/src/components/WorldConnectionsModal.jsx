@@ -19,8 +19,9 @@ import {
  * World Connections Map Modal
  *
  * Visualizes active live connections on a high-fidelity 1000x500 Equirectangular SVG world map.
- * Groups connections by country/region, displaying glowing pulsating nodes,
- * socket counts, bandwidth consumption, and top remote destinations.
+ * Dynamic zoom & pan with mouse wheel, automatic multi-country clustering at low zoom,
+ * smooth separation into individual country nodes upon zooming in, and a structured
+ * 5-country-per-column scrollable data grid.
  */
 export function WorldConnectionsModal({
   isOpen,
@@ -158,45 +159,48 @@ export function WorldConnectionsModal({
   };
 
   // Mouse wheel zoom on map canvas
-  useEffect(() => {
+  const handleWheel = useCallback((e) => {
+    e.preventDefault();
     const el = mapContainerRef.current;
     if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const width = rect.width > 0 ? rect.width : 1000;
+    const height = rect.height > 0 ? rect.height : 500;
 
-    const onWheel = (e) => {
-      e.preventDefault();
-      const rect = el.getBoundingClientRect();
-      if (rect.width <= 0 || rect.height <= 0) return;
+    const rx = Math.max(0, Math.min(1, ((e.clientX || 0) - (rect.left || 0)) / width));
+    const ry = Math.max(0, Math.min(1, ((e.clientY || 0) - (rect.top || 0)) / height));
 
-      const rx = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-      const ry = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
+    const currentVbW = 1000 / zoom;
+    const currentVbH = 500 / zoom;
+    const cursorSvgX = pan.x + rx * currentVbW;
+    const cursorSvgY = pan.y + ry * currentVbH;
 
-      const currentVbW = 1000 / zoom;
-      const currentVbH = 500 / zoom;
-      const cursorSvgX = pan.x + rx * currentVbW;
-      const cursorSvgY = pan.y + ry * currentVbH;
+    const factor = e.deltaY < 0 ? 1.25 : 0.8;
+    const nextZoom = Math.max(1, Math.min(6, zoom * factor));
+    if (nextZoom === 1) {
+      setZoom(1);
+      setPan({ x: 0, y: 0 });
+      return;
+    }
 
-      const factor = e.deltaY < 0 ? 1.25 : 0.8;
-      const nextZoom = Math.max(1, Math.min(6, zoom * factor));
-      if (nextZoom === 1) {
-        setZoom(1);
-        setPan({ x: 0, y: 0 });
-        return;
-      }
-
-      const nextVbW = 1000 / nextZoom;
-      const nextVbH = 500 / nextZoom;
-      const nextPan = {
-        x: cursorSvgX - rx * nextVbW,
-        y: cursorSvgY - ry * nextVbH,
-      };
-
-      setZoom(nextZoom);
-      setPan(clampPan(nextPan, nextZoom));
+    const nextVbW = 1000 / nextZoom;
+    const nextVbH = 500 / nextZoom;
+    const nextPan = {
+      x: cursorSvgX - rx * nextVbW,
+      y: cursorSvgY - ry * nextVbH,
     };
 
-    el.addEventListener('wheel', onWheel, { passive: false });
-    return () => el.removeEventListener('wheel', onWheel);
+    setZoom(nextZoom);
+    setPan(clampPan(nextPan, nextZoom));
   }, [zoom, pan, clampPan]);
+
+  useEffect(() => {
+    const el = mapContainerRef.current;
+    if (!el || !isOpen) return;
+
+    el.addEventListener('wheel', handleWheel, { passive: false });
+    return () => el.removeEventListener('wheel', handleWheel);
+  }, [handleWheel, isOpen]);
 
   // Mouse Drag / Pan handlers
   const handleMouseDown = (e) => {
@@ -234,6 +238,72 @@ export function WorldConnectionsModal({
     setIsDragging(false);
   };
 
+  // Dynamic zoom-based clustering of country nodes
+  // Nearby countries are grouped when zoomed out, separating cleanly as user zooms in
+  const displayNodes = useMemo(() => {
+    const projected = filteredGroups.map((g) => {
+      const pt = project(g.lat, g.lng);
+      return {
+        ...g,
+        x: pt.x,
+        y: pt.y,
+      };
+    });
+
+    // Collision threshold in SVG coordinate units
+    // At zoom 1: ~36 units (clusters tightly packed regions like Europe)
+    // At zoom 2+: clusters separate smoothly into individual nations
+    const clusterDist = Math.max(10, 36 / Math.pow(zoom, 0.75));
+
+    const clusters = [];
+    const visited = new Set();
+    const sorted = [...projected].sort((a, b) => b.count - a.count);
+
+    for (let i = 0; i < sorted.length; i++) {
+      const item = sorted[i];
+      if (visited.has(item.code)) continue;
+
+      const clusterMembers = [item];
+      visited.add(item.code);
+
+      for (let j = i + 1; j < sorted.length; j++) {
+        const other = sorted[j];
+        if (visited.has(other.code)) continue;
+        const d = Math.hypot(item.x - other.x, item.y - other.y);
+        if (d < clusterDist) {
+          clusterMembers.push(other);
+          visited.add(other.code);
+        }
+      }
+
+      if (clusterMembers.length === 1) {
+        clusters.push({
+          isCluster: false,
+          group: item,
+          x: item.x,
+          y: item.y,
+          count: item.count,
+        });
+      } else {
+        const totalCount = clusterMembers.reduce((sum, m) => sum + m.count, 0);
+        const avgX = clusterMembers.reduce((sum, m) => sum + m.x * m.count, 0) / (totalCount || 1);
+        const avgY = clusterMembers.reduce((sum, m) => sum + m.y * m.count, 0) / (totalCount || 1);
+
+        clusters.push({
+          isCluster: true,
+          id: `cluster-${clusterMembers.map(m => m.code).sort().join('-')}`,
+          members: clusterMembers,
+          x: avgX,
+          y: avgY,
+          count: totalCount,
+          countryCodes: clusterMembers.map(m => m.code),
+        });
+      }
+    }
+
+    return clusters;
+  }, [filteredGroups, zoom]);
+
   if (!isOpen) return null;
 
   return (
@@ -261,32 +331,34 @@ export function WorldConnectionsModal({
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'space-between',
-            marginBottom: 14,
-            paddingBottom: 12,
-            borderBottom: '1px solid var(--border-color, rgba(255,255,255,0.1))',
+            paddingBottom: 14,
+            borderBottom: '1px solid var(--border-color, rgba(255,255,255,0.08))',
           }}
         >
           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
             <div
               style={{
+                width: 36,
+                height: 36,
+                borderRadius: 8,
                 background: 'rgba(59, 130, 246, 0.15)',
                 color: 'var(--color-primary, #3b82f6)',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                padding: 8,
-                borderRadius: 8,
               }}
             >
-              <Globe size={24} />
+              <Globe size={20} />
             </div>
             <div>
-              <h3 style={{ margin: 0, fontSize: '1.25rem', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 10 }}>
-                {t('world_map_title')}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <h3 style={{ margin: 0, fontSize: 'var(--fs-lg, 16px)', fontWeight: 600, color: 'var(--text-primary, #f8fafc)' }}>
+                  {t('world_map_title')}
+                </h3>
                 <span
                   style={{
-                    fontSize: 'var(--fs-xs, 12px)',
-                    fontWeight: 500,
+                    fontSize: 'var(--fs-2xs, 11px)',
+                    fontWeight: 600,
                     padding: '2px 8px',
                     borderRadius: 12,
                     background: 'var(--bg-card-hover, rgba(255,255,255,0.08))',
@@ -295,36 +367,26 @@ export function WorldConnectionsModal({
                 >
                   {countryGroups.length} {t('world_map_countries')} • {geoConnections.length} {t('connections_count')}
                 </span>
-              </h3>
-              <div
-                style={{
-                  fontSize: 'var(--fs-xs, 12px)',
-                  color: 'var(--text-muted, #64748b)',
-                  display: 'flex',
-                  gap: 14,
-                  marginTop: 4,
-                }}
-              >
-                <span>
-                  <ArrowUpRight size={12} style={{ verticalAlign: -1, color: 'var(--color-primary, #3b82f6)' }} />{' '}
-                  {formatSpeed(totalUpload, speedUnit)}
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginTop: 4, fontSize: 'var(--fs-xs, 12px)' }}>
+                <span style={{ color: 'var(--color-primary, #3b82f6)', display: 'inline-flex', alignItems: 'center', gap: 3 }}>
+                  <ArrowUpRight size={13} /> {formatSpeed(totalUpload, speedUnit)}
                 </span>
-                <span>
-                  <ArrowDownLeft size={12} style={{ verticalAlign: -1, color: 'var(--color-success, #10b981)' }} />{' '}
-                  {formatSpeed(totalDownload, speedUnit)}
+                <span style={{ color: 'var(--color-success, #10b981)', display: 'inline-flex', alignItems: 'center', gap: 3 }}>
+                  <ArrowDownLeft size={13} /> {formatSpeed(totalDownload, speedUnit)}
                 </span>
               </div>
             </div>
           </div>
 
+          {/* Search Box & Close Button */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            {/* Search Filter */}
             <div style={{ position: 'relative', width: 220 }}>
               <Search
                 size={14}
                 style={{
                   position: 'absolute',
-                  left: 9,
+                  left: 10,
                   top: '50%',
                   transform: 'translateY(-50%)',
                   color: 'var(--text-muted, #64748b)',
@@ -332,18 +394,19 @@ export function WorldConnectionsModal({
               />
               <input
                 type="text"
-                className="form-input"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 placeholder={t('search_connections_placeholder')}
                 style={{
-                  paddingLeft: 28,
-                  paddingRight: search ? 28 : 8,
-                  paddingTop: 4,
-                  paddingBottom: 4,
-                  fontSize: 'var(--fs-xs, 12px)',
-                  height: 32,
+                  width: '100%',
+                  padding: '6px 28px 6px 30px',
                   borderRadius: 6,
+                  border: '1px solid var(--border-color, rgba(255,255,255,0.12))',
+                  background: 'var(--bg-card-hover, rgba(255,255,255,0.04))',
+                  color: 'var(--text-primary, #f8fafc)',
+                  fontSize: 'var(--fs-xs, 12px)',
+                  outline: 'none',
+                  boxSizing: 'border-box',
                 }}
               />
               {search && (
@@ -390,6 +453,7 @@ export function WorldConnectionsModal({
           {/* SVG Canvas Container */}
           <div
             ref={mapContainerRef}
+            onWheel={handleWheel}
             onMouseDown={handleMouseDown}
             onMouseMove={handleMouseMove}
             onMouseUp={handleMouseUp}
@@ -513,6 +577,16 @@ export function WorldConnectionsModal({
                   <stop offset="60%" stopColor="#d97706" stopOpacity="0.4" />
                   <stop offset="100%" stopColor="#d97706" stopOpacity="0" />
                 </radialGradient>
+                <radialGradient id="clusterGlow" cx="50%" cy="50%" r="50%">
+                  <stop offset="0%" stopColor="#8b5cf6" stopOpacity="0.85" />
+                  <stop offset="60%" stopColor="#6366f1" stopOpacity="0.35" />
+                  <stop offset="100%" stopColor="#6366f1" stopOpacity="0" />
+                </radialGradient>
+                <radialGradient id="clusterGlowSelected" cx="50%" cy="50%" r="50%">
+                  <stop offset="0%" stopColor="#f59e0b" stopOpacity="0.9" />
+                  <stop offset="60%" stopColor="#d97706" stopOpacity="0.4" />
+                  <stop offset="100%" stopColor="#d97706" stopOpacity="0" />
+                </radialGradient>
                 <pattern id="gridDots" width="20" height="20" patternUnits="userSpaceOnUse">
                   <circle cx="2" cy="2" r="1" fill="rgba(255, 255, 255, 0.04)" />
                 </pattern>
@@ -542,13 +616,107 @@ export function WorldConnectionsModal({
                 <path d={WORLD_LAND_PATH} />
               </g>
 
-              {/* Active Connection Nodes */}
-              {filteredGroups.map((g) => {
-                const { x, y } = project(g.lat, g.lng);
-                const isSelected = activeSelected && activeSelected.code === g.code;
+              {/* Active Connection Nodes (Dynamic Clusters & Individual Country Markers) */}
+              {displayNodes.map((node) => {
                 const scaleFactor = Math.pow(zoom, 0.45);
-                const nodeRadius = Math.min(18, Math.max(5.5, (5 + Math.log2(g.count + 1) * 3) / scaleFactor));
                 const badgeScale = Math.pow(zoom, 0.35);
+
+                if (node.isCluster) {
+                  const isSelected = activeSelected && node.countryCodes.includes(activeSelected.code);
+                  const nodeRadius = Math.min(22, Math.max(9, (8 + Math.log2(node.count + 1) * 3) / scaleFactor));
+
+                  return (
+                    <g
+                      key={node.id}
+                      onClick={(e) => {
+                        if (hasDraggedRef.current) return;
+                        e.stopPropagation();
+                        setZoomAndCenter(Math.min(6, zoom * 1.8), { x: node.x, y: node.y });
+                        if (node.members.length > 0) {
+                          setSelectedCountryCode(node.members[0].code);
+                        }
+                      }}
+                      style={{ cursor: 'pointer', transition: 'all 0.25s ease-out' }}
+                      className="map-node map-cluster-node"
+                      data-testid={node.id}
+                    >
+                      <title>{`${node.members.map((m) => `${m.name} (${m.count})`).join(', ')}\nClick to zoom in`}</title>
+
+                      {/* Cluster Glowing Aura */}
+                      <circle
+                        cx={node.x}
+                        cy={node.y}
+                        r={nodeRadius * 2.4}
+                        fill={isSelected ? 'url(#clusterGlowSelected)' : 'url(#clusterGlow)'}
+                      />
+
+                      {/* Outer Pulse Ring */}
+                      <circle
+                        cx={node.x}
+                        cy={node.y}
+                        r={nodeRadius * 1.6}
+                        fill="none"
+                        stroke={isSelected ? '#f59e0b' : '#8b5cf6'}
+                        strokeWidth={1.5 / badgeScale}
+                        strokeDasharray="4 2"
+                        opacity={0.85}
+                      />
+
+                      {/* Central Cluster Core */}
+                      <circle
+                        cx={node.x}
+                        cy={node.y}
+                        r={nodeRadius}
+                        fill={isSelected ? '#d97706' : '#6d28d9'}
+                        stroke="#ffffff"
+                        strokeWidth={2 / badgeScale}
+                      />
+
+                      {/* Socket Count Badge inside circle */}
+                      <text
+                        x={node.x}
+                        y={node.y + 3.5 / badgeScale}
+                        textAnchor="middle"
+                        fill="#ffffff"
+                        fontSize={`${Math.max(7, 10 / badgeScale)}px`}
+                        fontWeight="bold"
+                        pointerEvents="none"
+                      >
+                        {node.count}
+                      </text>
+
+                      {/* Cluster Label with Member Count */}
+                      <g transform={`translate(${node.x + nodeRadius + 4 / badgeScale}, ${node.y + 4 / badgeScale})`}>
+                        <rect
+                          x={-2 / badgeScale}
+                          y={-11 / badgeScale}
+                          width={(18 + node.members.length.toString().length * 7 + 55) / badgeScale}
+                          height={16 / badgeScale}
+                          rx={4 / badgeScale}
+                          fill="rgba(24, 16, 45, 0.92)"
+                          stroke={isSelected ? '#f59e0b' : '#8b5cf6'}
+                          strokeWidth={1 / badgeScale}
+                        />
+                        <text
+                          x={4 / badgeScale}
+                          y={1 / badgeScale}
+                          fill="#e9d5ff"
+                          fontSize={`${Math.max(7, 9 / badgeScale)}px`}
+                          fontWeight="700"
+                          letterSpacing="0.3px"
+                          pointerEvents="none"
+                        >
+                          ✦ {node.members.length} {t('world_map_countries')}
+                        </text>
+                      </g>
+                    </g>
+                  );
+                }
+
+                // Individual Country Node
+                const g = node.group;
+                const isSelected = activeSelected && activeSelected.code === g.code;
+                const nodeRadius = Math.min(18, Math.max(5.5, (5 + Math.log2(g.count + 1) * 3) / scaleFactor));
 
                 return (
                   <g
@@ -558,22 +726,22 @@ export function WorldConnectionsModal({
                       e.stopPropagation();
                       setSelectedCountryCode(g.code);
                     }}
-                    style={{ cursor: 'pointer' }}
+                    style={{ cursor: 'pointer', transition: 'all 0.25s ease-out' }}
                     className="map-node"
                     data-testid={`map-node-${g.code}`}
                   >
                     {/* Glowing Aura Ring */}
                     <circle
-                      cx={x}
-                      cy={y}
+                      cx={node.x}
+                      cy={node.y}
                       r={nodeRadius * 2.2}
                       fill={isSelected ? 'url(#nodeGlowSelected)' : 'url(#nodeGlow)'}
                     />
 
                     {/* Outer Pulse */}
                     <circle
-                      cx={x}
-                      cy={y}
+                      cx={node.x}
+                      cy={node.y}
                       r={nodeRadius * 1.5}
                       fill="none"
                       stroke={isSelected ? '#f59e0b' : '#38bdf8'}
@@ -583,8 +751,8 @@ export function WorldConnectionsModal({
 
                     {/* Central Core Circle */}
                     <circle
-                      cx={x}
-                      cy={y}
+                      cx={node.x}
+                      cy={node.y}
                       r={nodeRadius}
                       fill={isSelected ? '#f59e0b' : '#0284c7'}
                       stroke="#ffffff"
@@ -593,8 +761,8 @@ export function WorldConnectionsModal({
 
                     {/* Socket Count Badge inside circle */}
                     <text
-                      x={x}
-                      y={y + (3.5 / badgeScale)}
+                      x={node.x}
+                      y={node.y + 3.5 / badgeScale}
                       textAnchor="middle"
                       fill="#ffffff"
                       fontSize={`${Math.max(6, (nodeRadius > 10 ? 10 : 8) / badgeScale)}px`}
@@ -605,7 +773,7 @@ export function WorldConnectionsModal({
                     </text>
 
                     {/* Map Badge with ISO code */}
-                    <g transform={`translate(${x + nodeRadius + (4 / badgeScale)}, ${y + (4 / badgeScale)})`}>
+                    <g transform={`translate(${node.x + nodeRadius + 4 / badgeScale}, ${node.y + 4 / badgeScale})`}>
                       <rect
                         x={-2 / badgeScale}
                         y={-11 / badgeScale}
@@ -658,8 +826,8 @@ export function WorldConnectionsModal({
             )}
           </div>
 
-          {/* Selected Region Summary Card & Country List Strip */}
-          <div style={{ display: 'grid', gridTemplateColumns: '320px 1fr', gap: 14, minHeight: 140 }}>
+          {/* Selected Region Summary Card & Scrollable 5-Country Grid Table */}
+          <div style={{ display: 'grid', gridTemplateColumns: '320px 1fr', gap: 14, minHeight: 160 }}>
             {/* Left Detail Card */}
             <div
               style={{
@@ -750,17 +918,21 @@ export function WorldConnectionsModal({
               )}
             </div>
 
-            {/* Right Country Horizontal Ranking List */}
+            {/* Right Country Table: exactly 5 countries per column, horizontally scrollable */}
             <div
               style={{
                 background: 'var(--bg-card-hover, rgba(255,255,255,0.04))',
                 border: '1px solid var(--border-color, rgba(255,255,255,0.08))',
                 borderRadius: 8,
-                padding: '10px 12px',
+                padding: '8px 10px',
                 overflowX: 'auto',
-                display: 'flex',
-                gap: 10,
-                alignItems: 'center',
+                overflowY: 'hidden',
+                display: 'grid',
+                gridTemplateRows: 'repeat(5, 26px)',
+                gridAutoFlow: 'column',
+                gridAutoColumns: 'minmax(180px, 220px)',
+                gap: '5px 8px',
+                alignContent: 'start',
               }}
             >
               {filteredGroups.length === 0 ? (
@@ -775,39 +947,60 @@ export function WorldConnectionsModal({
                       key={g.code}
                       onClick={() => setSelectedCountryCode(g.code)}
                       style={{
-                        minWidth: 155,
-                        textAlign: 'left',
-                        padding: '8px 10px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 8,
+                        padding: '2px 8px',
                         borderRadius: 6,
-                        background: isSelected ? 'rgba(59, 130, 246, 0.18)' : 'rgba(255,255,255,0.03)',
-                        border: isSelected ? '1px solid var(--color-primary, #3b82f6)' : '1px solid rgba(255,255,255,0.06)',
+                        background: isSelected ? 'rgba(59, 130, 246, 0.22)' : 'rgba(255, 255, 255, 0.03)',
+                        border: isSelected ? '1px solid var(--color-primary, #3b82f6)' : '1px solid rgba(255, 255, 255, 0.06)',
                         cursor: 'pointer',
                         color: 'inherit',
+                        height: 26,
+                        boxSizing: 'border-box',
+                        textAlign: 'left',
                         transition: 'all 0.15s ease',
-                        flexShrink: 0,
                       }}
+                      title={`${g.name} (${g.code}): ${g.count} ${t('connections_count')}, ↓ ${formatSpeed(g.downloadRate, speedUnit)}`}
                     >
-                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
-                        <CountryFlag code={g.code} size={18} />
-                        <span
-                          style={{
-                            fontSize: '10px',
-                            fontWeight: 700,
-                            padding: '1px 5px',
-                            borderRadius: 8,
-                            background: isSelected ? 'var(--color-primary, #3b82f6)' : 'rgba(255,255,255,0.1)',
-                            color: '#ffffff',
-                          }}
-                        >
-                          {g.count}
-                        </span>
-                      </div>
-                      <div style={{ fontWeight: 600, fontSize: 'var(--fs-xs, 12px)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      <CountryFlag code={g.code} size={15} />
+                      <span
+                        style={{
+                          flex: 1,
+                          fontSize: 'var(--fs-xs, 12px)',
+                          fontWeight: isSelected ? 600 : 500,
+                          whiteSpace: 'nowrap',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          color: isSelected ? '#ffffff' : 'var(--text-primary, #f8fafc)',
+                        }}
+                      >
                         {g.name}
-                      </div>
-                      <div style={{ fontSize: '10px', color: 'var(--text-muted, #64748b)', marginTop: 2 }}>
-                        ↓ {formatSpeed(g.downloadRate, speedUnit)}
-                      </div>
+                      </span>
+                      <span
+                        style={{
+                          fontSize: '10px',
+                          fontFamily: 'monospace',
+                          color: 'var(--text-muted, #64748b)',
+                          marginRight: 2,
+                        }}
+                      >
+                        {formatSpeed(g.downloadRate, speedUnit)}
+                      </span>
+                      <span
+                        style={{
+                          fontSize: '10px',
+                          fontWeight: 700,
+                          padding: '0 5px',
+                          borderRadius: 6,
+                          background: isSelected ? 'var(--color-primary, #3b82f6)' : 'rgba(255, 255, 255, 0.08)',
+                          color: '#ffffff',
+                          minWidth: 16,
+                          textAlign: 'center',
+                        }}
+                      >
+                        {g.count}
+                      </span>
                     </button>
                   );
                 })
@@ -819,3 +1012,5 @@ export function WorldConnectionsModal({
     </div>
   );
 }
+
+export default WorldConnectionsModal;

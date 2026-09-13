@@ -20,6 +20,12 @@ describe('CountryFlag component', () => {
     rerender(<CountryFlag code="AQ" />);
     expect(screen.getByLabelText('Antarctica')).toBeInTheDocument();
 
+    rerender(<CountryFlag code="ZA" />);
+    expect(screen.getByLabelText('South Africa')).toBeInTheDocument();
+
+    rerender(<CountryFlag code="CY" />);
+    expect(screen.getByLabelText('Cyprus')).toBeInTheDocument();
+
     rerender(<CountryFlag code="UN" />);
     expect(screen.getByLabelText('Global Internet')).toBeInTheDocument();
   });

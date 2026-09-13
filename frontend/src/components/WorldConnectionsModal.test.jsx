@@ -184,6 +184,55 @@ describe('WorldConnectionsModal', () => {
     rerender(<WorldConnectionsModal isOpen={false} onClose={vi.fn()} connections={mockGeoConnections} />);
     expect(screen.queryByText(/Active Connections World Map/i)).not.toBeInTheDocument();
   });
+
+  it('automatically clusters close countries at zoom 1 and separates them on zoom in', () => {
+    const closeConnections = [
+      {
+        id: '*1',
+        dst_ip: '198.51.100.1',
+        country_code: 'NL',
+        country_name: 'Netherlands',
+        lat: 52.1326,
+        lng: 5.2913,
+      },
+      {
+        id: '*2',
+        dst_ip: '198.51.100.2',
+        country_code: 'DE',
+        country_name: 'Germany',
+        lat: 51.1657,
+        lng: 10.4515,
+      },
+    ];
+
+    render(<WorldConnectionsModal isOpen={true} onClose={vi.fn()} connections={closeConnections} />);
+
+    // At zoom 1 (100%), NL and DE cluster together
+    const cluster = screen.getByTestId('cluster-DE-NL');
+    expect(cluster).toBeInTheDocument();
+    expect(cluster).toHaveTextContent(/2 countries/i);
+
+    // Clicking cluster zooms in to expand
+    fireEvent.click(cluster);
+
+    // Zoom increases beyond 100%
+    expect(screen.queryByText('100%')).not.toBeInTheDocument();
+  });
+
+  it('supports mouse wheel zooming on map canvas', () => {
+    render(<WorldConnectionsModal isOpen={true} onClose={vi.fn()} connections={mockGeoConnections} />);
+
+    expect(screen.getByText('100%')).toBeInTheDocument();
+    const svg = screen.getByLabelText('World Connections Map');
+
+    // Wheel up (zoom in)
+    fireEvent.wheel(svg.parentElement, { deltaY: -100, clientX: 500, clientY: 250 });
+    expect(screen.getByText('125%')).toBeInTheDocument();
+
+    // Wheel down (zoom out)
+    fireEvent.wheel(svg.parentElement, { deltaY: 100, clientX: 500, clientY: 250 });
+    expect(screen.getByText('100%')).toBeInTheDocument();
+  });
 });
 
 
