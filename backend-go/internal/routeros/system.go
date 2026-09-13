@@ -169,3 +169,75 @@ func (c *Client) GetIPAddresses(ctx context.Context) ([]IPAddress, error) {
 	}
 	return addrs, nil
 }
+
+// SystemClock represents /system/clock from RouterOS
+type SystemClock struct {
+	Date             string `json:"date"`
+	Time             string `json:"time"`
+	TimeZone         string `json:"time-zone-name"`
+	GMTOffset        string `json:"gmt-offset"`
+	GMTOffsetMinutes *int   `json:"gmt_offset_minutes,omitempty"`
+	DSTActive        bool   `json:"dst_active"`
+}
+
+// ParseGMTOffsetMinutes parses GMT offset string like "+05:00", "-03:30", "+05", or seconds like "18000" into minutes.
+func ParseGMTOffsetMinutes(raw string) *int {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || raw == "<nil>" {
+		return nil
+	}
+
+	// Case 1: seconds as integer string (e.g. "18000" or "-12600")
+	if sec, err := strconv.Atoi(raw); err == nil && !strings.Contains(raw, ":") {
+		min := sec / 60
+		return &min
+	}
+
+	// Case 2: "+/-HH:MM" or "+/-HH"
+	sign := 1
+	if strings.HasPrefix(raw, "-") {
+		sign = -1
+		raw = strings.TrimPrefix(raw, "-")
+	} else if strings.HasPrefix(raw, "+") {
+		raw = strings.TrimPrefix(raw, "+")
+	}
+
+	parts := strings.Split(raw, ":")
+	hours, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return nil
+	}
+
+	minutes := 0
+	if len(parts) > 1 {
+		if m, err := strconv.Atoi(parts[1]); err == nil {
+			minutes = m
+		}
+	}
+
+	total := sign * (hours*60 + minutes)
+	return &total
+}
+
+// GetSystemClock reads /system/clock
+func (c *Client) GetSystemClock(ctx context.Context) (*SystemClock, error) {
+	var raw map[string]interface{}
+	if err := c.Get(ctx, "/system/clock", &raw); err != nil {
+		return nil, err
+	}
+
+	clock := &SystemClock{
+		Date:      fmt.Sprintf("%v", raw["date"]),
+		Time:      fmt.Sprintf("%v", raw["time"]),
+		TimeZone:  fmt.Sprintf("%v", raw["time-zone-name"]),
+		GMTOffset: fmt.Sprintf("%v", raw["gmt-offset"]),
+	}
+
+	if dst, ok := raw["dst-active"]; ok {
+		clock.DSTActive = strings.EqualFold(fmt.Sprintf("%v", dst), "true") || fmt.Sprintf("%v", dst) == "yes"
+	}
+
+	clock.GMTOffsetMinutes = ParseGMTOffsetMinutes(clock.GMTOffset)
+	return clock, nil
+}
+

@@ -63,7 +63,7 @@ func CategorizeLog(topics, message string) (severity string, category string) {
 	return severity, category
 }
 
-// ParseLogTimestamp safely parses RouterOS timestamp variations into a valid UTC time.Time.
+// ParseLogTimestamp safely parses RouterOS timestamp variations into a valid time.Time.
 func ParseLogTimestamp(raw string, now time.Time) time.Time {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -72,15 +72,19 @@ func ParseLogTimestamp(raw string, now time.Time) time.Time {
 	if t, err := time.Parse(time.RFC3339, raw); err == nil {
 		return t
 	}
+	if t, err := time.Parse("2006-01-02 15:04:05", raw); err == nil {
+		return t
+	}
 	if len(raw) == 8 && strings.Count(raw, ":") == 2 {
 		if t, err := time.Parse("15:04:05", raw); err == nil {
 			return time.Date(now.Year(), now.Month(), now.Day(), t.Hour(), t.Minute(), t.Second(), 0, time.UTC)
 		}
 	}
-	if t, err := time.Parse("jan/02 15:04:05", strings.ToLower(raw)); err == nil {
+	titleRaw := strings.Title(strings.ToLower(raw))
+	if t, err := time.Parse("Jan/02 15:04:05", titleRaw); err == nil {
 		return time.Date(now.Year(), t.Month(), t.Day(), t.Hour(), t.Minute(), t.Second(), 0, time.UTC)
 	}
-	if t, err := time.Parse("jan/02/2006 15:04:05", strings.ToLower(raw)); err == nil {
+	if t, err := time.Parse("Jan/02/2006 15:04:05", titleRaw); err == nil {
 		return t
 	}
 	return now

@@ -67,16 +67,36 @@ function severityColor(sev) {
   return SEVERITY_COLORS[sev] || SEVERITY_COLORS.info;
 }
 
-function formatStamp(iso) {
-  if (!iso) return '';
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return String(iso);
-  const p = (n) => String(n).padStart(2, '0');
-  return `${p(d.getMonth() + 1)}/${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+export function formatStamp(raw, gmtOffsetMinutes = null) {
+  if (!raw) return '';
+  const str = String(raw).trim();
+  // 1. Time only "HH:MM:SS" (e.g. direct live log time from RouterOS)
+  if (/^\d{2}:\d{2}:\d{2}$/.test(str)) {
+    return str;
+  }
+  // 2. Extract date and time directly from ISO / SQL string:
+  // e.g. "2026-09-13T21:14:02+05:00", "2026-09-13 21:14:02", "2026-09-13T21:14:02"
+  const m = str.match(/(?:(\d{4})-)?(\d{2})-(\d{2})[T ](\d{2}):(\d{2}):(\d{2})/);
+  if (m) {
+    const [, , mm, dd, hh, min, ss] = m;
+    return `${mm}/${dd} ${hh}:${min}:${ss}`;
+  }
+  // 3. Fallback to Date parsing if custom or timestamp object
+  const d = new Date(str);
+  if (!Number.isNaN(d.getTime())) {
+    const p = (n) => String(n).padStart(2, '0');
+    if (typeof gmtOffsetMinutes === 'number') {
+      const shifted = new Date(d.getTime() + gmtOffsetMinutes * 60000);
+      return `${p(shifted.getUTCMonth() + 1)}/${p(shifted.getUTCDate())} ${p(shifted.getUTCHours())}:${p(shifted.getUTCMinutes())}:${p(shifted.getUTCSeconds())}`;
+    }
+    return `${p(d.getUTCMonth() + 1)}/${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}`;
+  }
+  return str;
 }
 
-export function RouterLogsModal({ isOpen, onClose, routerId = null, routerName = '' }) {
+export function RouterLogsModal({ isOpen, onClose, routerId = null, routerName = '', routerClock = null }) {
   const { t } = useI18n();
+  const gmtOffsetMinutes = routerClock?.gmt_offset_minutes;
 
   const [entries, setEntries] = useState([]);
   const [stats, setStats] = useState(null);
@@ -232,8 +252,8 @@ export function RouterLogsModal({ isOpen, onClose, routerId = null, routerName =
   };
 
   const asText = useMemo(
-    () => entries.map(e => `${formatStamp(e.timestamp)} [${e.topics}] ${e.message}`).join('\n'),
-    [entries]
+    () => entries.map(e => `${formatStamp(e.timestamp || e.time, gmtOffsetMinutes)} [${e.topics}] ${e.message}`).join('\n'),
+    [entries, gmtOffsetMinutes]
   );
 
   const handleCopy = async () => {
@@ -321,6 +341,7 @@ export function RouterLogsModal({ isOpen, onClose, routerId = null, routerName =
               <h3>{t('router_logs_title')}</h3>
               <div className="modal-subtitle truncate">
                 {routerName || t('app_subtitle')}
+                {routerClock?.timezone ? ` · 🕒 ${routerClock.timezone}` : ''}
                 {stats ? ` · ${t('log_stats_summary', {
                   errors: stats.error_count + stats.critical_count,
                   warnings: stats.warning_count,
@@ -683,7 +704,7 @@ export function RouterLogsModal({ isOpen, onClose, routerId = null, routerName =
                   key={e.id ?? `${e.external_id || 'x'}-${i}`}
                   style={{ display: 'flex', gap: 8, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}
                 >
-                  <span style={{ color: '#6b7a8c', flexShrink: 0 }}>{formatStamp(e.timestamp)}</span>
+                  <span style={{ color: '#6b7a8c', flexShrink: 0 }}>{formatStamp(e.timestamp || e.time, gmtOffsetMinutes)}</span>
                   <span
                     style={{ color: severityColor(e.severity), flexShrink: 0, fontWeight: 700 }}
                     title={e.severity}
@@ -712,6 +733,7 @@ export function RouterLogsModal({ isOpen, onClose, routerId = null, routerName =
           <div style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)' }}>
             {t('log_count', { count: entries.length })}
             {source === 'live' ? ` · ${t('log_source_live_hint')}` : ` · ${t('log_source_stored_hint')}`}
+            {routerClock?.timezone ? ` · 🕒 ${t('log_router_time_hint', { tz: routerClock.timezone })}` : ''}
           </div>
         </div>
       </div>
