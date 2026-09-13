@@ -58,7 +58,7 @@ describe('SettingsModal', () => {
     renderWithProviders(
       <SettingsModal isOpen onClose={() => {}} onReboot={() => {}} onRoutersChanged={() => {}} />
     );
-    expect(await screen.findByText('General & Bot')).toBeInTheDocument();
+    expect(await screen.findByText('General')).toBeInTheDocument();
   });
 
   it('autoOpenAddRouter expands the add-router form on the routers tab', async () => {
@@ -135,7 +135,7 @@ describe('SettingsModal secret field', () => {
     // exactly like a real credential, so the hint is the only signal.
     withSettings({ telegram_bot_token: SECRET_PLACEHOLDER });
     renderWithProviders(
-      <SettingsModal isOpen onClose={() => {}} onReboot={() => {}} onRoutersChanged={() => {}} />
+      <SettingsModal isOpen initialTab="telegram" onClose={() => {}} onReboot={() => {}} onRoutersChanged={() => {}} />
     );
     expect(await screen.findByText('The stored token is hidden. Type a new one to replace it.'))
       .toBeInTheDocument();
@@ -144,9 +144,9 @@ describe('SettingsModal secret field', () => {
   it('stays quiet when no token is configured', async () => {
     withSettings({});
     renderWithProviders(
-      <SettingsModal isOpen onClose={() => {}} onReboot={() => {}} onRoutersChanged={() => {}} />
+      <SettingsModal isOpen initialTab="telegram" onClose={() => {}} onReboot={() => {}} onRoutersChanged={() => {}} />
     );
-    await screen.findByText('General & Bot');
+    await screen.findByText('Telegram & Alerts');
     expect(screen.queryByText('The stored token is hidden. Type a new one to replace it.'))
       .not.toBeInTheDocument();
   });

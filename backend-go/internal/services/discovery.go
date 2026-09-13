@@ -110,6 +110,51 @@ func (s *DiscoveryService) getIgnoredDiscoveryInterfaces(routerID int) []string 
 	return ifaces
 }
 
+func (s *DiscoveryService) getArpDiscoveryInterfaces(routerID int) []string {
+	key := fmt.Sprintf("arp_discovery_interfaces_%d", routerID)
+	val, err := s.database.GetSetting(key)
+	var ifaces []string
+	if err == nil && val != "" {
+		if strings.HasPrefix(strings.TrimSpace(val), "[") {
+			_ = json.Unmarshal([]byte(val), &ifaces)
+		} else {
+			for _, part := range strings.Split(val, ",") {
+				if t := strings.TrimSpace(part); t != "" {
+					ifaces = append(ifaces, t)
+				}
+			}
+		}
+	}
+	if len(ifaces) == 0 {
+		defVal, _ := s.database.GetSetting("arp_discovery_interfaces")
+		if defVal != "" {
+			if strings.HasPrefix(strings.TrimSpace(defVal), "[") {
+				_ = json.Unmarshal([]byte(defVal), &ifaces)
+			} else {
+				for _, part := range strings.Split(defVal, ",") {
+					if t := strings.TrimSpace(part); t != "" {
+						ifaces = append(ifaces, t)
+					}
+				}
+			}
+		}
+	}
+	return ifaces
+}
+
+func isInterfaceAllowed(iface string, allowed []string) bool {
+	if len(allowed) == 0 {
+		return true
+	}
+	trimmed := strings.TrimSpace(iface)
+	for _, a := range allowed {
+		if strings.EqualFold(strings.TrimSpace(a), trimmed) {
+			return true
+		}
+	}
+	return false
+}
+
 // IsIgnoredDiscoveryInterface checks whether an interface should be excluded from client device discovery.
 func IsIgnoredDiscoveryInterface(iface string, wanIfaces []string, userIgnored []string) bool {
 	trimmed := strings.TrimSpace(iface)
@@ -185,6 +230,7 @@ func (s *DiscoveryService) SyncDevices(ctx context.Context, routerID int) (int, 
 
 	wanIfaces := s.getWanInterfaces(routerID)
 	ignoredIfaces := s.getIgnoredDiscoveryInterfaces(routerID)
+	arpAllowedIfaces := s.getArpDiscoveryInterfaces(routerID)
 
 	leases, _ := client.GetDHCPLeases(ctx)
 	arps, _ := client.GetARPTable(ctx)
@@ -224,6 +270,9 @@ func (s *DiscoveryService) SyncDevices(ctx context.Context, routerID int) (int, 
 			continue
 		}
 		if IsIgnoredDiscoveryInterface(a.Interface, wanIfaces, ignoredIfaces) {
+			continue
+		}
+		if !isInterfaceAllowed(a.Interface, arpAllowedIfaces) {
 			continue
 		}
 		mac := strings.ToUpper(strings.TrimSpace(a.MacAddress))

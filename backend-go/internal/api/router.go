@@ -98,7 +98,7 @@ func NewRouter(rc RouterConfig) http.Handler {
 		})
 
 		// Routers
-		routerH := NewRouterHandler(rc.DB)
+		routerH := NewRouterHandler(rc.DB, rc.Client)
 		containerH := NewContainerHandler(rc.DB, rc.Client)
 		speedtestH := NewSpeedTestHandler(rc.DB, rc.Client)
 		firmwareH := NewFirmwareHandler(rc.DB, rc.Client)

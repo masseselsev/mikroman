@@ -15,10 +15,37 @@ import (
 
 type RouterHandler struct {
 	database *db.DB
+	client   *routeros.Client
 }
 
-func NewRouterHandler(database *db.DB) *RouterHandler {
-	return &RouterHandler{database: database}
+func NewRouterHandler(database *db.DB, client *routeros.Client) *RouterHandler {
+	return &RouterHandler{database: database, client: client}
+}
+
+// RouterResponse provides public router configuration enriched with live health and hardware info.
+type RouterResponse struct {
+	ID           int           `json:"id"`
+	Name         string        `json:"name"`
+	Host         string        `json:"host"`
+	Port         int           `json:"port"`
+	UseSSL       bool          `json:"use_ssl"`
+	SSLVerify    bool          `json:"ssl_verify"`
+	CACert       db.NullString `json:"ca_cert"`
+	Username     string        `json:"username"`
+	Comment      db.NullString `json:"comment"`
+	IsActive     bool          `json:"is_active"`
+	IsDefault    bool          `json:"is_default"`
+	SerialNumber db.NullString `json:"serial_number"`
+	ArchivedAt   *time.Time    `json:"archived_at,omitempty"`
+	CreatedAt    time.Time     `json:"created_at"`
+	UpdatedAt    time.Time     `json:"updated_at"`
+
+	IsOnline     bool   `json:"is_online"`
+	ROSVersion   string `json:"ros_version,omitempty"`
+	BoardName    string `json:"board_name,omitempty"`
+	Model        string `json:"model,omitempty"`
+	Architecture string `json:"architecture,omitempty"`
+	CPULoad      int    `json:"cpu_load,omitempty"`
 }
 
 type RouterCreateRequest struct {
@@ -52,7 +79,73 @@ func (h *RouterHandler) List(w http.ResponseWriter, r *http.Request) {
 	if routers == nil {
 		routers = []db.Router{}
 	}
-	WriteJSON(w, http.StatusOK, routers)
+
+	res := make([]RouterResponse, len(routers))
+	for i, rtr := range routers {
+		res[i] = RouterResponse{
+			ID:           rtr.ID,
+			Name:         rtr.Name,
+			Host:         rtr.Host,
+			Port:         rtr.Port,
+			UseSSL:       rtr.UseSSL,
+			SSLVerify:    rtr.SSLVerify,
+			CACert:       rtr.CACert,
+			Username:     rtr.Username,
+			Comment:      rtr.Comment,
+			IsActive:     rtr.IsActive,
+			IsDefault:    rtr.IsDefault,
+			SerialNumber: rtr.SerialNumber,
+			ArchivedAt:   rtr.ArchivedAt,
+			CreatedAt:    rtr.CreatedAt,
+			UpdatedAt:    rtr.UpdatedAt,
+		}
+
+		// Enrich online status and board metadata
+		if rtr.IsDefault && h.client != nil {
+			ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+			sysRes, err := h.client.GetSystemResource(ctx)
+			cancel()
+			if err == nil && sysRes != nil {
+				res[i].IsOnline = true
+				res[i].ROSVersion = sysRes.Version
+				res[i].BoardName = sysRes.BoardName
+				res[i].Model = sysRes.BoardName
+				res[i].Architecture = sysRes.ArchitectureName
+				cpuVal, _ := strconv.Atoi(sysRes.CPULoad)
+				res[i].CPULoad = cpuVal
+			} else {
+				// Default connected client is alive
+				res[i].IsOnline = true
+			}
+		} else if rtr.IsActive {
+			goClient, err := routeros.NewClient(routeros.Config{
+				Host:      rtr.Host,
+				Port:      rtr.Port,
+				Username:  rtr.Username,
+				Password:  rtr.Password,
+				UseSSL:    rtr.UseSSL,
+				SSLVerify: rtr.SSLVerify,
+				CACert:    rtr.CACert.String,
+				Timeout:   2 * time.Second,
+			})
+			if err == nil && goClient != nil {
+				ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+				sysRes, probeErr := goClient.GetSystemResource(ctx)
+				cancel()
+				if probeErr == nil && sysRes != nil {
+					res[i].IsOnline = true
+					res[i].ROSVersion = sysRes.Version
+					res[i].BoardName = sysRes.BoardName
+					res[i].Model = sysRes.BoardName
+					res[i].Architecture = sysRes.ArchitectureName
+					cpuVal, _ := strconv.Atoi(sysRes.CPULoad)
+					res[i].CPULoad = cpuVal
+				}
+			}
+		}
+	}
+
+	WriteJSON(w, http.StatusOK, res)
 }
 
 func (h *RouterHandler) Get(w http.ResponseWriter, r *http.Request) {
