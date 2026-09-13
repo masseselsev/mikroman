@@ -233,6 +233,45 @@ describe('WorldConnectionsModal', () => {
     fireEvent.wheel(svg.parentElement, { deltaY: 100, clientX: 500, clientY: 250 });
     expect(screen.getByText('100%')).toBeInTheDocument();
   });
+
+  it('supports ultra-high zoom up to 2000% and completely unclusters adjacent small countries', () => {
+    const adjacentConnections = [
+      {
+        id: '*1',
+        dst_ip: '198.51.100.1',
+        country_code: 'NL',
+        country_name: 'Netherlands',
+        lat: 52.37, // Amsterdam
+        lng: 4.89,
+      },
+      {
+        id: '*2',
+        dst_ip: '198.51.100.2',
+        country_code: 'BE',
+        country_name: 'Belgium',
+        lat: 50.85, // Brussels
+        lng: 4.35,
+      },
+    ];
+
+    render(<WorldConnectionsModal isOpen={true} onClose={vi.fn()} connections={adjacentConnections} />);
+
+    // At zoom 1 (100%), NL and BE are clustered together because distance is ~4.5 SVG units
+    const cluster = screen.getByTestId('cluster-BE-NL');
+    expect(cluster).toBeInTheDocument();
+
+    const svg = screen.getByLabelText('World Connections Map');
+
+    // Zoom in multiple times with wheel to reach high zoom (>10x / 1000%)
+    for (let i = 0; i < 15; i++) {
+      fireEvent.wheel(svg.parentElement, { deltaY: -100, clientX: 512, clientY: 106 });
+    }
+
+    // Both NL and BE are now cleanly separated individual nodes
+    expect(screen.queryByTestId('cluster-BE-NL')).not.toBeInTheDocument();
+    expect(screen.getByTestId('map-node-NL')).toBeInTheDocument();
+    expect(screen.getByTestId('map-node-BE')).toBeInTheDocument();
+  });
 });
 
 

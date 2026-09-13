@@ -207,6 +207,65 @@ func (h *ConnectionsHandler) GetLiveConnections(w http.ResponseWriter, r *http.R
 		}
 	}
 
+	// Load all devices & users to support router auto-scoping and multi-adapter/linked device resolution
+	allDevices, _ := h.database.GetDevices(nil)
+	allUsers, _ := h.database.GetUsers(nil)
+
+	targetDevIDs := make(map[int]bool)
+	targetIPs := make(map[string]bool)
+
+	if devIDFilter != nil {
+		targetDevIDs[*devIDFilter] = true
+		for _, d := range allDevices {
+			if d.ID == *devIDFilter {
+				if routerID == nil && d.RouterID != nil {
+					routerID = d.RouterID
+				}
+				if d.IPAddress.Valid && d.IPAddress.String != "" {
+					targetIPs[strings.TrimSpace(d.IPAddress.String)] = true
+				}
+				if d.LinkedToDeviceID != nil && *d.LinkedToDeviceID > 0 {
+					targetDevIDs[*d.LinkedToDeviceID] = true
+				}
+			}
+		}
+		// Also include secondary devices linked to this device or its parent
+		for _, d := range allDevices {
+			if d.LinkedToDeviceID != nil && targetDevIDs[*d.LinkedToDeviceID] {
+				targetDevIDs[d.ID] = true
+				if d.IPAddress.Valid && d.IPAddress.String != "" {
+					targetIPs[strings.TrimSpace(d.IPAddress.String)] = true
+				}
+			}
+		}
+	}
+
+	if userIDFilter != nil {
+		for _, d := range allDevices {
+			if d.UserID != nil && *d.UserID == *userIDFilter {
+				targetDevIDs[d.ID] = true
+				if routerID == nil && d.RouterID != nil {
+					routerID = d.RouterID
+				}
+				if d.IPAddress.Valid && d.IPAddress.String != "" {
+					targetIPs[strings.TrimSpace(d.IPAddress.String)] = true
+				}
+				if d.LinkedToDeviceID != nil && *d.LinkedToDeviceID > 0 {
+					targetDevIDs[*d.LinkedToDeviceID] = true
+				}
+			}
+		}
+		// Include linked secondary devices of the user's devices
+		for _, d := range allDevices {
+			if d.LinkedToDeviceID != nil && targetDevIDs[*d.LinkedToDeviceID] {
+				targetDevIDs[d.ID] = true
+				if d.IPAddress.Valid && d.IPAddress.String != "" {
+					targetIPs[strings.TrimSpace(d.IPAddress.String)] = true
+				}
+			}
+		}
+	}
+
 	client, err := h.getClient(routerID)
 	if err != nil {
 		WriteError(w, http.StatusServiceUnavailable, "Router client not available: "+err.Error())
@@ -223,16 +282,13 @@ func (h *ConnectionsHandler) GetLiveConnections(w http.ResponseWriter, r *http.R
 	}
 
 	// Build Device & User attribution maps
-	devices, _ := h.database.GetDevices(routerID)
-	users, _ := h.database.GetUsers(routerID)
-
 	userMap := make(map[int]db.User)
-	for _, u := range users {
+	for _, u := range allUsers {
 		userMap[u.ID] = u
 	}
 
 	deviceByIP := make(map[string]db.Device)
-	for _, d := range devices {
+	for _, d := range allDevices {
 		if d.IPAddress.Valid && d.IPAddress.String != "" {
 			deviceByIP[strings.TrimSpace(d.IPAddress.String)] = d
 		}
@@ -244,6 +300,8 @@ func (h *ConnectionsHandler) GetLiveConnections(w http.ResponseWriter, r *http.R
 	for _, c := range conns {
 		srcIP, srcPort := splitEndpoint(c.SrcAddress)
 		dstIP, dstPort := splitEndpoint(c.DstAddress)
+		rSrcIP, _ := splitEndpoint(c.ReplySrcAddress)
+		rDstIP, _ := splitEndpoint(c.ReplyDstAddress)
 		proto := strings.ToLower(c.Protocol)
 
 		if protoFilter != "" {
@@ -267,14 +325,19 @@ func (h *ConnectionsHandler) GetLiveConnections(w http.ResponseWriter, r *http.R
 			}
 		}
 
-		// Device / User attribution
+		// Device / User attribution across all 4 connection endpoints (src, dst, reply-dst, reply-src)
 		var matchedDev *db.Device
 		var matchedUser *db.User
 
-		if d, ok := deviceByIP[srcIP]; ok {
-			matchedDev = &d
-		} else if d, ok := deviceByIP[dstIP]; ok {
-			matchedDev = &d
+		endpoints := []string{srcIP, dstIP, rDstIP, rSrcIP}
+		for _, ep := range endpoints {
+			if ep == "" {
+				continue
+			}
+			if d, ok := deviceByIP[ep]; ok {
+				matchedDev = &d
+				break
+			}
 		}
 
 		if matchedDev != nil && matchedDev.UserID != nil {
@@ -283,11 +346,63 @@ func (h *ConnectionsHandler) GetLiveConnections(w http.ResponseWriter, r *http.R
 			}
 		}
 
-		if devIDFilter != nil && (matchedDev == nil || matchedDev.ID != *devIDFilter) {
-			continue
+		// Device filtering
+		if devIDFilter != nil {
+			matchesDev := false
+			if matchedDev != nil && targetDevIDs[matchedDev.ID] {
+				matchesDev = true
+			}
+			if !matchesDev {
+				for _, ep := range endpoints {
+					if ep != "" && targetIPs[ep] {
+						matchesDev = true
+						break
+					}
+				}
+			}
+			if !matchesDev {
+				continue
+			}
+			if matchedDev == nil {
+				for _, d := range allDevices {
+					if d.ID == *devIDFilter {
+						matchedDev = &d
+						if matchedDev.UserID != nil {
+							if u, ok := userMap[*matchedDev.UserID]; ok {
+								matchedUser = &u
+							}
+						}
+						break
+					}
+				}
+			}
 		}
-		if userIDFilter != nil && (matchedUser == nil || matchedUser.ID != *userIDFilter) {
-			continue
+
+		// User filtering
+		if userIDFilter != nil {
+			matchesUser := false
+			if matchedUser != nil && matchedUser.ID == *userIDFilter {
+				matchesUser = true
+			}
+			if !matchesUser && matchedDev != nil && targetDevIDs[matchedDev.ID] {
+				matchesUser = true
+			}
+			if !matchesUser {
+				for _, ep := range endpoints {
+					if ep != "" && targetIPs[ep] {
+						matchesUser = true
+						break
+					}
+				}
+			}
+			if !matchesUser {
+				continue
+			}
+			if matchedUser == nil {
+				if u, ok := userMap[*userIDFilter]; ok {
+					matchedUser = &u
+				}
+			}
 		}
 
 		var devName *string
@@ -312,6 +427,10 @@ func (h *ConnectionsHandler) GetLiveConnections(w http.ResponseWriter, r *http.R
 			remoteIP = dstIP
 		} else if !isPrivateOrLocalIP(srcIP) {
 			remoteIP = srcIP
+		} else if !isPrivateOrLocalIP(rSrcIP) {
+			remoteIP = rSrcIP
+		} else if !isPrivateOrLocalIP(rDstIP) {
+			remoteIP = rDstIP
 		}
 
 		geo := services.LookupGeoIP(remoteIP)

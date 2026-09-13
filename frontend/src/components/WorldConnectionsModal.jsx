@@ -127,7 +127,7 @@ export function WorldConnectionsModal({
   }, []);
 
   const setZoomAndCenter = useCallback((targetZoom, centerPoint = null) => {
-    const nextZoom = Math.max(1, Math.min(6, targetZoom));
+    const nextZoom = Math.max(1, Math.min(20, targetZoom));
     if (nextZoom === 1) {
       setZoom(1);
       setPan({ x: 0, y: 0 });
@@ -176,7 +176,7 @@ export function WorldConnectionsModal({
     const cursorSvgY = pan.y + ry * currentVbH;
 
     const factor = e.deltaY < 0 ? 1.25 : 0.8;
-    const nextZoom = Math.max(1, Math.min(6, zoom * factor));
+    const nextZoom = Math.max(1, Math.min(20, zoom * factor));
     if (nextZoom === 1) {
       setZoom(1);
       setPan({ x: 0, y: 0 });
@@ -252,8 +252,8 @@ export function WorldConnectionsModal({
 
     // Collision threshold in SVG coordinate units
     // At zoom 1: ~36 units (clusters tightly packed regions like Europe)
-    // At zoom 2+: clusters separate smoothly into individual nations
-    const clusterDist = Math.max(10, 36 / Math.pow(zoom, 0.75));
+    // At higher zoom: scales down smoothly so even adjacent small nations (NL/BE/LU/CH) completely separate
+    const clusterDist = Math.max(0.5, 36 / Math.pow(zoom, 0.95));
 
     const clusters = [];
     const visited = new Set();
@@ -618,12 +618,11 @@ export function WorldConnectionsModal({
 
               {/* Active Connection Nodes (Dynamic Clusters & Individual Country Markers) */}
               {displayNodes.map((node) => {
-                const scaleFactor = Math.pow(zoom, 0.45);
-                const badgeScale = Math.pow(zoom, 0.35);
+                const scaleFactor = Math.pow(zoom, 0.65);
 
                 if (node.isCluster) {
                   const isSelected = activeSelected && node.countryCodes.includes(activeSelected.code);
-                  const nodeRadius = Math.min(22, Math.max(9, (8 + Math.log2(node.count + 1) * 3) / scaleFactor));
+                  const nodeRadius = Math.min(22, Math.max(1.2, (8 + Math.log2(node.count + 1) * 2.5) / scaleFactor));
 
                   return (
                     <g
@@ -631,7 +630,7 @@ export function WorldConnectionsModal({
                       onClick={(e) => {
                         if (hasDraggedRef.current) return;
                         e.stopPropagation();
-                        setZoomAndCenter(Math.min(6, zoom * 1.8), { x: node.x, y: node.y });
+                        setZoomAndCenter(Math.min(20, zoom * 1.8), { x: node.x, y: node.y });
                         if (node.members.length > 0) {
                           setSelectedCountryCode(node.members[0].code);
                         }
@@ -657,8 +656,8 @@ export function WorldConnectionsModal({
                         r={nodeRadius * 1.6}
                         fill="none"
                         stroke={isSelected ? '#f59e0b' : '#8b5cf6'}
-                        strokeWidth={1.5 / badgeScale}
-                        strokeDasharray="4 2"
+                        strokeWidth={Math.max(0.2, 1.5 / scaleFactor)}
+                        strokeDasharray={`${4 / scaleFactor} ${2 / scaleFactor}`}
                         opacity={0.85}
                       />
 
@@ -669,16 +668,16 @@ export function WorldConnectionsModal({
                         r={nodeRadius}
                         fill={isSelected ? '#d97706' : '#6d28d9'}
                         stroke="#ffffff"
-                        strokeWidth={2 / badgeScale}
+                        strokeWidth={Math.max(0.25, 2 / scaleFactor)}
                       />
 
                       {/* Socket Count Badge inside circle */}
                       <text
                         x={node.x}
-                        y={node.y + 3.5 / badgeScale}
+                        y={node.y + nodeRadius * 0.35}
                         textAnchor="middle"
                         fill="#ffffff"
-                        fontSize={`${Math.max(7, 10 / badgeScale)}px`}
+                        fontSize={`${(nodeRadius * 0.9).toFixed(2)}px`}
                         fontWeight="bold"
                         pointerEvents="none"
                       >
@@ -686,24 +685,24 @@ export function WorldConnectionsModal({
                       </text>
 
                       {/* Cluster Label with Member Count */}
-                      <g transform={`translate(${node.x + nodeRadius + 4 / badgeScale}, ${node.y + 4 / badgeScale})`}>
+                      <g transform={`translate(${node.x + nodeRadius + 3 / scaleFactor}, ${node.y + 3 / scaleFactor})`}>
                         <rect
-                          x={-2 / badgeScale}
-                          y={-11 / badgeScale}
-                          width={(18 + node.members.length.toString().length * 7 + 55) / badgeScale}
-                          height={16 / badgeScale}
-                          rx={4 / badgeScale}
+                          x={-2 / scaleFactor}
+                          y={-10 / scaleFactor}
+                          width={(14 + node.members.length.toString().length * 6 + 46) / scaleFactor}
+                          height={14 / scaleFactor}
+                          rx={3 / scaleFactor}
                           fill="rgba(24, 16, 45, 0.92)"
                           stroke={isSelected ? '#f59e0b' : '#8b5cf6'}
-                          strokeWidth={1 / badgeScale}
+                          strokeWidth={Math.max(0.15, 1 / scaleFactor)}
                         />
                         <text
-                          x={4 / badgeScale}
-                          y={1 / badgeScale}
+                          x={4 / scaleFactor}
+                          y={0.5 / scaleFactor}
                           fill="#e9d5ff"
-                          fontSize={`${Math.max(7, 9 / badgeScale)}px`}
+                          fontSize={`${Math.max(0.5, 7.5 / scaleFactor)}px`}
                           fontWeight="700"
-                          letterSpacing="0.3px"
+                          letterSpacing="0.2px"
                           pointerEvents="none"
                         >
                           ✦ {node.members.length} {t('world_map_countries')}
@@ -716,7 +715,7 @@ export function WorldConnectionsModal({
                 // Individual Country Node
                 const g = node.group;
                 const isSelected = activeSelected && activeSelected.code === g.code;
-                const nodeRadius = Math.min(18, Math.max(5.5, (5 + Math.log2(g.count + 1) * 3) / scaleFactor));
+                const nodeRadius = Math.min(18, Math.max(0.9, (5 + Math.log2(g.count + 1) * 2.5) / scaleFactor));
 
                 return (
                   <g
@@ -745,7 +744,7 @@ export function WorldConnectionsModal({
                       r={nodeRadius * 1.5}
                       fill="none"
                       stroke={isSelected ? '#f59e0b' : '#38bdf8'}
-                      strokeWidth={1.5 / badgeScale}
+                      strokeWidth={Math.max(0.2, 1.5 / scaleFactor)}
                       opacity={isSelected ? 0.9 : 0.6}
                     />
 
@@ -756,16 +755,16 @@ export function WorldConnectionsModal({
                       r={nodeRadius}
                       fill={isSelected ? '#f59e0b' : '#0284c7'}
                       stroke="#ffffff"
-                      strokeWidth={2 / badgeScale}
+                      strokeWidth={Math.max(0.25, 2 / scaleFactor)}
                     />
 
                     {/* Socket Count Badge inside circle */}
                     <text
                       x={node.x}
-                      y={node.y + 3.5 / badgeScale}
+                      y={node.y + nodeRadius * 0.35}
                       textAnchor="middle"
                       fill="#ffffff"
-                      fontSize={`${Math.max(6, (nodeRadius > 10 ? 10 : 8) / badgeScale)}px`}
+                      fontSize={`${(nodeRadius * 0.9).toFixed(2)}px`}
                       fontWeight="bold"
                       pointerEvents="none"
                     >
@@ -773,24 +772,24 @@ export function WorldConnectionsModal({
                     </text>
 
                     {/* Map Badge with ISO code */}
-                    <g transform={`translate(${node.x + nodeRadius + 4 / badgeScale}, ${node.y + 4 / badgeScale})`}>
+                    <g transform={`translate(${node.x + nodeRadius + 3 / scaleFactor}, ${node.y + 3 / scaleFactor})`}>
                       <rect
-                        x={-2 / badgeScale}
-                        y={-11 / badgeScale}
-                        width={(g.code.length * 8 + 14) / badgeScale}
-                        height={16 / badgeScale}
-                        rx={4 / badgeScale}
+                        x={-2 / scaleFactor}
+                        y={-10 / scaleFactor}
+                        width={(g.code.length * 6.5 + 10) / scaleFactor}
+                        height={14 / scaleFactor}
+                        rx={3 / scaleFactor}
                         fill="rgba(10, 15, 29, 0.9)"
                         stroke={isSelected ? '#f59e0b' : 'rgba(255, 255, 255, 0.25)'}
-                        strokeWidth={1 / badgeScale}
+                        strokeWidth={Math.max(0.15, 1 / scaleFactor)}
                       />
                       <text
-                        x={5 / badgeScale}
-                        y={1 / badgeScale}
+                        x={4 / scaleFactor}
+                        y={0.5 / scaleFactor}
                         fill="#ffffff"
-                        fontSize={`${Math.max(7, 10 / badgeScale)}px`}
+                        fontSize={`${Math.max(0.5, 7.5 / scaleFactor)}px`}
                         fontWeight="700"
-                        letterSpacing="0.5px"
+                        letterSpacing="0.4px"
                         pointerEvents="none"
                       >
                         {g.code}

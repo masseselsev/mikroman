@@ -753,6 +753,137 @@ func TestConnectionsEndpoints(t *testing.T) {
 	}
 }
 
+func TestConnectionsEndpoints_DeviceAndUserFilters(t *testing.T) {
+	mockMux := http.NewServeMux()
+	mockMux.HandleFunc("/rest/ip/firewall/connection", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode([]routeros.FirewallConnection{
+			{
+				ID:              "*10",
+				Protocol:        "tcp",
+				SrcAddress:      "192.0.2.50:49152", // Device 1 (primary) outbound
+				DstAddress:      "198.51.100.1:443",
+				ReplySrcAddress: "198.51.100.1:443",
+				ReplyDstAddress: "192.0.2.50:49152",
+				OrigBytes:       1000,
+				ReplBytes:       2000,
+			},
+			{
+				ID:              "*11",
+				Protocol:        "udp",
+				SrcAddress:      "198.51.100.77:12345", // Inbound to Device 2 (secondary linked adapter of Device 1)
+				DstAddress:      "203.0.113.10:80",
+				ReplySrcAddress: "192.0.2.51:80", // Target device internal IP in reply-src
+				ReplyDstAddress: "198.51.100.77:12345",
+				OrigBytes:       500,
+				ReplBytes:       500,
+			},
+			{
+				ID:              "*12",
+				Protocol:        "tcp",
+				SrcAddress:      "192.0.2.99:51234", // Another user's device
+				DstAddress:      "198.51.100.99:443",
+				ReplySrcAddress: "198.51.100.99:443",
+				ReplyDstAddress: "192.0.2.99:51234",
+				OrigBytes:       200,
+				ReplBytes:       300,
+			},
+		})
+	})
+	mockServer := httptest.NewServer(mockMux)
+	defer mockServer.Close()
+
+	u, _ := url.Parse(mockServer.URL)
+	port, _ := strconv.Atoi(u.Port())
+	mockClient, err := routeros.NewClient(routeros.Config{
+		Host:    u.Hostname(),
+		Port:    port,
+		Timeout: 2 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("failed to create routeros client: %v", err)
+	}
+
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "test.db")
+	fernet, _ := crypto.NewFernet("cw_z4pYJ2-8_9V18R5v6R1XbJ9i9w9G1R1XbJ9i9w9E=")
+	database, _ := db.Open(dbPath, fernet)
+	defer database.Close()
+
+	// Seed User 1 and User 2
+	_, err = database.SqlDB.Exec("INSERT INTO users (id, name) VALUES (1, 'Alice'), (2, 'Bob')")
+	if err != nil {
+		t.Fatalf("failed to create users: %v", err)
+	}
+
+	// Seed Device 1 (Alice primary), Device 2 (Alice linked to 1), Device 3 (Bob)
+	_, err = database.SqlDB.Exec(`
+		INSERT INTO devices (id, user_id, mac_address, ip_address, custom_name, is_active, is_deleted, linked_to_device_id)
+		VALUES
+			(1, 1, '00:11:22:33:44:55', '192.0.2.50', 'Laptop', 1, 0, NULL),
+			(2, 1, '00:11:22:33:44:66', '192.0.2.51', 'Laptop-5GHz', 1, 0, 1),
+			(3, 2, '00:11:22:33:44:77', '192.0.2.99', 'Phone', 1, 0, NULL)
+	`)
+	if err != nil {
+		t.Fatalf("failed to create devices: %v", err)
+	}
+
+	cfg := &config.Config{
+		AppVersion:    "0.3.4-test",
+		AdminPassword: "SecretAdminPassword123",
+		AuthEnabled:   false,
+	}
+
+	handler := NewRouter(RouterConfig{
+		Config: cfg,
+		DB:     database,
+		Fernet: fernet,
+		Client: mockClient,
+		Hub:    NewHub(),
+	})
+
+	// 1. Query live connections for Alice by user_id -> should return *10 and *11
+	reqUser := httptest.NewRequest(http.MethodGet, "/api/v1/connections?user_id=1", nil)
+	wUser := httptest.NewRecorder()
+	handler.ServeHTTP(wUser, reqUser)
+	if wUser.Code != http.StatusOK {
+		t.Fatalf("expected 200 for user connections, got %d: %s", wUser.Code, wUser.Body.String())
+	}
+	var respUser APIResponse
+	_ = json.NewDecoder(wUser.Body).Decode(&respUser)
+	userData := respUser.Data.(map[string]interface{})
+	userItems := userData["items"].([]interface{})
+	if len(userItems) != 2 {
+		t.Fatalf("expected 2 connections for Alice across all devices, got %d: %v", len(userItems), userItems)
+	}
+
+	// 2. Query live connections for Device 1 by device_id -> should return *10 and linked adapter *11
+	reqDev := httptest.NewRequest(http.MethodGet, "/api/v1/connections?device_id=1", nil)
+	wDev := httptest.NewRecorder()
+	handler.ServeHTTP(wDev, reqDev)
+	if wDev.Code != http.StatusOK {
+		t.Fatalf("expected 200 for device connections, got %d: %s", wDev.Code, wDev.Body.String())
+	}
+	var respDev APIResponse
+	_ = json.NewDecoder(wDev.Body).Decode(&respDev)
+	devData := respDev.Data.(map[string]interface{})
+	devItems := devData["items"].([]interface{})
+	if len(devItems) != 2 {
+		t.Fatalf("expected 2 connections for Device 1 (including linked adapter and reply-src match), got %d: %v", len(devItems), devItems)
+	}
+
+	// 3. Query live connections for Bob by user_id -> should return *12 only
+	reqBob := httptest.NewRequest(http.MethodGet, "/api/v1/connections?user_id=2", nil)
+	wBob := httptest.NewRecorder()
+	handler.ServeHTTP(wBob, reqBob)
+	var respBob APIResponse
+	_ = json.NewDecoder(wBob.Body).Decode(&respBob)
+	bobData := respBob.Data.(map[string]interface{})
+	bobItems := bobData["items"].([]interface{})
+	if len(bobItems) != 1 {
+		t.Fatalf("expected 1 connection for Bob, got %d: %v", len(bobItems), bobItems)
+	}
+}
+
 func TestHubRouterScoping(t *testing.T) {
 	hub := NewHub()
 	server := httptest.NewServer(http.HandlerFunc(hub.HandleWS))

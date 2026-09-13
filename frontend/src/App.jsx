@@ -99,6 +99,7 @@ export function App() {
   const [trafficHistoryTarget, setTrafficHistoryTarget] = useState(null);
   const [connectionsModalOpen, setConnectionsModalOpen] = useState(false);
   const [connectionsDeviceId, setConnectionsDeviceId] = useState(null);
+  const [connectionsTarget, setConnectionsTarget] = useState(null);
   const [firmwareModalOpen, setFirmwareModalOpen] = useState(false);
   const [backupsModalOpen, setBackupsModalOpen] = useState(false);
   const [firmwareStatus, setFirmwareStatus] = useState(null);
@@ -129,8 +130,12 @@ export function App() {
   const slowPollAtRef = useRef({});
   const lastIfacesAtRef = useRef({});
 
-  const handleOpenConnections = (deviceId = null) => {
-    setConnectionsDeviceId(deviceId);
+  const handleOpenConnections = (target = null) => {
+    if (typeof target === 'number') {
+      setConnectionsTarget({ type: 'device', id: target });
+    } else {
+      setConnectionsTarget(target);
+    }
     setConnectionsModalOpen(true);
   };
 
@@ -913,13 +918,15 @@ export function App() {
 
       {/* Live Connections Modal */}
       <LiveConnectionsModal
-        key={`modal-${connectionsDeviceId || 'all'}-${activeRouter?.id || 'default'}`}
+        key={`modal-${connectionsTarget?.type || 'all'}-${connectionsTarget?.id || 'all'}-${activeRouter?.id || 'default'}`}
         isOpen={connectionsModalOpen}
-        initialDeviceId={connectionsDeviceId}
+        target={connectionsTarget}
+        initialDeviceId={connectionsTarget?.type === 'device' ? connectionsTarget.id : null}
+        initialUserId={connectionsTarget?.type === 'user' ? connectionsTarget.id : null}
         initialRouterId={activeRouter?.id}
         onClose={() => {
           setConnectionsModalOpen(false);
-          setConnectionsDeviceId(null);
+          setConnectionsTarget(null);
         }}
       />
 

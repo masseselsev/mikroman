@@ -390,6 +390,12 @@ function DeviceRow({ group, t, lang, grandTotal = 0, onOpen, onUpdate, onViewTra
               onClick={(e) => {
                 e.stopPropagation();
                 onViewConnections(d.id);
+                onViewConnections({
+                  type: 'device',
+                  id: d.id,
+                  name: d.custom_name || d.hostname || d.ip_address || `#${d.id}`,
+                  ip: d.ip_address,
+                });
               }}
               className="btn-icon"
               style={{ width: 24, height: 24, background: 'var(--bg-card)' }}
@@ -643,6 +649,16 @@ export function UserCard({ user, users = [], onEdit, onDelete, onLimitChange, on
             <span className={`badge ${isPaused ? 'badge-danger' : (isOnline ? 'badge-success' : 'badge-neutral')}`}>
               {isPaused ? t('paused') : (isOnline ? t('active_now') : t('idle'))}
             </span>
+            {onViewConnections && (
+              <button
+                className="btn-icon"
+                onClick={() => onViewConnections({ type: 'user', id: user.id, name: user.name })}
+                title={t('live_connections_title')}
+                style={{ width: 26, height: 26 }}
+              >
+                <Activity size={13} style={{ color: 'var(--color-primary)' }} />
+              </button>
+            )}
             {onViewTrafficHistory && (
               <button
                 className="btn-icon"

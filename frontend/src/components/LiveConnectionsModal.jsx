@@ -32,6 +32,8 @@ export function LiveConnectionsModal({
   isOpen,
   onClose,
   initialDeviceId = null,
+  initialUserId = null,
+  target = null,
   initialRouterId = null,
   inline = false,
 }) {
@@ -43,18 +45,48 @@ export function LiveConnectionsModal({
   // same thing as `connections.length`. The badge uses this to say "250 of
   // 812" instead of just "250", which used to read as "there are exactly 250
   // connections" on a router that in fact had several times that many.
+  const [currentTarget, setCurrentTarget] = useState(() => {
+    if (target) return target;
+    if (initialDeviceId) return { type: 'device', id: initialDeviceId };
+    if (initialUserId) return { type: 'user', id: initialUserId };
+    return null;
+  });
+  // The count of connections that matched the *router-side* filters (device/user,
+  // in future protocol/search) before `limit` truncated the list.
   const [totalMatched, setTotalMatched] = useState(0);
   const [loading, setLoading] = useState(false);
   const [isAutoRefresh, setIsAutoRefresh] = useState(true);
   const [search, setSearch] = useState('');
   const [protocolFilter, setProtocolFilter] = useState('all');
-  const [selectedDeviceId, setSelectedDeviceId] = useState(initialDeviceId || '');
+  const [selectedDeviceId, setSelectedDeviceId] = useState(() => {
+    if (target?.type === 'device') return target.id;
+    return initialDeviceId || '';
+  });
   const [killPendingId, setKillPendingId] = useState(null);
   const [killingId, setKillingId] = useState(null);
   const [error, setError] = useState(null);
   const [showWorldMap, setShowWorldMap] = useState(false);
 
   const timerRef = useRef(null);
+
+  useEffect(() => {
+    if (target) {
+      setCurrentTarget(target);
+      if (target.type === 'device') {
+        setSelectedDeviceId(target.id);
+      } else {
+        setSelectedDeviceId('');
+      }
+    } else if (initialDeviceId) {
+      setCurrentTarget({ type: 'device', id: initialDeviceId });
+      setSelectedDeviceId(initialDeviceId);
+    } else if (initialUserId) {
+      setCurrentTarget({ type: 'user', id: initialUserId });
+      setSelectedDeviceId('');
+    } else {
+      setCurrentTarget(null);
+    }
+  }, [target, initialDeviceId, initialUserId]);
 
   const fetchConnections = async (showLoading = false) => {
     if (showLoading) setLoading(true);
@@ -63,6 +95,13 @@ export function LiveConnectionsModal({
       const params = { limit: 1000 };
       if (initialRouterId) params.router_id = initialRouterId;
       if (selectedDeviceId) params.device_id = selectedDeviceId;
+      if (currentTarget?.type === 'user') {
+        params.user_id = currentTarget.id;
+      } else if (currentTarget?.type === 'device') {
+        params.device_id = currentTarget.id;
+      } else if (selectedDeviceId) {
+        params.device_id = selectedDeviceId;
+      }
       if (protocolFilter !== 'all') params.protocol = protocolFilter;
       const res = await api.getLiveConnections(params);
       if (res?.data) {
@@ -90,7 +129,7 @@ export function LiveConnectionsModal({
       setConnections([]);
       setKillPendingId(null);
     }
-  }, [isOpen, selectedDeviceId, initialRouterId, protocolFilter]);
+  }, [isOpen, selectedDeviceId, currentTarget, initialRouterId, protocolFilter]);
 
   // Polling loop
   useEffect(() => {
@@ -104,7 +143,7 @@ export function LiveConnectionsModal({
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
     };
-  }, [isOpen, isAutoRefresh, selectedDeviceId, initialRouterId, protocolFilter]);
+  }, [isOpen, isAutoRefresh, selectedDeviceId, currentTarget, initialRouterId, protocolFilter]);
 
   const handleKill = async (conn) => {
     setKillingId(conn.id);
@@ -201,6 +240,51 @@ export function LiveConnectionsModal({
                   {filteredConnections.length}
                   {isTruncated ? ` / ${totalMatched}` : ''} {t('connections_count')}
                 </span>
+                {currentTarget && (
+                  <span
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 4,
+                      fontSize: 'var(--fs-2xs, 11px)',
+                      fontWeight: 600,
+                      padding: '2px 8px',
+                      borderRadius: 10,
+                      background: currentTarget.type === 'user' ? 'rgba(59, 130, 246, 0.15)' : 'rgba(16, 185, 129, 0.15)',
+                      color: currentTarget.type === 'user' ? 'var(--color-primary, #3b82f6)' : 'var(--color-success, #10b981)',
+                      border: `1px solid ${currentTarget.type === 'user' ? 'rgba(59, 130, 246, 0.3)' : 'rgba(16, 185, 129, 0.3)'}`,
+                    }}
+                    data-testid="live-connections-target-badge"
+                  >
+                    <span>
+                      {currentTarget.type === 'user' ? (
+                        <>👤 {currentTarget.name || `${t('filter_target_user')} #${currentTarget.id}`} ({t('all_devices')})</>
+                      ) : (
+                        <>💻 {currentTarget.name || `${t('filter_target_device')} #${currentTarget.id}`}{currentTarget.ip ? ` (${currentTarget.ip})` : ''}</>
+                      )}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setCurrentTarget(null);
+                        setSelectedDeviceId('');
+                      }}
+                      title={t('show_all_connections')}
+                      style={{
+                        background: 'none',
+                        border: 'none',
+                        padding: 0,
+                        marginLeft: 4,
+                        cursor: 'pointer',
+                        color: 'inherit',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                      }}
+                    >
+                      <X size={12} />
+                    </button>
+                  </span>
+                )}
               </h3>
               <div
                 className="modal-subtitle"

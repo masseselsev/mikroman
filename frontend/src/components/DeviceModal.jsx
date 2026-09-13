@@ -265,6 +265,12 @@ export function DeviceModal({ device, user, users = [], onClose, onUpdated, onVi
                   onClick={() => {
                     onClose();
                     onViewConnections(device.id);
+                    onViewConnections({
+                      type: 'device',
+                      id: device.id,
+                      name: device.custom_name || device.hostname || device.ip_address || `#${device.id}`,
+                      ip: device.ip_address,
+                    });
                   }}
                   style={{ display: 'flex', alignItems: 'center', gap: 6 }}
                 >
