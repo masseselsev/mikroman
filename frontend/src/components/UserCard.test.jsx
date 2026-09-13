@@ -285,4 +285,16 @@ describe('the card header', () => {
     renderCard([device()]);
     expect(screen.getByText(/Today/)).toBeInTheDocument();
   });
+
+  it('triggers onViewConnections with user target when header Activity button is clicked', () => {
+    const onViewConnections = vi.fn();
+    renderCard([device()], { onViewConnections });
+    const buttons = screen.getAllByTitle('Live Connections');
+    fireEvent.click(buttons[0]);
+    expect(onViewConnections).toHaveBeenCalledWith({
+      type: 'user',
+      id: 1,
+      name: 'Kristina',
+    });
+  });
 });

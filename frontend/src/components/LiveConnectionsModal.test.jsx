@@ -202,4 +202,54 @@ describe('LiveConnectionsModal truncation and error handling', () => {
     // The rows fetched on the earlier, successful poll are still visible.
     expect(screen.getByText(/youtube\.com/i)).toBeInTheDocument();
   });
+
+  it('filters by device target and displays contextual device badge', async () => {
+    api.getLiveConnections.mockResolvedValue({ data: { total: 2, items: mockConnections } });
+    render(
+      <LiveConnectionsModal
+        isOpen={true}
+        onClose={vi.fn()}
+        target={{ type: 'device', id: 10, name: 'Work Laptop', ip: '192.168.88.50' }}
+      />
+    );
+
+    await waitFor(() => {
+      expect(api.getLiveConnections).toHaveBeenCalledWith(
+        expect.objectContaining({ device_id: 10 })
+      );
+      expect(screen.getByTestId('live-connections-target-badge')).toHaveTextContent(/Work Laptop/i);
+    });
+  });
+
+  it('filters by user target, displays contextual user badge, and clears filter on click', async () => {
+    api.getLiveConnections.mockResolvedValue({ data: { total: 2, items: mockConnections } });
+    render(
+      <LiveConnectionsModal
+        isOpen={true}
+        onClose={vi.fn()}
+        target={{ type: 'user', id: 1, name: 'Alice' }}
+      />
+    );
+
+    await waitFor(() => {
+      expect(api.getLiveConnections).toHaveBeenCalledWith(
+        expect.objectContaining({ user_id: 1 })
+      );
+      expect(screen.getByTestId('live-connections-target-badge')).toHaveTextContent(/Alice/i);
+    });
+
+    // Clear filter
+    const badge = screen.getByTestId('live-connections-target-badge');
+    const clearBtn = badge.querySelector('button');
+    expect(clearBtn).toBeInTheDocument();
+    fireEvent.click(clearBtn);
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('live-connections-target-badge')).not.toBeInTheDocument();
+      // Next call shouldn't have user_id or device_id
+      expect(api.getLiveConnections).toHaveBeenLastCalledWith(
+        expect.not.objectContaining({ user_id: 1 })
+      );
+    });
+  });
 });

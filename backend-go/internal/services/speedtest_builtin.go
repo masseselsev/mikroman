@@ -67,7 +67,7 @@ func createResilientSpeedTestClient() *http.Client {
 
 	return &http.Client{
 		Transport: transport,
-		Timeout:   25 * time.Second,
+		Timeout:   35 * time.Second,
 	}
 }
 
@@ -94,6 +94,7 @@ func RunBuiltinSpeedTest(ctx context.Context, endpoints *BuiltinSpeedTestEndpoin
 		client = createResilientSpeedTestClient()
 	} else {
 		client = &http.Client{Timeout: 20 * time.Second}
+		client = &http.Client{Timeout: 30 * time.Second}
 	}
 
 	reading := SpeedTestReading{
@@ -254,7 +255,9 @@ func measureDownload(ctx context.Context, client *http.Client, downURL string) (
 	var wg sync.WaitGroup
 
 	start := time.Now()
-	testCtx, cancel := context.WithTimeout(ctx, 6*time.Second)
+	// 12-second test window allows high-RTT mobile networks (LTE/5G) to complete TCP slow-start
+	// and accurately measure peak link throughput
+	testCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
 	defer cancel()
 
 	for i := 0; i < workers; i++ {
@@ -336,7 +339,8 @@ func measureUpload(ctx context.Context, client *http.Client, upURL string) (floa
 	var wg sync.WaitGroup
 
 	start := time.Now()
-	testCtx, cancel := context.WithTimeout(ctx, 6*time.Second)
+	// 12-second test window allows cellular TCP window scaling to stabilize for upload
+	testCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
 	defer cancel()
 
 	for i := 0; i < workers; i++ {
