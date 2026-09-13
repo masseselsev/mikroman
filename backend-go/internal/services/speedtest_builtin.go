@@ -314,9 +314,22 @@ func measureDownload(ctx context.Context, client *http.Client, downURL string) (
 	return math.Round(mbps*100) / 100, nil
 }
 
+type countingUploadReader struct {
+	reader io.Reader
+	total  *int64
+}
+
+func (r *countingUploadReader) Read(p []byte) (int, error) {
+	n, err := r.reader.Read(p)
+	if n > 0 {
+		atomic.AddInt64(r.total, int64(n))
+	}
+	return n, err
+}
+
 func measureUpload(ctx context.Context, client *http.Client, upURL string) (float64, error) {
 	workers := 2
-	payloadSize := 2 * 1024 * 1024 // 2 MB per POST
+	payloadSize := 256 * 1024 // 256 KB per POST chunk for rapid ramp-up and resilience
 	payload := bytes.Repeat([]byte{0x5A}, payloadSize)
 
 	var totalBytes int64
@@ -337,23 +350,25 @@ func measureUpload(ctx context.Context, client *http.Client, upURL string) (floa
 				default:
 				}
 
-				req, err := http.NewRequestWithContext(testCtx, http.MethodPost, upURL, bytes.NewReader(payload))
+				bodyReader := &countingUploadReader{
+					reader: bytes.NewReader(payload),
+					total:  &totalBytes,
+				}
+
+				req, err := http.NewRequestWithContext(testCtx, http.MethodPost, upURL, bodyReader)
 				if err != nil {
 					return
 				}
 				req.Header.Set("User-Agent", "MikroMan-SpeedTest/1.0")
 				req.Header.Set("Content-Type", "application/octet-stream")
+				req.ContentLength = int64(payloadSize)
+
 				resp, err := client.Do(req)
 				if err != nil {
 					return
 				}
-				if resp.StatusCode != http.StatusOK {
-					resp.Body.Close()
-					return
-				}
 				_, _ = io.Copy(io.Discard, resp.Body)
 				_ = resp.Body.Close()
-				atomic.AddInt64(&totalBytes, int64(payloadSize))
 			}
 		}()
 	}

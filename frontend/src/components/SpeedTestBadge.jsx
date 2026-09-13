@@ -44,7 +44,7 @@ export function SpeedTestBadge({ routerId, onNavigate }) {
     try {
       const res = await api.runSpeedTest(routerId);
       const result = res?.data?.result || res?.result;
-      if (result && result.status === 'failed') {
+      if (result && result.status === 'failed' && result.download_mbps == null && result.upload_mbps == null) {
         setError(result.error || t('speedtest_failed'));
       } else if (result && (result.download_mbps != null || result.upload_mbps != null)) {
         setStatus(prev => ({ ...(prev || {}), last_result: result, can_run: true }));
@@ -119,13 +119,13 @@ export function SpeedTestBadge({ routerId, onNavigate }) {
       )}
       <button
         type="button"
-        className="speedtest-btn"
+        className={`speedtest-btn ${hasFigures ? 'compact' : ''}`}
         onClick={run}
         disabled={running}
         title={running ? t('speedtest_running_hint') : t('speedtest_run_hint')}
       >
         {running ? <Loader2 size={11} className="spin" /> : <Gauge size={11} />}
-        {running ? t('speedtest_running') : t('speedtest_run')}
+        {!hasFigures && (running ? t('speedtest_running') : t('speedtest_run'))}
       </button>
       {error && (
         <span className="speedtest-error" title={error}>
