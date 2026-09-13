@@ -943,6 +943,7 @@ export function App() {
         }}
         routerId={activeRouter?.id}
         routerName={activeRouter?.name}
+        routerClock={telemetry?.router?.clock}
       />
 
       {/* Router Backups & Visual Diff Modal */}

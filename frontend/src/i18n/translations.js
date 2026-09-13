@@ -783,6 +783,7 @@ export const translations = {
     log_topics_desc: "RouterOS ignores some topics unless a logging rule asks for them.",
     log_source_live_hint: "straight off the router, last few hundred lines",
     log_source_stored_hint: "collected into MikroMan's database",
+    log_router_time_hint: "router time ({tz})",
 
     // Auth & Session
     auth_login_title: "Sign in to MikroMan",
@@ -1588,6 +1589,7 @@ export const translations = {
     log_topics_desc: "RouterOS не пишет часть топиков, пока не задано правило логирования.",
     log_source_live_hint: "напрямую с роутера, последние сотни строк",
     log_source_stored_hint: "собрано в базу MikroMan",
+    log_router_time_hint: "время роутера ({tz})",
 
     // Auth & Session
     auth_login_title: "Вход в MikroMan",

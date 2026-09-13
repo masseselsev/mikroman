@@ -422,6 +422,35 @@ func TestNewDashboardEndpoints(t *testing.T) {
 		t.Fatalf("expected 200 for log stats, got %d", wLogStats.Code)
 	}
 
+	// 7b. GET /api/v1/logs?source=db (verifies timestamp and time serialization)
+	_, errR := database.SqlDB.Exec(`INSERT OR IGNORE INTO routers (id, name, host, port, username, password, is_active)
+		VALUES (1, 'Test Router', '192.0.2.1', 8728, 'admin', 'enc', 1)`)
+	if errR != nil {
+		t.Fatalf("failed to insert router: %v", errR)
+	}
+	_, errL := database.SqlDB.Exec(`INSERT INTO router_logs (router_id, external_id, timestamp, topics, message, severity, category, created_at)
+		VALUES (1, '*99', '2026-09-13 21:14:02', 'dhcp,info', 'assigned 192.0.2.1', 'info', 'dhcp', CURRENT_TIMESTAMP)`)
+	if errL != nil {
+		t.Fatalf("failed to insert log: %v", errL)
+	}
+	reqLogs := httptest.NewRequest(http.MethodGet, "/api/v1/logs?source=db&router_id=1", nil)
+	reqLogs.AddCookie(sessionCookie)
+	wLogs := httptest.NewRecorder()
+	handler.ServeHTTP(wLogs, reqLogs)
+	if wLogs.Code != http.StatusOK {
+		t.Fatalf("expected 200 for logs, got %d", wLogs.Code)
+	}
+	var resp struct {
+		Success bool                     `json:"success"`
+		Data    []map[string]interface{} `json:"data"`
+	}
+	if err := json.Unmarshal(wLogs.Body.Bytes(), &resp); err != nil || len(resp.Data) == 0 {
+		t.Fatalf("expected log items, got err=%v, count=%d, body=%s", err, len(resp.Data), wLogs.Body.String())
+	}
+	if resp.Data[0]["timestamp"] == nil || resp.Data[0]["time"] == nil {
+		t.Fatalf("expected both timestamp and time fields in log DTO, got %+v", resp.Data[0])
+	}
+
 	// 8. GET /api/v1/users (returns enriched user list)
 	reqUsers := httptest.NewRequest(http.MethodGet, "/api/v1/users", nil)
 	reqUsers.AddCookie(sessionCookie)

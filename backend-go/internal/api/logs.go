@@ -20,13 +20,14 @@ import (
 )
 
 type LogDTO struct {
-	ID       int       `json:"id"`
-	RouterID int       `json:"router_id"`
-	Time     time.Time `json:"time"`
-	Topics   string    `json:"topics"`
-	Message  string    `json:"message"`
-	Severity string    `json:"severity"`
-	Category string    `json:"category"`
+	ID        int       `json:"id"`
+	RouterID  int       `json:"router_id"`
+	Timestamp time.Time `json:"timestamp"`
+	Time      time.Time `json:"time"`
+	Topics    string    `json:"topics"`
+	Message   string    `json:"message"`
+	Severity  string    `json:"severity"`
+	Category  string    `json:"category"`
 }
 
 type LogHandler struct {
@@ -173,13 +174,14 @@ func (h *LogHandler) GetLogs(w http.ResponseWriter, r *http.Request) {
 
 					tStamp := routeros.ParseLogTimestamp(e.Time, now)
 					logs = append(logs, LogDTO{
-						ID:       len(rawEntries) - i,
-						RouterID: rID,
-						Time:     tStamp,
-						Topics:   e.Topics,
-						Message:  e.Message,
-						Severity: sev,
-						Category: cat,
+						ID:        len(rawEntries) - i,
+						RouterID:  rID,
+						Timestamp: tStamp,
+						Time:      tStamp,
+						Topics:    e.Topics,
+						Message:   e.Message,
+						Severity:  sev,
+						Category:  cat,
 					})
 
 					if len(logs) >= limit {
@@ -245,7 +247,8 @@ func (h *LogHandler) GetLogs(w http.ResponseWriter, r *http.Request) {
 		var l LogDTO
 		var extID *string
 		var createdAt time.Time
-		if err := rows.Scan(&l.ID, &l.RouterID, &extID, &l.Time, &l.Topics, &l.Message, &l.Severity, &l.Category, &createdAt); err == nil {
+		if err := rows.Scan(&l.ID, &l.RouterID, &extID, &l.Timestamp, &l.Topics, &l.Message, &l.Severity, &l.Category, &createdAt); err == nil {
+			l.Time = l.Timestamp
 			logs = append(logs, l)
 		}
 	}
@@ -309,14 +312,22 @@ func (h *LogHandler) getAppLogs(limit int, search string) []LogDTO {
 			sev = "warning"
 		}
 
+		tStamp := now
+		if len(line) >= 19 {
+			if parsed, err := time.Parse("2006-01-02 15:04:05", line[:19]); err == nil {
+				tStamp = parsed
+			}
+		}
+
 		logs = append(logs, LogDTO{
-			ID:       i + 1,
-			RouterID: 0,
-			Time:     now,
-			Topics:   "app",
-			Message:  line,
-			Severity: sev,
-			Category: "system",
+			ID:        i + 1,
+			RouterID:  0,
+			Timestamp: tStamp,
+			Time:      tStamp,
+			Topics:    "app",
+			Message:   line,
+			Severity:  sev,
+			Category:  "system",
 		})
 	}
 

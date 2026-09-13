@@ -1,7 +1,7 @@
 import React from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { RouterLogsModal } from './RouterLogsModal';
+import { RouterLogsModal, formatStamp } from './RouterLogsModal';
 import { api } from '../api/client';
 
 vi.mock('../api/client', () => ({
@@ -304,4 +304,46 @@ describe('RouterLogsModal hide-own-logins toggle', () => {
     fireEvent.click(screen.getByText('Presets'));
     expect(screen.getByRole('combobox')).toBeInTheDocument();
   });
+
+  it('renders router timestamp and timezone badge in router time', async () => {
+    api.getLogs.mockResolvedValue({
+      data: [
+        {
+          id: 10,
+          time: '2026-09-13T21:14:02+05:00',
+          topics: 'dhcp,info',
+          message: 'dhcp assigned 192.0.2.249',
+          severity: 'info',
+          category: 'dhcp',
+        },
+      ],
+    });
+
+    open({
+      routerClock: { timezone: 'Asia/Tashkent', gmt_offset_minutes: 300 },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText(/09\/13 21:14:02/)).toBeInTheDocument();
+    });
+    expect(screen.getByText(/Asia\/Tashkent/)).toBeInTheDocument();
+  });
 });
+
+describe('formatStamp', () => {
+  it('preserves wall clock time from ISO strings without timezone corruption', () => {
+    expect(formatStamp('2026-09-04T10:00:00')).toBe('09/04 10:00:00');
+    expect(formatStamp('2026-09-13T21:14:02+05:00')).toBe('09/13 21:14:02');
+    expect(formatStamp('2026-09-13 21:14:02')).toBe('09/13 21:14:02');
+  });
+
+  it('preserves time-only strings', () => {
+    expect(formatStamp('21:14:02')).toBe('21:14:02');
+  });
+
+  it('handles empty inputs gracefully', () => {
+    expect(formatStamp(null)).toBe('');
+    expect(formatStamp('')).toBe('');
+  });
+});
+
