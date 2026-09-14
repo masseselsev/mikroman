@@ -12,11 +12,11 @@ import (
 
 func TestParseSemVer(t *testing.T) {
 	tests := []struct {
-		input       string
-		wantMajor   int
-		wantMinor   int
-		wantPatch   int
-		wantOk      bool
+		input     string
+		wantMajor int
+		wantMinor int
+		wantPatch int
+		wantOk    bool
 	}{
 		{"0.3.25", 0, 3, 25, true},
 		{"v0.3.26", 0, 3, 26, true},

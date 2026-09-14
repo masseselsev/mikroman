@@ -380,6 +380,38 @@ describe('WorldConnectionsModal', () => {
     expect(targetBadge).toBeInTheDocument();
     expect(targetBadge).toHaveTextContent('WIN-HOST-A');
   });
+
+  it('displays router name in modal header and origin beacon for overall router statistics', () => {
+    const routerGeo = {
+      lat: 41.2995,
+      lng: 69.2401,
+      countryCode: 'UZ',
+      countryName: 'Uzbekistan',
+      publicIP: '198.51.100.22',
+      routerName: 'Main-CCR-Gateway',
+    };
+
+    render(
+      <WorldConnectionsModal
+        isOpen={true}
+        onClose={vi.fn()}
+        connections={mockGeoConnections}
+        routerLocation={routerGeo}
+        routerName="Main-CCR-Gateway"
+      />
+    );
+
+    // Header displays router badge with router name and country info
+    const headerBadge = screen.getByTestId('world-map-target-badge');
+    expect(headerBadge).toBeInTheDocument();
+    expect(headerBadge).toHaveTextContent('Main-CCR-Gateway');
+    expect(headerBadge).toHaveTextContent('Uzbekistan');
+
+    // Origin beacon on map displays router name, not country name
+    const originNode = screen.getByTestId('map-origin-node');
+    expect(originNode).toBeInTheDocument();
+    expect(originNode).toHaveTextContent('Main-CCR-Gateway');
+  });
 });
 
 

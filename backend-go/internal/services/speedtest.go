@@ -14,11 +14,11 @@ import (
 )
 
 const (
-	DefaultSpeedTestImage  = "quay.io/tangent/speedtest-cli:latest"
-	SpeedTestComment       = "mikroman:speedtest"
-	SpeedTestLogTopic      = "container"
-	DefaultSpeedTimeout    = 120 * time.Second
-	SpeedTestPollInterval  = 2 * time.Second
+	DefaultSpeedTestImage = "quay.io/tangent/speedtest-cli:latest"
+	SpeedTestComment      = "mikroman:speedtest"
+	SpeedTestLogTopic     = "container"
+	DefaultSpeedTimeout   = 120 * time.Second
+	SpeedTestPollInterval = 2 * time.Second
 )
 
 var (
@@ -334,4 +334,3 @@ func (r *SpeedTestReading) ToDBModel(routerID int) *db.SpeedTestResult {
 
 	return res
 }
-

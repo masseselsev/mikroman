@@ -70,4 +70,3 @@ func (c *Client) InstallPackageUpdate(ctx context.Context) error {
 func (c *Client) UpgradeRouterBoardFirmware(ctx context.Context) error {
 	return c.Post(ctx, "/system/routerboard/upgrade", map[string]string{}, nil)
 }
-

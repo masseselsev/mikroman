@@ -87,16 +87,16 @@ func (f FlexibleBool) Bool() bool {
 
 // Resource represents /system/resource
 type Resource struct {
-	Uptime           string  `json:"uptime"`
-	Version          string  `json:"version"`
-	CPULoad          string  `json:"cpu-load"`
-	FreeMemory       string  `json:"free-memory"`
-	TotalMemory      string  `json:"total-memory"`
-	CPUCount         string  `json:"cpu-count"`
-	CPUFrequency     string  `json:"cpu-frequency"`
-	ArchitectureName string  `json:"architecture-name"`
-	BoardName        string  `json:"board-name"`
-	Platform         string  `json:"platform"`
+	Uptime           string `json:"uptime"`
+	Version          string `json:"version"`
+	CPULoad          string `json:"cpu-load"`
+	FreeMemory       string `json:"free-memory"`
+	TotalMemory      string `json:"total-memory"`
+	CPUCount         string `json:"cpu-count"`
+	CPUFrequency     string `json:"cpu-frequency"`
+	ArchitectureName string `json:"architecture-name"`
+	BoardName        string `json:"board-name"`
+	Platform         string `json:"platform"`
 }
 
 // HealthItem represents an entry in /system/health

@@ -160,8 +160,8 @@ func (u *GeoIPUpdater) Update(ctx context.Context) error {
 	prevMonthURL := fmt.Sprintf("https://download.db-ip.com/free/dbip-country-lite-%04d-%02d.mmdb.gz", prevMonth.Year(), int(prevMonth.Month()))
 
 	urls := []struct {
-		url      string
-		isGzip   bool
+		url    string
+		isGzip bool
 	}{
 		{currentMonthURL, true},
 		{prevMonthURL, true},
@@ -302,4 +302,3 @@ func (u *GeoIPUpdater) GetStatus() GeoIPStatus {
 	}
 	return status
 }
-

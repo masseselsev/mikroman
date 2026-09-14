@@ -616,4 +616,3 @@ func (h *MetricsHandler) GetInterfaceMetrics(w http.ResponseWriter, r *http.Requ
 		BucketSeconds: cfg.bucketSeconds,
 	})
 }
-

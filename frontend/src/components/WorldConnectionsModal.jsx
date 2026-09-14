@@ -29,6 +29,7 @@ export function WorldConnectionsModal({
   connections = [],
   routerLocation = null,
   target = null,
+  routerName = null,
 }) {
   const { t } = useI18n();
   const { speedUnit } = useSpeedUnit();
@@ -143,6 +144,10 @@ export function WorldConnectionsModal({
     return project(originGeo.lat, originGeo.lng);
   }, [originGeo]);
 
+  const resolvedRouterName = useMemo(() => {
+    return routerName || routerLocation?.routerName || routerLocation?.countryName || t('world_map_gateway');
+  }, [routerName, routerLocation?.routerName, routerLocation?.countryName, t]);
+
   const originLabel = useMemo(() => {
     if (target?.type === 'device') {
       return target.name || `Device #${target.id}`;
@@ -150,8 +155,8 @@ export function WorldConnectionsModal({
     if (target?.type === 'user') {
       return target.name || `User #${target.id}`;
     }
-    return originGeo.name || t('world_map_gateway');
-  }, [target, originGeo.name, t]);
+    return resolvedRouterName;
+  }, [target, resolvedRouterName]);
 
   // Clamping helper for Pan
   const clampPan = useCallback((newPan, currentZoom) => {
@@ -406,12 +411,12 @@ export function WorldConnectionsModal({
                 >
                   {countryGroups.length} {t('world_map_countries')} • {geoConnections.length} {t('connections_count')}
                 </span>
-                {target && (
+                {target ? (
                   <span
                     style={{
                       display: 'inline-flex',
                       alignItems: 'center',
-                      gap: 4,
+                      gap: 5,
                       fontSize: 'var(--fs-2xs, 11px)',
                       fontWeight: 600,
                       padding: '2px 8px',
@@ -426,6 +431,30 @@ export function WorldConnectionsModal({
                       <>👤 {target.name || `User #${target.id}`}</>
                     ) : (
                       <>💻 {target.name || `Device #${target.id}`}</>
+                    )}
+                  </span>
+                ) : (
+                  <span
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 6,
+                      fontSize: 'var(--fs-2xs, 11px)',
+                      fontWeight: 600,
+                      padding: '2px 8px',
+                      borderRadius: 10,
+                      background: 'rgba(16, 185, 129, 0.12)',
+                      color: '#34d399',
+                      border: '1px solid rgba(16, 185, 129, 0.3)',
+                    }}
+                    data-testid="world-map-target-badge"
+                  >
+                    <span>🌐 {resolvedRouterName}</span>
+                    {originGeo.countryCode && (
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, opacity: 0.85, fontSize: '10px' }}>
+                        <CountryFlag code={originGeo.countryCode} size={12} />
+                        <span>{originGeo.countryName || originGeo.countryCode}</span>
+                      </span>
                     )}
                   </span>
                 )}
@@ -813,10 +842,10 @@ export function WorldConnectionsModal({
                     r={2.8 / Math.pow(zoom, 0.65)}
                     fill="#ffffff"
                   />
-                  {/* Origin Badge */}
-                  <g transform={`translate(${originPoint.x + 10 / Math.pow(zoom, 0.65)}, ${originPoint.y + 3 / Math.pow(zoom, 0.65)})`}>
+                  {/* Origin Badge (Positioned above beacon to eliminate country code overlap) */}
+                  <g transform={`translate(${originPoint.x}, ${originPoint.y - 14 / Math.pow(zoom, 0.65)})`}>
                     <rect
-                      x={-2 / Math.pow(zoom, 0.65)}
+                      x={-((originLabel.length * 6.2 + 18) / 2) / Math.pow(zoom, 0.65)}
                       y={-10 / Math.pow(zoom, 0.65)}
                       width={(originLabel.length * 6.2 + 18) / Math.pow(zoom, 0.65)}
                       height={14 / Math.pow(zoom, 0.65)}
@@ -826,8 +855,9 @@ export function WorldConnectionsModal({
                       strokeWidth={Math.max(0.15, 1 / Math.pow(zoom, 0.65))}
                     />
                     <text
-                      x={4 / Math.pow(zoom, 0.65)}
+                      x={0}
                       y={0.5 / Math.pow(zoom, 0.65)}
+                      textAnchor="middle"
                       fill="#a7f3d0"
                       fontSize={`${Math.max(0.5, 7.5 / Math.pow(zoom, 0.65))}px`}
                       fontWeight="700"

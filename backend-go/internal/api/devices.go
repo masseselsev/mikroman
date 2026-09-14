@@ -452,4 +452,3 @@ func (h *DeviceHandler) GetMergeSuggestions(w http.ResponseWriter, r *http.Reque
 func (h *DeviceHandler) GetLinkSuggestions(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, []LinkSuggestion{})
 }
-

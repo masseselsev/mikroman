@@ -46,9 +46,9 @@ type Client struct {
 	baseURL    string
 
 	// Circuit breaker state
-	mu             sync.RWMutex
+	mu               sync.RWMutex
 	unreachableUntil time.Time
-	lastError      error
+	lastError        error
 
 	// Immune IPs cache
 	immuneMu       sync.RWMutex
@@ -360,4 +360,3 @@ func (c *Client) PostJSONRaw(ctx context.Context, path string, body interface{})
 	}
 	return c.DoRaw(ctx, http.MethodPost, path, bodyReader, "application/json")
 }
-

@@ -245,4 +245,3 @@ func TestDiscovery_OneLeasePerMacAndArpFiltering(t *testing.T) {
 		t.Fatalf("expected ether3 device to be ignored, got %d", ether3Count)
 	}
 }
-

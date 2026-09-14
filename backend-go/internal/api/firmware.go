@@ -23,11 +23,11 @@ func NewFirmwareHandler(database *db.DB, client *routeros.Client) *FirmwareHandl
 }
 
 type PackageUpdateInfo struct {
-	Channel       string `json:"channel"`
-	Installed     string `json:"installed_version"`
-	Latest        string `json:"latest_version"`
-	Status        string `json:"status"`
-	UpdateAvail   bool   `json:"update_available"`
+	Channel     string `json:"channel"`
+	Installed   string `json:"installed_version"`
+	Latest      string `json:"latest_version"`
+	Status      string `json:"status"`
+	UpdateAvail bool   `json:"update_available"`
 }
 
 type RouterBoardInfo struct {

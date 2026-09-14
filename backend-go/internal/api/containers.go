@@ -112,25 +112,25 @@ type ContainerConfigDTO struct {
 }
 
 type ContainerDiskDTO struct {
-	Slot                 string   `json:"slot"`
-	Parent               *string  `json:"parent,omitempty"`
-	IsPartition          bool     `json:"is_partition"`
-	Model                *string  `json:"model,omitempty"`
-	Serial               *string  `json:"serial,omitempty"`
-	FS                   *string  `json:"fs,omitempty"`
-	MountPoint           *string  `json:"mount_point,omitempty"`
-	Mounted              bool     `json:"mounted"`
-	ReadOnly             bool     `json:"read_only"`
-	Formatting           bool     `json:"formatting"`
-	Disabled             bool     `json:"disabled"`
-	SizeBytes            *int64   `json:"size_bytes,omitempty"`
-	FreeBytes            *int64   `json:"free_bytes,omitempty"`
-	UsedPct              *int     `json:"used_pct,omitempty"`
-	TemperatureC         *int     `json:"temperature_c,omitempty"`
-	IOErrors             *int     `json:"io_errors,omitempty"`
-	UsableForContainers  bool     `json:"usable_for_containers"`
-	Formatable           bool     `json:"formatable"`
-	Note                 string   `json:"note"`
+	Slot                string  `json:"slot"`
+	Parent              *string `json:"parent,omitempty"`
+	IsPartition         bool    `json:"is_partition"`
+	Model               *string `json:"model,omitempty"`
+	Serial              *string `json:"serial,omitempty"`
+	FS                  *string `json:"fs,omitempty"`
+	MountPoint          *string `json:"mount_point,omitempty"`
+	Mounted             bool    `json:"mounted"`
+	ReadOnly            bool    `json:"read_only"`
+	Formatting          bool    `json:"formatting"`
+	Disabled            bool    `json:"disabled"`
+	SizeBytes           *int64  `json:"size_bytes,omitempty"`
+	FreeBytes           *int64  `json:"free_bytes,omitempty"`
+	UsedPct             *int    `json:"used_pct,omitempty"`
+	TemperatureC        *int    `json:"temperature_c,omitempty"`
+	IOErrors            *int    `json:"io_errors,omitempty"`
+	UsableForContainers bool    `json:"usable_for_containers"`
+	Formatable          bool    `json:"formatable"`
+	Note                string  `json:"note"`
 }
 
 type ContainerStorageDTO struct {

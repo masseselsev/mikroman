@@ -559,4 +559,3 @@ func (h *LogHandler) DeleteLoggingRule(w http.ResponseWriter, r *http.Request) {
 	_ = client.Delete(ctx, path)
 	WriteJSON(w, http.StatusOK, true)
 }
-

@@ -145,4 +145,3 @@ func TestUserHandler_LiveRatesEnrichment(t *testing.T) {
 		}
 	})
 }
-

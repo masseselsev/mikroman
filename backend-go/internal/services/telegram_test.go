@@ -264,4 +264,3 @@ func (t *testServerTransport) RoundTrip(req *http.Request) (*http.Response, erro
 	req.URL.Host = serverURL.URL.Host
 	return http.DefaultTransport.RoundTrip(req)
 }
-

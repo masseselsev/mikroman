@@ -152,12 +152,12 @@ func (h *SystemHandler) GetDiagnostics(w http.ResponseWriter, r *http.Request) {
 	runtime.ReadMemStats(&m)
 
 	WriteJSON(w, http.StatusOK, map[string]interface{}{
-		"uptime_seconds":    time.Since(startedAt).Seconds(),
-		"memory_bytes":      m.Alloc,
-		"memory_sys_bytes":  m.Sys,
-		"goroutines":        runtime.NumGoroutine(),
-		"memory_note":       "Pure Go memory footprint: minimal RSS with zero Python GIL / thread thrashing.",
-		"backend_version":   h.cfg.AppVersion,
+		"uptime_seconds":   time.Since(startedAt).Seconds(),
+		"memory_bytes":     m.Alloc,
+		"memory_sys_bytes": m.Sys,
+		"goroutines":       runtime.NumGoroutine(),
+		"memory_note":      "Pure Go memory footprint: minimal RSS with zero Python GIL / thread thrashing.",
+		"backend_version":  h.cfg.AppVersion,
 	})
 }
 

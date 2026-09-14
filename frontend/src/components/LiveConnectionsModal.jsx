@@ -36,6 +36,7 @@ export function LiveConnectionsModal({
   target = null,
   initialRouterId = null,
   inline = false,
+  routerName = null,
 }) {
   const { t } = useI18n();
   const { speedUnit } = useSpeedUnit();
@@ -115,6 +116,7 @@ export function LiveConnectionsModal({
             countryCode: res.data.router_country_code,
             countryName: res.data.router_country_name,
             publicIP: res.data.router_public_ip,
+            routerName: res.data.router_name || routerName,
           });
         }
       }
@@ -646,6 +648,7 @@ export function LiveConnectionsModal({
           connections={connections}
           routerLocation={routerLocation}
           target={currentTarget}
+          routerName={routerLocation?.routerName || routerName}
         />
     </>
   );

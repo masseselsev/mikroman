@@ -377,4 +377,3 @@ var countryCentroids = map[string]CountryMeta{
 func FormatCountrySummary(loc GeoLocation) string {
 	return fmt.Sprintf("%s %s (%s) [%.2f, %.2f]", loc.FlagEmoji, loc.CountryName, loc.CountryCode, loc.Lat, loc.Lng)
 }
-

@@ -18,7 +18,7 @@ import (
 
 type testBroadcaster struct{}
 
-func (b *testBroadcaster) Broadcast(event interface{})                                {}
+func (b *testBroadcaster) Broadcast(event interface{})                                     {}
 func (b *testBroadcaster) BroadcastRouter(routerID int, isDefault bool, event interface{}) {}
 
 func TestDiscoveryAndTelemetryServices(t *testing.T) {
@@ -401,4 +401,3 @@ func TestReconcileQueuesNoSpamWhenMatching(t *testing.T) {
 		t.Fatalf("expected 0 queue creates, got %d", createCount)
 	}
 }
-

@@ -53,4 +53,3 @@ func TestIsRunningInRouterOSContainer_KernelSignature(t *testing.T) {
 		t.Errorf("expected true when /proc/version contains mikrotik signature")
 	}
 }
-

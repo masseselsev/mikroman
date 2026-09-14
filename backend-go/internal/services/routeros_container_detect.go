@@ -70,4 +70,3 @@ func isMatchingRouterVeth(ctx context.Context, client *routeros.Client) bool {
 
 	return false
 }
-
