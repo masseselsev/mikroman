@@ -919,4 +919,3 @@ func (d *DB) GetUnpinnedBackups(routerID int) ([]RouterBackup, error) {
 	}
 	return list, nil
 }
-

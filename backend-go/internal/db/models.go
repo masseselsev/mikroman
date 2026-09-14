@@ -221,11 +221,11 @@ type DeviceCoexistence struct {
 
 // TrafficRollup tracks daily aggregated traffic per user.
 type TrafficRollup struct {
-	ID         int       `json:"id"`
-	UserID     int       `json:"user_id"`
-	RecordDate string    `json:"record_date"` // YYYY-MM-DD
-	BytesIn    int64     `json:"bytes_in"`    // Download
-	BytesOut   int64     `json:"bytes_out"`   // Upload
+	ID         int    `json:"id"`
+	UserID     int    `json:"user_id"`
+	RecordDate string `json:"record_date"` // YYYY-MM-DD
+	BytesIn    int64  `json:"bytes_in"`    // Download
+	BytesOut   int64  `json:"bytes_out"`   // Upload
 }
 
 // DeviceTrafficRollup tracks daily aggregated traffic per device.

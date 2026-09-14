@@ -60,4 +60,3 @@ func TestPublicNetworkService_PrivateIP(t *testing.T) {
 		t.Errorf("expected empty ISP for RFC5737 IP, got %q", isp)
 	}
 }
-

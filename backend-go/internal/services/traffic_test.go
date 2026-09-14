@@ -139,4 +139,3 @@ func TestAccountingPass_AccumulatesDeltasAndHandlesReboot(t *testing.T) {
 		t.Fatalf("expected after reboot (in=3000, out=800), got (in=%d, out=%d)", bytesIn, bytesOut)
 	}
 }
-

@@ -187,4 +187,3 @@ func TestClientRefusesBlockingImmuneHost(t *testing.T) {
 		t.Fatalf("expected client to refuse queueing immune host %s, got nil", u.Hostname())
 	}
 }
-

@@ -47,4 +47,3 @@ func ComputeFingerprint(rscText string) string {
 	hash := sha256.Sum256([]byte(normalized))
 	return hex.EncodeToString(hash[:])
 }
-

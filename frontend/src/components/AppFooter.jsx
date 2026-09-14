@@ -20,6 +20,13 @@ export function formatVersionTag(version) {
 }
 
 /**
+ * Page footer: the build version, a copyright line and a link back to the
+ * project's source. Deliberately quiet - it sits below every screen's content,
+ * muted, and never competes with the dashboard.
+ *
+ * The version lives here rather than beside the app name in the header: it is
+ * a fact you look up once when filing a bug, not one you read on every glance
+ * at the dashboard, and the header needed the width for the router controls.
  * Page footer: the build version, a copyright line, update notifications, and
  * a link back to the project's source. Deliberately quiet - it sits below every
  * screen's content, muted, and never competes with the dashboard.

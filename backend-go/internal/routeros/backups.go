@@ -14,10 +14,10 @@ import (
 )
 
 const (
-	BackupFilePrefix      = "mikroman-backup-"
-	BackupSettleInterval  = 300 * time.Millisecond
-	DefaultBackupTimeout  = 35 * time.Second
-	BackupChunkSize       = 32768
+	BackupFilePrefix     = "mikroman-backup-"
+	BackupSettleInterval = 300 * time.Millisecond
+	DefaultBackupTimeout = 35 * time.Second
+	BackupChunkSize      = 32768
 )
 
 // GenerateBackupPassword creates a random alphanumeric password for RouterOS binary backup encryption.
@@ -261,4 +261,3 @@ func (c *Client) CreateSystemBackup(ctx context.Context, stem, password string, 
 
 	return chunks, nil
 }
-

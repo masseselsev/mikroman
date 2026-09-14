@@ -240,4 +240,3 @@ func (c *Client) GetSystemClock(ctx context.Context) (*SystemClock, error) {
 	clock.GMTOffsetMinutes = ParseGMTOffsetMinutes(clock.GMTOffset)
 	return clock, nil
 }
-

@@ -678,6 +678,7 @@ export function App() {
             isOpen
             inline
             initialRouterId={activeRouter?.id}
+            routerName={activeRouter?.name}
             onClose={() => {}}
           />
         )}
@@ -924,6 +925,7 @@ export function App() {
         initialDeviceId={connectionsTarget?.type === 'device' ? connectionsTarget.id : null}
         initialUserId={connectionsTarget?.type === 'user' ? connectionsTarget.id : null}
         initialRouterId={activeRouter?.id}
+        routerName={activeRouter?.name}
         onClose={() => {
           setConnectionsModalOpen(false);
           setConnectionsTarget(null);

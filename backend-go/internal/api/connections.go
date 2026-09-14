@@ -135,6 +135,7 @@ type LiveConnectionItem struct {
 type PaginatedLiveConnections struct {
 	Total             int                  `json:"total"`
 	Items             []LiveConnectionItem `json:"items"`
+	RouterName        *string              `json:"router_name,omitempty"`
 	RouterLat         *float64             `json:"router_lat,omitempty"`
 	RouterLng         *float64             `json:"router_lng,omitempty"`
 	RouterCountryCode *string              `json:"router_country_code,omitempty"`
@@ -302,6 +303,14 @@ func (h *ConnectionsHandler) GetLiveConnections(w http.ResponseWriter, r *http.R
 		effectiveRouterID = *routerID
 	} else if def, err := h.database.GetDefaultRouter(); err == nil && def != nil {
 		effectiveRouterID = def.ID
+	}
+
+	var rName *string
+	if effectiveRouterID > 0 {
+		if rObj, err := h.database.GetRouter(effectiveRouterID); err == nil && rObj != nil && rObj.Name != "" {
+			nameVal := rObj.Name
+			rName = &nameVal
+		}
 	}
 
 	var rLat, rLng *float64
@@ -596,6 +605,7 @@ func (h *ConnectionsHandler) GetLiveConnections(w http.ResponseWriter, r *http.R
 	WriteJSON(w, http.StatusOK, PaginatedLiveConnections{
 		Total:             matched,
 		Items:             items,
+		RouterName:        rName,
 		RouterLat:         rLat,
 		RouterLng:         rLng,
 		RouterCountryCode: rCountryCode,

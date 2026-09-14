@@ -258,4 +258,3 @@ func TestSpeedTestDBOperations(t *testing.T) {
 		t.Fatalf("expected 1 history entry, got %d", len(history))
 	}
 }
-

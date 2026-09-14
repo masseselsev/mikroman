@@ -747,6 +747,14 @@ func TestConnectionsEndpoints(t *testing.T) {
 	database, _ := db.Open(dbPath, fernet)
 	defer database.Close()
 
+	_ = database.CreateRouter(&db.Router{
+		Name:      "Core-Gateway-01",
+		Host:      "192.0.2.1",
+		Port:      8728,
+		Username:  "admin",
+		IsDefault: true,
+	})
+
 	cfg := &config.Config{
 		AppVersion:    "0.3.4-test",
 		AdminPassword: "SecretAdminPassword123",
@@ -799,6 +807,9 @@ func TestConnectionsEndpoints(t *testing.T) {
 	}
 	if connData["router_country_code"] != "US" {
 		t.Fatalf("expected router_country_code US, got: %v", connData["router_country_code"])
+	}
+	if connData["router_name"] != "Core-Gateway-01" {
+		t.Fatalf("expected router_name Core-Gateway-01, got: %v", connData["router_name"])
 	}
 
 	// 2. POST /api/v1/connections/*1/kill

@@ -230,4 +230,3 @@ func AsFloat(val string) *float64 {
 	}
 	return nil
 }
-

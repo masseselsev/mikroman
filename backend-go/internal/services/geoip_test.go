@@ -11,12 +11,12 @@ func TestLookupGeoIP(t *testing.T) {
 		"192.168.1.1",
 		"10.0.0.1",
 		"172.16.0.1",
-		"192.0.2.1", // RFC 5737
-		"198.51.100.1", // RFC 5737
-		"203.0.113.1", // RFC 5737
+		"192.0.2.1",       // RFC 5737
+		"198.51.100.1",    // RFC 5737
+		"203.0.113.1",     // RFC 5737
 		"255.255.255.255", // Broadcast
-		"100.64.0.1", // RFC 6598 CGNAT
-		"100.89.60.223", // RFC 6598 Tailscale / CGNAT
+		"100.64.0.1",      // RFC 6598 CGNAT
+		"100.89.60.223",   // RFC 6598 Tailscale / CGNAT
 		"100.127.255.254", // RFC 6598 CGNAT
 		"",
 	}
@@ -77,17 +77,17 @@ func TestLookupGeoIP(t *testing.T) {
 
 func TestISOFlagEmoji(t *testing.T) {
 	cases := map[string]string{
-		"US": "🇺🇸",
-		"NL": "🇳🇱",
-		"RU": "🇷🇺",
-		"DE": "🇩🇪",
-		"UZ": "🇺🇿",
-		"KZ": "🇰🇿",
-		"FR": "🇫🇷",
-		"JP": "🇯🇵",
-		"BR": "🇧🇷",
-		"12": "🌐",
-		"":   "🌐",
+		"US":  "🇺🇸",
+		"NL":  "🇳🇱",
+		"RU":  "🇷🇺",
+		"DE":  "🇩🇪",
+		"UZ":  "🇺🇿",
+		"KZ":  "🇰🇿",
+		"FR":  "🇫🇷",
+		"JP":  "🇯🇵",
+		"BR":  "🇧🇷",
+		"12":  "🌐",
+		"":    "🌐",
 		"USA": "🌐",
 	}
 
@@ -109,4 +109,3 @@ func TestGeoIPUpdater_Status(t *testing.T) {
 		t.Errorf("expected non-empty path in status")
 	}
 }
-

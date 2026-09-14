@@ -301,4 +301,3 @@ func LookupGeoIP(ipStr string) GeoLocation {
 		IsLocal:     false,
 	}
 }
-
