@@ -57,6 +57,7 @@
   * Bounded upstream changelog streaming client with in-memory caching and negative TTL.
   * Pre-upgrade safety invariant: mandatory automated pinned backup and strict router name confirmation gate before upgrade dispatch.
   * Autonomous 4-stage reboot reconnection state machine.
+  * **GitHub Release & Version Intelligence**: Automated update discovery querying GitHub Releases via backend-cached proxy (`GET /api/v1/system/version-check`) with HTTP `ETag` conditional revalidation and 6-hour TTL, displaying an unobtrusive glowing update pill in the footer with direct release notes navigation.
 
 * **🌐 Real-Time Observability, GeoIP World Map & Centralized Logs**:
   * Real-time `/ip/firewall/connection` tracker with robust 4-tuple endpoint matching (`src-address`, `dst-address`, `reply-src-address`, `reply-dst-address`), multi-adapter device aggregation (`linked_to_device_id`), user-level live connection tracking across all owned devices with contextual header filtering badges, live socket termination, and crisp vector SVG country flags covering all 265 ISO-3166-1 alpha-2 nations and territories locally without external CDN dependencies.

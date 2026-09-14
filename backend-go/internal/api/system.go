@@ -30,6 +30,7 @@ type SystemHandler struct {
 	mu               sync.Mutex
 	clients          map[int]*routeros.Client
 	telegramReloader TelegramReloader
+	versionChecker   *services.VersionChecker
 }
 
 func NewSystemHandler(cfg *config.Config, database *db.DB, client *routeros.Client) *SystemHandler {
@@ -42,10 +43,11 @@ func NewSystemHandler(cfg *config.Config, database *db.DB, client *routeros.Clie
 		}
 	}
 	return &SystemHandler{
-		cfg:      cfg,
-		database: database,
-		client:   client,
-		clients:  clients,
+		cfg:            cfg,
+		database:       database,
+		client:         client,
+		clients:        clients,
+		versionChecker: services.NewVersionChecker(cfg.AppVersion),
 	}
 }
 
@@ -106,11 +108,43 @@ func (h *SystemHandler) SetTelegramReloader(r TelegramReloader) {
 	h.telegramReloader = r
 }
 
+func (h *SystemHandler) SetVersionChecker(vc *services.VersionChecker) {
+	h.versionChecker = vc
+}
+
 func (h *SystemHandler) GetHealth(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, map[string]string{
 		"status":  "healthy",
 		"version": h.cfg.AppVersion,
 	})
+}
+
+// GetVersionCheck checks GitHub releases for available updates with caching.
+func (h *SystemHandler) GetVersionCheck(w http.ResponseWriter, r *http.Request) {
+	force := r.URL.Query().Get("force") == "true"
+	ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
+	defer cancel()
+
+	if h.versionChecker == nil {
+		WriteJSON(w, http.StatusOK, map[string]interface{}{
+			"current_version": h.cfg.AppVersion,
+			"latest_version":  h.cfg.AppVersion,
+			"has_update":      false,
+		})
+		return
+	}
+
+	info, err := h.versionChecker.Check(ctx, force)
+	if err != nil {
+		WriteJSON(w, http.StatusOK, map[string]interface{}{
+			"current_version": h.cfg.AppVersion,
+			"latest_version":  h.cfg.AppVersion,
+			"has_update":      false,
+		})
+		return
+	}
+
+	WriteJSON(w, http.StatusOK, info)
 }
 
 func (h *SystemHandler) GetDiagnostics(w http.ResponseWriter, r *http.Request) {

@@ -76,6 +76,7 @@ func NewRouter(rc RouterConfig) http.Handler {
 		}
 		api.Route("/system", func(s chi.Router) {
 			s.Get("/health", sysH.GetHealth)
+			s.Get("/version-check", sysH.GetVersionCheck)
 			s.Get("/status", sysH.GetSystemStatus)
 			s.Get("/diagnostics", sysH.GetDiagnostics)
 			s.Get("/interfaces", sysH.GetInterfaces)

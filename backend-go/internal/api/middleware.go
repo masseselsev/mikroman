@@ -61,6 +61,7 @@ func AuthMiddleware(cfg *config.Config, fernet *crypto.Fernet) func(http.Handler
 			if strings.HasPrefix(path, "/api/v1/auth/") ||
 				path == "/api/v1/health" ||
 				path == "/api/v1/system/health" ||
+				path == "/api/v1/system/version-check" ||
 				path == "/api/v1/telegram/webhook" ||
 				path == "/api/v1/ws" {
 				next.ServeHTTP(w, r)

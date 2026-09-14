@@ -66,6 +66,39 @@ func TestHealthEndpoint(t *testing.T) {
 	}
 }
 
+func TestVersionCheckEndpoint(t *testing.T) {
+	handler, database, _ := setupTestServer(t)
+	defer database.Close()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/system/version-check", nil)
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var resp struct {
+		Success bool `json:"success"`
+		Data    struct {
+			CurrentVersion string `json:"current_version"`
+			LatestVersion  string `json:"latest_version"`
+			HasUpdate      bool   `json:"has_update"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode json response: %v", err)
+	}
+
+	if !resp.Success {
+		t.Fatalf("expected success = true, got false")
+	}
+	if resp.Data.CurrentVersion == "" {
+		t.Fatalf("expected non-empty CurrentVersion")
+	}
+}
+
 func TestAuthStatusAndLoginFlow(t *testing.T) {
 	handler, database, _ := setupTestServer(t)
 	defer database.Close()
