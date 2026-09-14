@@ -684,6 +684,11 @@ func TestConnectionsEndpoints(t *testing.T) {
 			},
 		})
 	})
+	mockMux.HandleFunc("/rest/ip/cloud", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"public-address": "8.8.8.8",
+		})
+	})
 	mockMux.HandleFunc("/rest/ip/firewall/connection/*1", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodDelete {
 			w.WriteHeader(http.StatusOK)
@@ -755,6 +760,12 @@ func TestConnectionsEndpoints(t *testing.T) {
 	item0 := items[0].(map[string]interface{})
 	if item0["id"] != "*1" || item0["protocol"] != "tcp" {
 		t.Fatalf("unexpected connection item: %v", item0)
+	}
+	if connData["router_lat"] == nil || connData["router_lng"] == nil {
+		t.Fatalf("expected router_lat and router_lng to be populated, got: %v", connData)
+	}
+	if connData["router_country_code"] != "US" {
+		t.Fatalf("expected router_country_code US, got: %v", connData["router_country_code"])
 	}
 
 	// 2. POST /api/v1/connections/*1/kill
@@ -1775,4 +1786,3 @@ func TestSecretSettingsMask(t *testing.T) {
 		t.Fatalf("expected telemetry interval to update to 5, got %q", intervalVal)
 	}
 }
-

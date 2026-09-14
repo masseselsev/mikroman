@@ -100,7 +100,7 @@ describe('WorldConnectionsModal', () => {
     fireEvent.click(nlNode);
 
     // Detail card now shows Netherlands
-    expect(screen.getByText('ISO: NL • 1 connections')).toBeInTheDocument();
+    expect(screen.getByText(/ISO: NL • 1 connections/i)).toBeInTheDocument();
     expect(screen.getByText('telegram.org')).toBeInTheDocument();
   });
 
@@ -271,6 +271,114 @@ describe('WorldConnectionsModal', () => {
     expect(screen.queryByTestId('cluster-BE-NL')).not.toBeInTheDocument();
     expect(screen.getByTestId('map-node-NL')).toBeInTheDocument();
     expect(screen.getByTestId('map-node-BE')).toBeInTheDocument();
+  });
+
+  it('renders directional moving flow lines and origin gateway marker', () => {
+    const customRouterLocation = {
+      lat: 51.5074,
+      lng: -0.1278,
+      countryCode: 'GB',
+      countryName: 'London Gateway',
+      publicIP: '198.51.100.99',
+    };
+
+    render(
+      <WorldConnectionsModal
+        isOpen={true}
+        onClose={vi.fn()}
+        connections={mockGeoConnections}
+        routerLocation={customRouterLocation}
+      />
+    );
+
+    // Origin node rendered
+    const originNode = screen.getByTestId('map-origin-node');
+    expect(originNode).toBeInTheDocument();
+    expect(originNode).toHaveTextContent(/London Gateway/i);
+
+    // Flow lines to destinations rendered
+    expect(screen.getByTestId('flow-line-US')).toBeInTheDocument();
+    expect(screen.getByTestId('flow-line-NL')).toBeInTheDocument();
+  });
+
+  it('scales flow line thickness proportionally based on connection percentage share', () => {
+    // 9 connections to US (90%), 1 connection to NL (10%)
+    const weightedConnections = [
+      ...Array.from({ length: 9 }, (_, i) => ({
+        id: `*us-${i}`,
+        protocol: 'tcp',
+        dst_ip: `198.51.100.${10 + i}`,
+        country_code: 'US',
+        country_name: 'United States',
+        lat: 37.0902,
+        lng: -95.7129,
+        orig_rate: 1000,
+        repl_rate: 1000,
+        total_bytes: 1000,
+      })),
+      {
+        id: '*nl-1',
+        protocol: 'tcp',
+        dst_ip: '198.51.100.50',
+        country_code: 'NL',
+        country_name: 'Netherlands',
+        lat: 52.1326,
+        lng: 5.2913,
+        orig_rate: 500,
+        repl_rate: 500,
+        total_bytes: 500,
+      },
+    ];
+
+    render(
+      <WorldConnectionsModal
+        isOpen={true}
+        onClose={vi.fn()}
+        connections={weightedConnections}
+      />
+    );
+
+    const usFlowGroup = screen.getByTestId('flow-line-US');
+    const nlFlowGroup = screen.getByTestId('flow-line-NL');
+
+    // Title includes percentage share
+    expect(usFlowGroup.querySelector('title')?.textContent).toMatch(/United States \(US\): 9 \(90\.0%\)/i);
+    expect(nlFlowGroup.querySelector('title')?.textContent).toMatch(/Netherlands \(NL\): 1 \(10\.0%\)/i);
+
+    // Find the animated path elements
+    const usPath = usFlowGroup.querySelector('.map-flow-line, .map-flow-line-selected');
+    const nlPath = nlFlowGroup.querySelector('.map-flow-line, .map-flow-line-selected');
+
+    expect(usPath).toBeInTheDocument();
+    expect(nlPath).toBeInTheDocument();
+
+    const usStrokeWidth = parseFloat(usPath.getAttribute('stroke-width'));
+    const nlStrokeWidth = parseFloat(nlPath.getAttribute('stroke-width'));
+
+    // US has 90% of connections, NL has 10% -> US stroke must be significantly thicker!
+    expect(usStrokeWidth).toBeGreaterThan(nlStrokeWidth);
+  });
+
+  it('displays target badge when filtered to specific device or user instance', () => {
+    const targetDevice = {
+      type: 'device',
+      id: 42,
+      name: 'WIN-HOST-A',
+      ip: '192.0.2.142',
+    };
+
+    render(
+      <WorldConnectionsModal
+        isOpen={true}
+        onClose={vi.fn()}
+        connections={mockGeoConnections}
+        target={targetDevice}
+      />
+    );
+
+    const targetBadge = screen.getByTestId('world-map-target-badge');
+    expect(targetBadge).toBeInTheDocument();
+    expect(targetBadge).toHaveTextContent('WIN-HOST-A');
   });
 });
 
