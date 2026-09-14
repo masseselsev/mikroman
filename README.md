@@ -232,12 +232,10 @@ Open **`http://localhost:1928`** in your browser. The first-run setup wizard wil
 
 ## 💻 Local Development Setup
 
-### Backend (FastAPI)
+### Backend (Go 1.27+)
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r backend/requirements.txt
-uvicorn backend.app.main:app --host 0.0.0.0 --port 1928 --reload
+cd backend-go
+go run ./cmd/mikroman -data-dir=../data -dist-dir=../frontend/dist
 ```
 
 ### Frontend (React + Vite)
@@ -251,20 +249,16 @@ npm run dev
 
 ## 🧪 Testing & Verification
 
-Run the automated backend test suite:
+Run the automated Go backend test suite:
 ```bash
-.venv/bin/pytest -v
+cd backend-go
+go test -v ./...
 ```
 
-Run code formatting and linter checks:
-```bash
-.venv/bin/ruff check .
-```
-
-Run frontend unit tests and production build:
+Run frontend unit tests and production bundle compilation:
 ```bash
 cd frontend
-npm test
+npm test -- --run
 npm run build
 ```
 

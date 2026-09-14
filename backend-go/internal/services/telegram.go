@@ -58,30 +58,38 @@ type InlineKeyboardMarkup struct {
 	InlineKeyboard [][]InlineKeyboardButton `json:"inline_keyboard"`
 }
 
-// TelegramBotService manages Telegram bot polling, commands, callbacks, and alerts.
-type TelegramBotService struct {
-	database   *db.DB
-	client     *routeros.Client
-	httpClient *http.Client
-
-	mu       sync.Mutex
-	running  bool
-	stopCh   chan struct{}
-	token    string
-	adminIDs []int64
-	mode     string
-	lang     string
-	botName  string
+// QueueReconciler triggers queue and firewall rule reconciliation in RouterOS.
+type QueueReconciler interface {
+	ReconcileQueues(ctx context.Context, routerID int) error
 }
 
-func NewTelegramBotService(database *db.DB, client *routeros.Client) *TelegramBotService {
+// TelegramBotService manages Telegram bot polling, commands, callbacks, and alerts.
+type TelegramBotService struct {
+	database            *db.DB
+	client              *routeros.Client
+	reconciler          QueueReconciler
+	httpClient          *http.Client
+	mu                  sync.Mutex
+	running             bool
+	stopCh              chan struct{}
+	token               string
+	adminIDs            []int64
+	mode                string
+	lang                string
+	botName             string
+	activeRouterPerChat map[int64]int
+	clients             map[int]*routeros.Client
+}
+
+func NewTelegramBotService(database *db.DB, client *routeros.Client, reconciler QueueReconciler) *TelegramBotService {
 	return &TelegramBotService{
-		database: database,
-		client:   client,
-		httpClient: &http.Client{
-			Timeout: 35 * time.Second,
-		},
-		stopCh: make(chan struct{}),
+		database:            database,
+		client:              client,
+		reconciler:          reconciler,
+		httpClient:          &http.Client{Timeout: 35 * time.Second},
+		stopCh:              make(chan struct{}),
+		activeRouterPerChat: make(map[int64]int),
+		clients:             make(map[int]*routeros.Client),
 	}
 }
 
@@ -102,7 +110,6 @@ func (s *TelegramBotService) Start() {
 	s.running = true
 	s.stopCh = make(chan struct{})
 
-	// Check token and get bot name
 	go func() {
 		botName, err := s.fetchMe()
 		if err != nil {
@@ -114,10 +121,7 @@ func (s *TelegramBotService) Start() {
 			log.Printf("[TelegramBot] Connected as @%s", botName)
 		}
 
-		// Delete any existing webhook before polling
 		_ = s.deleteWebhook()
-
-		// Start polling loop
 		s.pollLoop()
 	}()
 }
@@ -137,7 +141,6 @@ func (s *TelegramBotService) Stop() {
 
 func (s *TelegramBotService) Reconfigure() {
 	s.Stop()
-	// Short pause to ensure previous HTTP poll connection closes
 	time.Sleep(500 * time.Millisecond)
 	s.Start()
 }
@@ -172,6 +175,19 @@ func (s *TelegramBotService) loadSettingsLocked() {
 	s.lang = lang
 }
 
+func (s *TelegramBotService) isRussian() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return strings.HasPrefix(strings.ToLower(s.lang), "ru")
+}
+
+func (s *TelegramBotService) tr(en, ru string) string {
+	if s.isRussian() {
+		return ru
+	}
+	return en
+}
+
 func (s *TelegramBotService) isAuthorized(userID int64) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -184,6 +200,80 @@ func (s *TelegramBotService) isAuthorized(userID int64) bool {
 		}
 	}
 	return false
+}
+
+func (s *TelegramBotService) getActiveRouter(chatID int64) (*db.Router, error) {
+	s.mu.Lock()
+	rID, ok := s.activeRouterPerChat[chatID]
+	s.mu.Unlock()
+
+	if ok && rID > 0 {
+		rtr, err := s.database.GetRouter(rID)
+		if err == nil && rtr != nil {
+			return rtr, nil
+		}
+	}
+
+	def, err := s.database.GetDefaultRouter()
+	if err == nil && def != nil {
+		return def, nil
+	}
+
+	routers, err := s.database.GetRouters()
+	if err == nil && len(routers) > 0 {
+		return &routers[0], nil
+	}
+
+	return nil, fmt.Errorf("no routers configured")
+}
+
+func (s *TelegramBotService) setActiveRouter(chatID int64, routerID int) {
+	s.mu.Lock()
+	s.activeRouterPerChat[chatID] = routerID
+	s.mu.Unlock()
+}
+
+func (s *TelegramBotService) getClientForRouter(routerID int) (*routeros.Client, error) {
+	s.mu.Lock()
+	if c, ok := s.clients[routerID]; ok && c != nil {
+		s.mu.Unlock()
+		return c, nil
+	}
+	s.mu.Unlock()
+
+	router, err := s.database.GetRouter(routerID)
+	if err != nil {
+		return nil, err
+	}
+	if router == nil {
+		return nil, fmt.Errorf("router %d not found", routerID)
+	}
+
+	if s.client != nil && s.client.Matches(router.Host, router.Port) {
+		s.mu.Lock()
+		s.clients[routerID] = s.client
+		s.mu.Unlock()
+		return s.client, nil
+	}
+
+	newClient, err := routeros.NewClient(routeros.Config{
+		Host:      router.Host,
+		Port:      router.Port,
+		Username:  router.Username,
+		Password:  router.Password,
+		UseSSL:    router.UseSSL,
+		SSLVerify: router.SSLVerify,
+		CACert:    router.CACert.String,
+		Timeout:   5 * time.Second,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	s.mu.Lock()
+	s.clients[routerID] = newClient
+	s.mu.Unlock()
+	return newClient, nil
 }
 
 func (s *TelegramBotService) fetchMe() (string, error) {
@@ -263,7 +353,6 @@ func (s *TelegramBotService) pollLoop() {
 		}
 
 		if resp.StatusCode == 409 {
-			// Conflict: another instance or poller running
 			log.Printf("[TelegramBot] Polling conflict 409, waiting 5s...")
 			resp.Body.Close()
 			select {
@@ -324,27 +413,29 @@ func (s *TelegramBotService) handleMessage(msg *TelegramMessage) {
 		}
 
 		switch strings.ToLower(cmd) {
-		case "start":
-			s.cmdStart(msg.Chat.ID)
+		case "start", "menu":
+			s.sendMainMenu(msg.Chat.ID, 0)
 		case "help":
 			s.cmdHelp(msg.Chat.ID)
 		case "status":
 			s.sendStatus(msg.Chat.ID, 0)
 		case "users":
 			s.sendUsers(msg.Chat.ID, 0)
+		case "devices":
+			s.sendDevices(msg.Chat.ID, 0)
 		case "routers":
 			s.sendRouters(msg.Chat.ID, 0)
 		case "reboot":
 			s.sendRebootPrompt(msg.Chat.ID, 0)
 		default:
-			_ = s.SendMessage(msg.Chat.ID, "Unknown command. Type /help to view available commands.", "", nil)
+			_ = s.SendMessage(msg.Chat.ID, s.tr("Unknown command. Type /help to view available commands.", "Неизвестная команда. Введите /help для справки."), "", nil)
 		}
 	}
 }
 
 func (s *TelegramBotService) handleCallbackQuery(query *TelegramCallbackQuery) {
 	if !s.isAuthorized(query.From.ID) {
-		_ = s.answerCallback(query.ID, "Access denied", true)
+		_ = s.answerCallback(query.ID, s.tr("Access denied", "Доступ запрещен"), true)
 		return
 	}
 
@@ -357,6 +448,10 @@ func (s *TelegramBotService) handleCallbackQuery(query *TelegramCallbackQuery) {
 	}
 
 	switch {
+	case data == "menu:main":
+		_ = s.answerCallback(query.ID, "", false)
+		s.sendMainMenu(chatID, msgID)
+
 	case data == "cmd:status":
 		_ = s.answerCallback(query.ID, "", false)
 		s.sendStatus(chatID, msgID)
@@ -364,6 +459,16 @@ func (s *TelegramBotService) handleCallbackQuery(query *TelegramCallbackQuery) {
 	case data == "cmd:users":
 		_ = s.answerCallback(query.ID, "", false)
 		s.sendUsers(chatID, msgID)
+
+	case strings.HasPrefix(data, "user:view:"):
+		_ = s.answerCallback(query.ID, "", false)
+		uIDStr := strings.TrimPrefix(data, "user:view:")
+		uID, _ := strconv.Atoi(uIDStr)
+		s.sendUserDetail(chatID, msgID, uID)
+
+	case data == "cmd:devices":
+		_ = s.answerCallback(query.ID, "", false)
+		s.sendDevices(chatID, msgID)
 
 	case data == "cmd:routers":
 		_ = s.answerCallback(query.ID, "", false)
@@ -374,30 +479,41 @@ func (s *TelegramBotService) handleCallbackQuery(query *TelegramCallbackQuery) {
 		s.sendRebootPrompt(chatID, msgID)
 
 	case data == "reboot:confirm":
-		_ = s.answerCallback(query.ID, "Rebooting router...", true)
-		if query.Message != nil {
-			_ = s.editMessage(chatID, msgID, "⏳ <b>Router reboot initiated...</b>", "HTML", nil)
+		rtr, _ := s.getActiveRouter(chatID)
+		rtrName := "router"
+		if rtr != nil {
+			rtrName = rtr.Name
 		}
-		go func() {
-			time.Sleep(500 * time.Millisecond)
-			if s.client != nil {
-				_ = s.client.Reboot(context.Background())
-			}
-		}()
+		_ = s.answerCallback(query.ID, s.tr("Rebooting router...", "Перезагрузка роутера..."), true)
+		kb := InlineKeyboardMarkup{
+			InlineKeyboard: [][]InlineKeyboardButton{
+				{{Text: s.tr("🏠 Main Menu", "🏠 Главное меню"), CallbackData: "menu:main"}},
+			},
+		}
+		msg := fmt.Sprintf(s.tr("⏳ <b>Reboot initiated for %s...</b>", "⏳ <b>Инициирована перезагрузка %s...</b>"), rtrName)
+		_ = s.sendOrEdit(chatID, msgID, msg, kb)
+		if rtr != nil {
+			go func(rID int) {
+				time.Sleep(500 * time.Millisecond)
+				client, err := s.getClientForRouter(rID)
+				if err == nil && client != nil {
+					_ = client.Reboot(context.Background())
+				}
+			}(rtr.ID)
+		}
 
 	case data == "reboot:cancel":
-		_ = s.answerCallback(query.ID, "Cancelled", false)
-		if query.Message != nil {
-			_ = s.editMessage(chatID, msgID, "❌ <i>Router reboot cancelled.</i>", "HTML", nil)
-		}
+		_ = s.answerCallback(query.ID, s.tr("Cancelled", "Отменено"), false)
+		s.sendMainMenu(chatID, msgID)
 
 	case strings.HasPrefix(data, "router:select:"):
 		rIDStr := strings.TrimPrefix(data, "router:select:")
 		rID, _ := strconv.Atoi(rIDStr)
 		if rID > 0 {
+			s.setActiveRouter(chatID, rID)
 			_, _ = s.database.SqlDB.Exec("UPDATE routers SET is_default = 0")
 			_, _ = s.database.SqlDB.Exec("UPDATE routers SET is_default = 1, is_active = 1 WHERE id = ?", rID)
-			_ = s.answerCallback(query.ID, "Switched active router", true)
+			_ = s.answerCallback(query.ID, s.tr("Switched active router", "Активный роутер переключен"), false)
 		}
 		s.sendRouters(chatID, msgID)
 
@@ -407,9 +523,18 @@ func (s *TelegramBotService) handleCallbackQuery(query *TelegramCallbackQuery) {
 		if u, _ := s.database.GetUser(uID); u != nil {
 			u.IsPaused = true
 			_ = s.database.UpdateUser(u)
-			_ = s.answerCallback(query.ID, fmt.Sprintf("Paused %s", u.Name), false)
+			if s.reconciler != nil && u.RouterID != nil {
+				go func(rID int) {
+					ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+					defer cancel()
+					_ = s.reconciler.ReconcileQueues(ctx, rID)
+				}(*u.RouterID)
+			}
+			_ = s.answerCallback(query.ID, fmt.Sprintf(s.tr("Paused %s", "Приостановлен %s"), u.Name), false)
+			s.sendUserDetail(chatID, msgID, uID)
+		} else {
+			s.sendUsers(chatID, msgID)
 		}
-		s.sendUsers(chatID, msgID)
 
 	case strings.HasPrefix(data, "user:resume:"):
 		uIDStr := strings.TrimPrefix(data, "user:resume:")
@@ -417,78 +542,156 @@ func (s *TelegramBotService) handleCallbackQuery(query *TelegramCallbackQuery) {
 		if u, _ := s.database.GetUser(uID); u != nil {
 			u.IsPaused = false
 			_ = s.database.UpdateUser(u)
-			_ = s.answerCallback(query.ID, fmt.Sprintf("Resumed %s", u.Name), false)
+			if s.reconciler != nil && u.RouterID != nil {
+				go func(rID int) {
+					ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+					defer cancel()
+					_ = s.reconciler.ReconcileQueues(ctx, rID)
+				}(*u.RouterID)
+			}
+			_ = s.answerCallback(query.ID, fmt.Sprintf(s.tr("Resumed %s", "Возобновлен %s"), u.Name), false)
+			s.sendUserDetail(chatID, msgID, uID)
+		} else {
+			s.sendUsers(chatID, msgID)
 		}
-		s.sendUsers(chatID, msgID)
 
 	case strings.HasPrefix(data, "user:limit:"):
 		parts := strings.Split(data, ":")
 		if len(parts) >= 4 {
 			uID, _ := strconv.Atoi(parts[2])
 			limit := parts[3]
+			if limit == "unlimited" {
+				limit = ""
+			}
 			if u, _ := s.database.GetUser(uID); u != nil {
 				u.SpeedLimit = limit
 				_ = s.database.UpdateUser(u)
-				_ = s.answerCallback(query.ID, fmt.Sprintf("Limit set to %s", limit), false)
+				if s.reconciler != nil && u.RouterID != nil {
+					go func(rID int) {
+						ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+						defer cancel()
+						_ = s.reconciler.ReconcileQueues(ctx, rID)
+					}(*u.RouterID)
+				}
+				dispLimit := limit
+				if dispLimit == "" {
+					dispLimit = s.tr("unlimited", "безлимит")
+				}
+				_ = s.answerCallback(query.ID, fmt.Sprintf(s.tr("Limit set to %s", "Лимит установлен: %s"), dispLimit), false)
+				s.sendUserDetail(chatID, msgID, uID)
+			} else {
+				s.sendUsers(chatID, msgID)
 			}
 		}
-		s.sendUsers(chatID, msgID)
 	}
 }
 
-func (s *TelegramBotService) cmdStart(chatID int64) {
-	text := "⚡ <b>MikroMan Companion Bot</b>\n\n" +
-		"Manage your MikroTik routers, monitor live network metrics, inspect connected user profiles, and trigger instant controls.\n\n" +
-		"Use the buttons below or commands:\n" +
-		"• /status — Router health & metrics\n" +
-		"• /users — User speeds & controls\n" +
-		"• /routers — Switch active router\n" +
-		"• /reboot — Reboot router"
+func (s *TelegramBotService) sendMainMenu(chatID int64, msgID int) {
+	isRU := s.isRussian()
+	rtr, _ := s.getActiveRouter(chatID)
+
+	var sb strings.Builder
+	if isRU {
+		sb.WriteString("⚡ <b>MikroMan Бот-помощник</b>\n\n")
+		if rtr != nil {
+			sb.WriteString(fmt.Sprintf("🌐 <b>Активный роутер:</b> %s (<code>%s</code>)\n\n", rtr.Name, rtr.Host))
+		} else {
+			sb.WriteString("⚠️ <i>Роутер не настроен. Добавьте его в панели MikroMan.</i>\n\n")
+		}
+		sb.WriteString("Выберите раздел меню:")
+	} else {
+		sb.WriteString("⚡ <b>MikroMan Companion Bot</b>\n\n")
+		if rtr != nil {
+			sb.WriteString(fmt.Sprintf("🌐 <b>Active Router:</b> %s (<code>%s</code>)\n\n", rtr.Name, rtr.Host))
+		} else {
+			sb.WriteString("⚠️ <i>No router configured. Add one in MikroMan Settings.</i>\n\n")
+		}
+		sb.WriteString("Select an option below:")
+	}
 
 	kb := InlineKeyboardMarkup{
 		InlineKeyboard: [][]InlineKeyboardButton{
 			{
-				{Text: "📊 Status", CallbackData: "cmd:status"},
-				{Text: "👥 Users", CallbackData: "cmd:users"},
+				{Text: s.tr("📊 Status", "📊 Статус"), CallbackData: "cmd:status"},
+				{Text: s.tr("👥 Users", "👥 Пользователи"), CallbackData: "cmd:users"},
 			},
 			{
-				{Text: "🔀 Routers", CallbackData: "cmd:routers"},
-				{Text: "⚠️ Reboot Router", CallbackData: "cmd:reboot_prompt"},
+				{Text: s.tr("📱 Devices", "📱 Устройства"), CallbackData: "cmd:devices"},
+				{Text: s.tr("🔀 Routers", "🔀 Роутеры"), CallbackData: "cmd:routers"},
+			},
+			{
+				{Text: s.tr("⚠️ Reboot", "⚠️ Перезагрузка"), CallbackData: "cmd:reboot_prompt"},
+				{Text: s.tr("🔄 Refresh", "🔄 Обновить"), CallbackData: "menu:main"},
 			},
 		},
 	}
 
-	_ = s.SendMessage(chatID, text, "HTML", kb)
+	s.sendOrEdit(chatID, msgID, sb.String(), kb)
+}
+
+func (s *TelegramBotService) cmdStart(chatID int64) {
+	s.sendMainMenu(chatID, 0)
 }
 
 func (s *TelegramBotService) cmdHelp(chatID int64) {
-	text := "📖 <b>Available Commands</b>\n\n" +
-		"• /status — Realtime CPU, memory, uptime, temperature, and voltage\n" +
-		"• /users — Connected user profiles, speeds, pause/resume, and bandwidth limits\n" +
-		"• /routers — List configured routers and switch active router\n" +
-		"• /reboot — Safely reboot the active MikroTik router with confirmation\n" +
-		"• /help — Show this help message"
+	isRU := s.isRussian()
+	var text string
+	if isRU {
+		text = "📖 <b>Команды MikroMan Bot</b>\n\n" +
+			"• /menu или /start — Главное интерактивное меню\n" +
+			"• /status — Мониторинг CPU, памяти, аптайма и температуры\n" +
+			"• /users — Пользователи, скорости, пауза и лимиты\n" +
+			"• /devices — Список подключенных устройств\n" +
+			"• /routers — Переключение активного роутера\n" +
+			"• /reboot — Безопасная перезагрузка роутера\n" +
+			"• /help — Справка по командам"
+	} else {
+		text = "📖 <b>MikroMan Bot Commands</b>\n\n" +
+			"• /menu or /start — Main interactive menu\n" +
+			"• /status — Realtime CPU, memory, uptime, temp, and voltage\n" +
+			"• /users — User profiles, speeds, pause/resume, and limits\n" +
+			"• /devices — Connected and unassigned devices\n" +
+			"• /routers — List and switch active router\n" +
+			"• /reboot — Safely reboot active MikroTik router\n" +
+			"• /help — Show this help message"
+	}
 
-	_ = s.SendMessage(chatID, text, "HTML", nil)
+	kb := InlineKeyboardMarkup{
+		InlineKeyboard: [][]InlineKeyboardButton{
+			{{Text: s.tr("🏠 Main Menu", "🏠 Главное меню"), CallbackData: "menu:main"}},
+		},
+	}
+	_ = s.SendMessage(chatID, text, "HTML", kb)
 }
 
 func (s *TelegramBotService) sendStatus(chatID int64, msgID int) {
-	client := s.client
-	rtr, _ := s.database.GetDefaultRouter()
+	isRU := s.isRussian()
+	rtr, _ := s.getActiveRouter(chatID)
 	if rtr == nil {
-		routers, _ := s.database.GetRouters()
-		if len(routers) > 0 {
-			rtr = &routers[0]
+		text := s.tr("⚠️ <i>No active router configured. Connect a router in MikroMan Settings.</i>",
+			"⚠️ <i>Роутер не настроен. Добавьте его в настройках MikroMan.</i>")
+		kb := InlineKeyboardMarkup{
+			InlineKeyboard: [][]InlineKeyboardButton{
+				{{Text: s.tr("🏠 Main Menu", "🏠 Главное меню"), CallbackData: "menu:main"}},
+			},
 		}
+		s.sendOrEdit(chatID, msgID, text, kb)
+		return
 	}
 
-	if client == nil {
-		text := "⚠️ <i>No active router client configured. Connect a router in MikroMan Settings.</i>"
-		if msgID > 0 {
-			_ = s.editMessage(chatID, msgID, text, "HTML", nil)
-		} else {
-			_ = s.SendMessage(chatID, text, "HTML", nil)
+	client, err := s.getClientForRouter(rtr.ID)
+	if err != nil || client == nil {
+		text := fmt.Sprintf(
+			s.tr("⚠️ <i>Failed to connect to router %s (%s).</i>", "⚠️ <i>Не удалось подключиться к роутеру %s (%s).</i>"),
+			rtr.Name, rtr.Host,
+		)
+		kb := InlineKeyboardMarkup{
+			InlineKeyboard: [][]InlineKeyboardButton{
+				{{Text: s.tr("🔄 Refresh", "🔄 Обновить"), CallbackData: "cmd:status"}},
+				{{Text: s.tr("🏠 Main Menu", "🏠 Главное меню"), CallbackData: "menu:main"}},
+			},
 		}
+		s.sendOrEdit(chatID, msgID, text, kb)
 		return
 	}
 
@@ -498,11 +701,6 @@ func (s *TelegramBotService) sendStatus(chatID int64, msgID int) {
 	res, _ := client.GetSystemResource(ctx)
 	health, _ := client.GetSystemHealth(ctx)
 	temp, volt := routeros.ExtractHealthMetrics(health)
-
-	routerName := "MikroTik"
-	if rtr != nil {
-		routerName = rtr.Name
-	}
 
 	board := "RouterOS"
 	ver := "7.x"
@@ -525,158 +723,449 @@ func (s *TelegramBotService) sendStatus(chatID int64, msgID int) {
 	}
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("📊 <b>%s Status</b>\n\n", routerName))
-	sb.WriteString(fmt.Sprintf("🏷 <b>Model:</b> <code>%s</code> (%s)\n", board, ver))
-	sb.WriteString(fmt.Sprintf("⚙ <b>CPU Load:</b> <code>%s%%</code> | ⏱ <b>Uptime:</b> <code>%s</code>\n", cpuStr, uptime))
-	sb.WriteString(fmt.Sprintf("💾 <b>Memory:</b> <code>%s free</code> / <code>%s</code>\n", formatBytes(freeMem), formatBytes(totMem)))
-
-	if temp != nil {
-		sb.WriteString(fmt.Sprintf("🌡 <b>Temperature:</b> <code>%.1f°C</code>\n", *temp))
-	}
-	if volt != nil {
-		sb.WriteString(fmt.Sprintf("⚡ <b>Voltage:</b> <code>%.1f V</code>\n", *volt))
+	if isRU {
+		sb.WriteString(fmt.Sprintf("📊 <b>Статус: %s</b>\n\n", rtr.Name))
+		sb.WriteString(fmt.Sprintf("🏷 <b>Модель:</b> <code>%s</code> (%s)\n", board, ver))
+		sb.WriteString(fmt.Sprintf("⚙ <b>Нагрузка CPU:</b> <code>%s%%</code> | ⏱ <b>Аптайм:</b> <code>%s</code>\n", cpuStr, uptime))
+		sb.WriteString(fmt.Sprintf("💾 <b>Память:</b> <code>%s свободно</code> / <code>%s</code>\n", formatBytes(freeMem), formatBytes(totMem)))
+		if temp != nil {
+			sb.WriteString(fmt.Sprintf("🌡 <b>Температура:</b> <code>%.1f°C</code>\n", *temp))
+		}
+		if volt != nil {
+			sb.WriteString(fmt.Sprintf("⚡ <b>Напряжение:</b> <code>%.1f V</code>\n", *volt))
+		}
+	} else {
+		sb.WriteString(fmt.Sprintf("📊 <b>%s Status</b>\n\n", rtr.Name))
+		sb.WriteString(fmt.Sprintf("🏷 <b>Model:</b> <code>%s</code> (%s)\n", board, ver))
+		sb.WriteString(fmt.Sprintf("⚙ <b>CPU Load:</b> <code>%s%%</code> | ⏱ <b>Uptime:</b> <code>%s</code>\n", cpuStr, uptime))
+		sb.WriteString(fmt.Sprintf("💾 <b>Memory:</b> <code>%s free</code> / <code>%s</code>\n", formatBytes(freeMem), formatBytes(totMem)))
+		if temp != nil {
+			sb.WriteString(fmt.Sprintf("🌡 <b>Temperature:</b> <code>%.1f°C</code>\n", *temp))
+		}
+		if volt != nil {
+			sb.WriteString(fmt.Sprintf("⚡ <b>Voltage:</b> <code>%.1f V</code>\n", *volt))
+		}
 	}
 
 	kb := InlineKeyboardMarkup{
 		InlineKeyboard: [][]InlineKeyboardButton{
 			{
-				{Text: "🔄 Refresh", CallbackData: "cmd:status"},
-				{Text: "👥 Users", CallbackData: "cmd:users"},
+				{Text: s.tr("🔄 Refresh", "🔄 Обновить"), CallbackData: "cmd:status"},
+				{Text: s.tr("👥 Users", "👥 Пользователи"), CallbackData: "cmd:users"},
 			},
 			{
-				{Text: "🔀 Routers", CallbackData: "cmd:routers"},
-				{Text: "⚠️ Reboot", CallbackData: "cmd:reboot_prompt"},
+				{Text: s.tr("📱 Devices", "📱 Устройства"), CallbackData: "cmd:devices"},
+				{Text: s.tr("🔀 Routers", "🔀 Роутеры"), CallbackData: "cmd:routers"},
+			},
+			{
+				{Text: s.tr("🏠 Main Menu", "🏠 Главное меню"), CallbackData: "menu:main"},
 			},
 		},
 	}
 
-	if msgID > 0 {
-		_ = s.editMessage(chatID, msgID, sb.String(), "HTML", kb)
-	} else {
-		_ = s.SendMessage(chatID, sb.String(), "HTML", kb)
-	}
+	s.sendOrEdit(chatID, msgID, sb.String(), kb)
 }
 
 func (s *TelegramBotService) sendUsers(chatID int64, msgID int) {
-	users, err := s.database.GetUsers(nil)
-	if err != nil || len(users) == 0 {
-		text := "👥 <b>Users</b>\n\n<i>No users created yet. Assign devices to users in Web UI.</i>"
-		if msgID > 0 {
-			_ = s.editMessage(chatID, msgID, text, "HTML", nil)
-		} else {
-			_ = s.SendMessage(chatID, text, "HTML", nil)
+	isRU := s.isRussian()
+	rtr, _ := s.getActiveRouter(chatID)
+	if rtr == nil {
+		text := s.tr("⚠️ <i>No active router configured.</i>", "⚠️ <i>Роутер не настроен.</i>")
+		kb := InlineKeyboardMarkup{
+			InlineKeyboard: [][]InlineKeyboardButton{
+				{{Text: s.tr("🏠 Main Menu", "🏠 Главное меню"), CallbackData: "menu:main"}},
+			},
 		}
+		s.sendOrEdit(chatID, msgID, text, kb)
+		return
+	}
+
+	users, err := s.database.GetUsers(&rtr.ID)
+	allDevices, _ := s.database.GetDevices(&rtr.ID)
+
+	devMap := make(map[int][]db.Device)
+	for _, dev := range allDevices {
+		if dev.UserID != nil {
+			devMap[*dev.UserID] = append(devMap[*dev.UserID], dev)
+		}
+	}
+	for i := range users {
+		users[i].Devices = devMap[users[i].ID]
+	}
+
+	if err != nil || len(users) == 0 {
+		text := fmt.Sprintf(
+			s.tr("👥 <b>Users (%s)</b>\n\n<i>No user profiles created for this router yet. Assign devices to users in Web UI.</i>",
+				"👥 <b>Пользователи (%s)</b>\n\n<i>Для этого роутера пользователи ещё не созданы. Привяжите устройства в Web UI.</i>"),
+			rtr.Name,
+		)
+		kb := InlineKeyboardMarkup{
+			InlineKeyboard: [][]InlineKeyboardButton{
+				{{Text: s.tr("📱 Devices", "📱 Устройства"), CallbackData: "cmd:devices"}},
+				{{Text: s.tr("🏠 Main Menu", "🏠 Главное меню"), CallbackData: "menu:main"}},
+			},
+		}
+		s.sendOrEdit(chatID, msgID, text, kb)
 		return
 	}
 
 	var sb strings.Builder
-	sb.WriteString("👥 <b>User Profiles & Bandwidth</b>\n\n")
+	if isRU {
+		sb.WriteString(fmt.Sprintf("👥 <b>Профили пользователей — %s</b>\n\n", rtr.Name))
+	} else {
+		sb.WriteString(fmt.Sprintf("👥 <b>User Profiles & Bandwidth — %s</b>\n\n", rtr.Name))
+	}
 
-	var rows [][]InlineKeyboardButton
+	var userButtons []InlineKeyboardButton
 	for _, u := range users {
-		status := "🟢 Active"
+		statusIcon := "🟢"
+		statusText := s.tr("Active", "Активен")
 		if u.IsPaused {
-			status = "⏸ Paused"
+			statusIcon = "⏸"
+			statusText = s.tr("Paused", "На паузе")
 		}
+
 		limit := u.SpeedLimit
 		if limit == "" {
-			limit = "unlimited"
+			limit = s.tr("unlimited", "безлимит")
 		}
 
-		sb.WriteString(fmt.Sprintf("• <b>%s</b> — %s\n", u.Name, status))
-		sb.WriteString(fmt.Sprintf("  Devices: %d | Limit: <code>%s</code>\n", len(u.Devices), limit))
+		onlineCount := 0
+		for _, d := range u.Devices {
+			if d.IsActive {
+				onlineCount++
+			}
+		}
 
-		// User action row
-		if u.IsPaused {
-			rows = append(rows, []InlineKeyboardButton{
-				{Text: fmt.Sprintf("▶ Resume %s", u.Name), CallbackData: fmt.Sprintf("user:resume:%d", u.ID)},
-			})
+		if isRU {
+			sb.WriteString(fmt.Sprintf("• <b>%s</b> — %s %s\n", u.Name, statusIcon, statusText))
+			sb.WriteString(fmt.Sprintf("  Устройств: <b>%d</b> (онлайн: %d) | Лимит: <code>%s</code>\n", len(u.Devices), onlineCount, limit))
 		} else {
-			rows = append(rows, []InlineKeyboardButton{
-				{Text: fmt.Sprintf("⏸ Pause %s", u.Name), CallbackData: fmt.Sprintf("user:pause:%d", u.ID)},
-				{Text: "⚡ 20M", CallbackData: fmt.Sprintf("user:limit:%d:20M", u.ID)},
-				{Text: "⚡ 50M", CallbackData: fmt.Sprintf("user:limit:%d:50M", u.ID)},
-				{Text: "⚡ Max", CallbackData: fmt.Sprintf("user:limit:%d:unlimited", u.ID)},
-			})
+			sb.WriteString(fmt.Sprintf("• <b>%s</b> — %s %s\n", u.Name, statusIcon, statusText))
+			sb.WriteString(fmt.Sprintf("  Devices: <b>%d</b> (online: %d) | Limit: <code>%s</code>\n", len(u.Devices), onlineCount, limit))
 		}
+
+		userButtons = append(userButtons, InlineKeyboardButton{
+			Text:         fmt.Sprintf("👤 %s (%d)", u.Name, len(u.Devices)),
+			CallbackData: fmt.Sprintf("user:view:%d", u.ID),
+		})
+	}
+
+	var rows [][]InlineKeyboardButton
+	for i := 0; i < len(userButtons); i += 2 {
+		end := i + 2
+		if end > len(userButtons) {
+			end = len(userButtons)
+		}
+		rows = append(rows, userButtons[i:end])
 	}
 
 	rows = append(rows, []InlineKeyboardButton{
-		{Text: "🔄 Refresh", CallbackData: "cmd:users"},
-		{Text: "📊 Status", CallbackData: "cmd:status"},
+		{Text: s.tr("📱 Devices", "📱 Устройства"), CallbackData: "cmd:devices"},
+		{Text: s.tr("🔄 Refresh", "🔄 Обновить"), CallbackData: "cmd:users"},
+	})
+	rows = append(rows, []InlineKeyboardButton{
+		{Text: s.tr("🏠 Main Menu", "🏠 Главное меню"), CallbackData: "menu:main"},
 	})
 
 	kb := InlineKeyboardMarkup{InlineKeyboard: rows}
-
-	if msgID > 0 {
-		_ = s.editMessage(chatID, msgID, sb.String(), "HTML", kb)
-	} else {
-		_ = s.SendMessage(chatID, sb.String(), "HTML", kb)
-	}
+	s.sendOrEdit(chatID, msgID, sb.String(), kb)
 }
 
-func (s *TelegramBotService) sendRouters(chatID int64, msgID int) {
-	routers, _ := s.database.GetRouters()
-	if len(routers) == 0 {
-		text := "🔀 <b>Routers</b>\n\n<i>No routers configured. Add a router via Web UI.</i>"
-		if msgID > 0 {
-			_ = s.editMessage(chatID, msgID, text, "HTML", nil)
-		} else {
-			_ = s.SendMessage(chatID, text, "HTML", nil)
-		}
+func (s *TelegramBotService) sendUserDetail(chatID int64, msgID int, userID int) {
+	u, err := s.database.GetUser(userID)
+	if err != nil || u == nil {
+		s.sendUsers(chatID, msgID)
 		return
 	}
 
+	rtrName := "Router"
+	if u.RouterID != nil {
+		if rtr, _ := s.database.GetRouter(*u.RouterID); rtr != nil {
+			rtrName = rtr.Name
+		}
+	}
+
+	allDevices, _ := s.database.GetDevices(u.RouterID)
+	var userDevices []db.Device
+	for _, dev := range allDevices {
+		if dev.UserID != nil && *dev.UserID == u.ID {
+			userDevices = append(userDevices, dev)
+		}
+	}
+
+	isRU := s.isRussian()
+	statusIcon := "🟢"
+	statusText := s.tr("Active", "Активен")
+	if u.IsPaused {
+		statusIcon = "⏸"
+		statusText = s.tr("Paused", "На паузе")
+	}
+	limit := u.SpeedLimit
+	if limit == "" {
+		limit = s.tr("unlimited", "безлимит")
+	}
+
 	var sb strings.Builder
-	sb.WriteString("🔀 <b>Configured MikroTik Routers</b>\n\n")
+	if isRU {
+		sb.WriteString(fmt.Sprintf("👤 <b>Пользователь: %s</b>\n", u.Name))
+		sb.WriteString(fmt.Sprintf("🌐 <b>Роутер:</b> %s\n", rtrName))
+		sb.WriteString(fmt.Sprintf("⚙ <b>Статус:</b> %s %s\n", statusIcon, statusText))
+		sb.WriteString(fmt.Sprintf("⚡ <b>Ограничение скорости:</b> <code>%s</code>\n\n", limit))
+		sb.WriteString(fmt.Sprintf("📱 <b>Привязанные устройства (%d):</b>\n", len(userDevices)))
+	} else {
+		sb.WriteString(fmt.Sprintf("👤 <b>User: %s</b>\n", u.Name))
+		sb.WriteString(fmt.Sprintf("🌐 <b>Router:</b> %s\n", rtrName))
+		sb.WriteString(fmt.Sprintf("⚙ <b>Status:</b> %s %s\n", statusIcon, statusText))
+		sb.WriteString(fmt.Sprintf("⚡ <b>Speed Limit:</b> <code>%s</code>\n\n", limit))
+		sb.WriteString(fmt.Sprintf("📱 <b>Assigned Devices (%d):</b>\n", len(userDevices)))
+	}
+
+	if len(userDevices) == 0 {
+		if isRU {
+			sb.WriteString("<i>Нет привязанных устройств</i>\n")
+		} else {
+			sb.WriteString("<i>No devices assigned yet</i>\n")
+		}
+	} else {
+		for _, d := range userDevices {
+			dName := getDeviceDisplayName(d)
+			dIP := getDeviceIP(d)
+			onlineIcon := "⚪"
+			onlineText := s.tr("Offline", "Не в сети")
+			if d.IsActive {
+				onlineIcon = "🟢"
+				onlineText = s.tr("Online", "В сети")
+			}
+			sb.WriteString(fmt.Sprintf("• %s <b>%s</b> (<code>%s</code>) — %s\n", onlineIcon, dName, dIP, onlineText))
+		}
+	}
+
+	var rows [][]InlineKeyboardButton
+	if u.IsPaused {
+		rows = append(rows, []InlineKeyboardButton{
+			{Text: s.tr("▶ Resume Access", "▶ Возобновить доступ"), CallbackData: fmt.Sprintf("user:resume:%d", u.ID)},
+		})
+	} else {
+		rows = append(rows, []InlineKeyboardButton{
+			{Text: s.tr("⏸ Pause Access", "⏸ Поставить на паузу"), CallbackData: fmt.Sprintf("user:pause:%d", u.ID)},
+		})
+	}
+
+	rows = append(rows, []InlineKeyboardButton{
+		{Text: "⚡ 10M", CallbackData: fmt.Sprintf("user:limit:%d:10M", u.ID)},
+		{Text: "⚡ 20M", CallbackData: fmt.Sprintf("user:limit:%d:20M", u.ID)},
+		{Text: "⚡ 50M", CallbackData: fmt.Sprintf("user:limit:%d:50M", u.ID)},
+		{Text: s.tr("⚡ Max", "⚡ Безлимит"), CallbackData: fmt.Sprintf("user:limit:%d:unlimited", u.ID)},
+	})
+
+	rows = append(rows, []InlineKeyboardButton{
+		{Text: s.tr("🔙 Back to Users", "🔙 К пользователям"), CallbackData: "cmd:users"},
+		{Text: s.tr("🏠 Main Menu", "🏠 Главное меню"), CallbackData: "menu:main"},
+	})
+
+	kb := InlineKeyboardMarkup{InlineKeyboard: rows}
+	s.sendOrEdit(chatID, msgID, sb.String(), kb)
+}
+
+func (s *TelegramBotService) sendDevices(chatID int64, msgID int) {
+	isRU := s.isRussian()
+	rtr, _ := s.getActiveRouter(chatID)
+	if rtr == nil {
+		text := s.tr("⚠️ <i>No active router configured.</i>", "⚠️ <i>Роутер не настроен.</i>")
+		kb := InlineKeyboardMarkup{
+			InlineKeyboard: [][]InlineKeyboardButton{
+				{{Text: s.tr("🏠 Main Menu", "🏠 Главное меню"), CallbackData: "menu:main"}},
+			},
+		}
+		s.sendOrEdit(chatID, msgID, text, kb)
+		return
+	}
+
+	allDevices, _ := s.database.GetDevices(&rtr.ID)
+	users, _ := s.database.GetUsers(&rtr.ID)
+	userNames := make(map[int]string)
+	for _, u := range users {
+		userNames[u.ID] = u.Name
+	}
+
+	activeCount := 0
+	var unassigned []db.Device
+	var assigned []db.Device
+	for _, dev := range allDevices {
+		if dev.IsActive {
+			activeCount++
+		}
+		if dev.UserID == nil {
+			unassigned = append(unassigned, dev)
+		} else {
+			assigned = append(assigned, dev)
+		}
+	}
+
+	var sb strings.Builder
+	if isRU {
+		sb.WriteString(fmt.Sprintf("📱 <b>Устройства — %s</b>\n", rtr.Name))
+		sb.WriteString(fmt.Sprintf("Всего устройств: <b>%d</b> | В сети: <b>%d</b>\n\n", len(allDevices), activeCount))
+	} else {
+		sb.WriteString(fmt.Sprintf("📱 <b>Devices — %s</b>\n", rtr.Name))
+		sb.WriteString(fmt.Sprintf("Total Devices: <b>%d</b> | Online: <b>%d</b>\n\n", len(allDevices), activeCount))
+	}
+
+	if len(unassigned) > 0 {
+		if isRU {
+			sb.WriteString(fmt.Sprintf("❓ <b>Непривяз. устройства (%d):</b>\n", len(unassigned)))
+		} else {
+			sb.WriteString(fmt.Sprintf("❓ <b>Unassigned Devices (%d):</b>\n", len(unassigned)))
+		}
+		limitDisplay := 10
+		for i, d := range unassigned {
+			if i >= limitDisplay {
+				rem := len(unassigned) - limitDisplay
+				if isRU {
+					sb.WriteString(fmt.Sprintf("<i>...и ещё %d устр.</i>\n", rem))
+				} else {
+					sb.WriteString(fmt.Sprintf("<i>...and %d more</i>\n", rem))
+				}
+				break
+			}
+			name := getDeviceDisplayName(d)
+			dIP := getDeviceIP(d)
+			icon := "⚪"
+			if d.IsActive {
+				icon = "🟢"
+			}
+			sb.WriteString(fmt.Sprintf("• %s %s (<code>%s</code>)\n", icon, name, dIP))
+		}
+		sb.WriteString("\n")
+	}
+
+	if len(assigned) > 0 {
+		if isRU {
+			sb.WriteString(fmt.Sprintf("👤 <b>Привязанные устройства (%d):</b>\n", len(assigned)))
+		} else {
+			sb.WriteString(fmt.Sprintf("👤 <b>Assigned Devices (%d):</b>\n", len(assigned)))
+		}
+		limitDisplay := 12
+		for i, d := range assigned {
+			if i >= limitDisplay {
+				rem := len(assigned) - limitDisplay
+				if isRU {
+					sb.WriteString(fmt.Sprintf("<i>...и ещё %d устр.</i>\n", rem))
+				} else {
+					sb.WriteString(fmt.Sprintf("<i>...and %d more</i>\n", rem))
+				}
+				break
+			}
+			name := getDeviceDisplayName(d)
+			dIP := getDeviceIP(d)
+			owner := userNames[*d.UserID]
+			icon := "⚪"
+			if d.IsActive {
+				icon = "🟢"
+			}
+			sb.WriteString(fmt.Sprintf("• %s %s → <b>%s</b> (<code>%s</code>)\n", icon, name, owner, dIP))
+		}
+	}
+
+	kb := InlineKeyboardMarkup{
+		InlineKeyboard: [][]InlineKeyboardButton{
+			{
+				{Text: s.tr("👥 Users", "👥 Пользователи"), CallbackData: "cmd:users"},
+				{Text: s.tr("🔄 Refresh", "🔄 Обновить"), CallbackData: "cmd:devices"},
+			},
+			{
+				{Text: s.tr("🏠 Main Menu", "🏠 Главное меню"), CallbackData: "menu:main"},
+			},
+		},
+	}
+
+	s.sendOrEdit(chatID, msgID, sb.String(), kb)
+}
+
+func (s *TelegramBotService) sendRouters(chatID int64, msgID int) {
+	isRU := s.isRussian()
+	routers, _ := s.database.GetRouters()
+	if len(routers) == 0 {
+		text := s.tr("🔀 <b>Routers</b>\n\n<i>No routers configured. Add a router in Web UI.</i>",
+			"🔀 <b>Роутеры</b>\n\n<i>Роутеры не настроены. Добавьте роутер через Web UI.</i>")
+		kb := InlineKeyboardMarkup{
+			InlineKeyboard: [][]InlineKeyboardButton{
+				{{Text: s.tr("🏠 Main Menu", "🏠 Главное меню"), CallbackData: "menu:main"}},
+			},
+		}
+		s.sendOrEdit(chatID, msgID, text, kb)
+		return
+	}
+
+	activeRtr, _ := s.getActiveRouter(chatID)
+
+	var sb strings.Builder
+	if isRU {
+		sb.WriteString("🔀 <b>Настроенные роутеры MikroTik</b>\n\n")
+	} else {
+		sb.WriteString("🔀 <b>Configured MikroTik Routers</b>\n\n")
+	}
 
 	var rows [][]InlineKeyboardButton
 	for _, r := range routers {
 		icon := "⚪"
 		status := ""
-		if r.IsDefault {
+		isActive := activeRtr != nil && activeRtr.ID == r.ID
+		if isActive {
 			icon = "🟢"
-			status = " <i>(Active)</i>"
+			if isRU {
+				status = " <i>(Активный)</i>"
+			} else {
+				status = " <i>(Active)</i>"
+			}
 		}
 		sb.WriteString(fmt.Sprintf("%s <b>%s</b> <code>%s:%d</code>%s\n", icon, r.Name, r.Host, r.Port, status))
 
-		if !r.IsDefault {
+		if !isActive {
 			rows = append(rows, []InlineKeyboardButton{
-				{Text: fmt.Sprintf("👉 Switch to %s", r.Name), CallbackData: fmt.Sprintf("router:select:%d", r.ID)},
+				{
+					Text:         fmt.Sprintf("%s %s", s.tr("👉 Switch to", "👉 Выбрать"), r.Name),
+					CallbackData: fmt.Sprintf("router:select:%d", r.ID),
+				},
 			})
 		}
 	}
 
 	rows = append(rows, []InlineKeyboardButton{
-		{Text: "🔄 Refresh", CallbackData: "cmd:routers"},
-		{Text: "📊 Status", CallbackData: "cmd:status"},
+		{Text: s.tr("🔄 Refresh", "🔄 Обновить"), CallbackData: "cmd:routers"},
+		{Text: s.tr("🏠 Main Menu", "🏠 Главное меню"), CallbackData: "menu:main"},
 	})
 
 	kb := InlineKeyboardMarkup{InlineKeyboard: rows}
-
-	if msgID > 0 {
-		_ = s.editMessage(chatID, msgID, sb.String(), "HTML", kb)
-	} else {
-		_ = s.SendMessage(chatID, sb.String(), "HTML", kb)
-	}
+	s.sendOrEdit(chatID, msgID, sb.String(), kb)
 }
 
 func (s *TelegramBotService) sendRebootPrompt(chatID int64, msgID int) {
-	text := "⚠️ <b>Reboot Confirmation</b>\n\nAre you sure you want to reboot the active MikroTik router?\nConnected clients will temporarily lose connection."
+	isRU := s.isRussian()
+	rtr, _ := s.getActiveRouter(chatID)
+	rtrName := "MikroTik"
+	if rtr != nil {
+		rtrName = rtr.Name
+	}
+
+	var text string
+	if isRU {
+		text = fmt.Sprintf("⚠️ <b>Подтверждение перезагрузки</b>\n\nВы действительно хотите перезагрузить роутер <b>%s</b>?\nПодключенные устройства временно потеряют соединение с интернетом.", rtrName)
+	} else {
+		text = fmt.Sprintf("⚠️ <b>Reboot Confirmation</b>\n\nAre you sure you want to reboot <b>%s</b>?\nConnected clients will temporarily lose network connection.", rtrName)
+	}
+
 	kb := InlineKeyboardMarkup{
 		InlineKeyboard: [][]InlineKeyboardButton{
 			{
-				{Text: "⚠️ Confirm Reboot", CallbackData: "reboot:confirm"},
-				{Text: "❌ Cancel", CallbackData: "reboot:cancel"},
+				{Text: s.tr("⚠️ Confirm Reboot", "⚠️ Перезагрузить"), CallbackData: "reboot:confirm"},
+				{Text: s.tr("❌ Cancel", "❌ Отмена"), CallbackData: "reboot:cancel"},
 			},
 		},
 	}
 
-	if msgID > 0 {
-		_ = s.editMessage(chatID, msgID, text, "HTML", kb)
-	} else {
-		_ = s.SendMessage(chatID, text, "HTML", kb)
-	}
+	s.sendOrEdit(chatID, msgID, text, kb)
 }
 
 func (s *TelegramBotService) SendAlertToAdmins(text string) {
@@ -692,6 +1181,13 @@ func (s *TelegramBotService) SendAlertToAdmins(text string) {
 	for _, chatID := range adminIDs {
 		_ = s.SendMessage(chatID, text, "HTML", nil)
 	}
+}
+
+func (s *TelegramBotService) sendOrEdit(chatID int64, msgID int, text string, kb interface{}) error {
+	if msgID > 0 {
+		return s.editMessage(chatID, msgID, text, "HTML", kb)
+	}
+	return s.SendMessage(chatID, text, "HTML", kb)
 }
 
 func (s *TelegramBotService) SendMessage(chatID int64, text, parseMode string, replyMarkup interface{}) error {
@@ -794,4 +1290,21 @@ func formatBytes(bytes int64) string {
 		exp++
 	}
 	return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
+}
+
+func getDeviceDisplayName(d db.Device) string {
+	if d.CustomName.Valid && strings.TrimSpace(d.CustomName.String) != "" {
+		return d.CustomName.String
+	}
+	if d.Hostname.Valid && strings.TrimSpace(d.Hostname.String) != "" {
+		return d.Hostname.String
+	}
+	return d.MacAddress
+}
+
+func getDeviceIP(d db.Device) string {
+	if d.IPAddress.Valid && strings.TrimSpace(d.IPAddress.String) != "" {
+		return d.IPAddress.String
+	}
+	return "N/A"
 }

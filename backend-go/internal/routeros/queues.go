@@ -17,6 +17,12 @@ func (c *Client) GetSimpleQueues(ctx context.Context) ([]SimpleQueue, error) {
 
 // CreateSimpleQueue creates a new simple queue via PUT /queue/simple
 func (c *Client) CreateSimpleQueue(ctx context.Context, q *SimpleQueue) error {
+	if err := GuardImmuneTarget(q.Target, c.GetImmuneIPs(), "queue"); err != nil {
+		return err
+	}
+	if err := GuardQueueInvariants(q.Target, q.MaxLimit, q.LimitAt, q.Parent, q.Name); err != nil {
+		return err
+	}
 	var res SimpleQueue
 	if err := c.Put(ctx, "/queue/simple", q, &res); err != nil {
 		return err

@@ -45,7 +45,7 @@ func (h *TelegramHandler) Test(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	httpClient := &http.Client{Timeout: 5 * time.Second}
+	httpClient := &http.Client{Timeout: 25 * time.Second}
 
 	// Verify bot token with getMe
 	getMeURL := fmt.Sprintf("https://api.telegram.org/bot%s/getMe", token)

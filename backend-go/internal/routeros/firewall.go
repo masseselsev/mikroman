@@ -84,6 +84,11 @@ func (c *Client) GetAddressList(ctx context.Context, listName string) ([]Address
 
 // AddToAddressList adds an address to a list via PUT /ip/firewall/address-list
 func (c *Client) AddToAddressList(ctx context.Context, list, address, comment string) error {
+	if list == "mikroman_blocked" {
+		if err := GuardImmuneTarget(address, c.GetImmuneIPs(), "block"); err != nil {
+			return err
+		}
+	}
 	entry := AddressListEntry{
 		List:     list,
 		Address:  address,
