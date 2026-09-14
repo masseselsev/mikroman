@@ -27,6 +27,8 @@ export function WorldConnectionsModal({
   isOpen,
   onClose,
   connections = [],
+  routerLocation = null,
+  target = null,
 }) {
   const { t } = useI18n();
   const { speedUnit } = useSpeedUnit();
@@ -113,6 +115,43 @@ export function WorldConnectionsModal({
     const y = ((90 - lat) / 180) * 500;
     return { x: Math.max(15, Math.min(985, x)), y: Math.max(15, Math.min(485, y)) };
   };
+
+  // Resolve Origin (Router / Instance Location)
+  const originGeo = useMemo(() => {
+    if (routerLocation?.lat != null && routerLocation?.lng != null) {
+      return {
+        lat: routerLocation.lat,
+        lng: routerLocation.lng,
+        name: routerLocation.countryName || 'Router Gateway',
+        countryCode: routerLocation.countryCode || '',
+        publicIP: routerLocation.publicIP || '',
+        isFallback: false,
+      };
+    }
+    // Fallback coordinates (Central Europe: 50.1109, 8.6821)
+    return {
+      lat: 50.1109,
+      lng: 8.6821,
+      name: 'Router Gateway',
+      countryCode: '',
+      publicIP: '',
+      isFallback: true,
+    };
+  }, [routerLocation]);
+
+  const originPoint = useMemo(() => {
+    return project(originGeo.lat, originGeo.lng);
+  }, [originGeo]);
+
+  const originLabel = useMemo(() => {
+    if (target?.type === 'device') {
+      return target.name || `Device #${target.id}`;
+    }
+    if (target?.type === 'user') {
+      return target.name || `User #${target.id}`;
+    }
+    return originGeo.name || t('world_map_gateway');
+  }, [target, originGeo.name, t]);
 
   // Clamping helper for Pan
   const clampPan = useCallback((newPan, currentZoom) => {
@@ -367,6 +406,29 @@ export function WorldConnectionsModal({
                 >
                   {countryGroups.length} {t('world_map_countries')} • {geoConnections.length} {t('connections_count')}
                 </span>
+                {target && (
+                  <span
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 4,
+                      fontSize: 'var(--fs-2xs, 11px)',
+                      fontWeight: 600,
+                      padding: '2px 8px',
+                      borderRadius: 10,
+                      background: target.type === 'user' ? 'rgba(59, 130, 246, 0.15)' : 'rgba(16, 185, 129, 0.15)',
+                      color: target.type === 'user' ? 'var(--color-primary, #3b82f6)' : 'var(--color-success, #10b981)',
+                      border: `1px solid ${target.type === 'user' ? 'rgba(59, 130, 246, 0.3)' : 'rgba(16, 185, 129, 0.3)'}`,
+                    }}
+                    data-testid="world-map-target-badge"
+                  >
+                    {target.type === 'user' ? (
+                      <>👤 {target.name || `User #${target.id}`}</>
+                    ) : (
+                      <>💻 {target.name || `Device #${target.id}`}</>
+                    )}
+                  </span>
+                )}
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginTop: 4, fontSize: 'var(--fs-xs, 12px)' }}>
                 <span style={{ color: 'var(--color-primary, #3b82f6)', display: 'inline-flex', alignItems: 'center', gap: 3 }}>
@@ -590,6 +652,27 @@ export function WorldConnectionsModal({
                 <pattern id="gridDots" width="20" height="20" patternUnits="userSpaceOnUse">
                   <circle cx="2" cy="2" r="1" fill="rgba(255, 255, 255, 0.04)" />
                 </pattern>
+                <radialGradient id="originGlow" cx="50%" cy="50%" r="50%">
+                  <stop offset="0%" stopColor="#34d399" stopOpacity="0.85" />
+                  <stop offset="60%" stopColor="#059669" stopOpacity="0.35" />
+                  <stop offset="100%" stopColor="#059669" stopOpacity="0" />
+                </radialGradient>
+                <style>{`
+                  @keyframes mapConnectionFlow {
+                    from {
+                      stroke-dashoffset: 0;
+                    }
+                    to {
+                      stroke-dashoffset: -20;
+                    }
+                  }
+                  .map-flow-line {
+                    animation: mapConnectionFlow 1.3s linear infinite;
+                  }
+                  .map-flow-line-selected {
+                    animation: mapConnectionFlow 0.85s linear infinite;
+                  }
+                `}</style>
               </defs>
 
               {/* High-tech Canvas Background */}
@@ -616,6 +699,147 @@ export function WorldConnectionsModal({
                 <path d={WORLD_LAND_PATH} />
               </g>
 
+              {/* Dynamic Directional Connection Flow Lines */}
+              {geoConnections.length > 0 && (
+                <g className="connection-flow-lines">
+                  {displayNodes.map((node) => {
+                    const isSelected = node.isCluster
+                      ? activeSelected && node.countryCodes.includes(activeSelected.code)
+                      : activeSelected && activeSelected.code === node.group.code;
+
+                    const x1 = originPoint.x;
+                    const y1 = originPoint.y;
+                    const x2 = node.x;
+                    const y2 = node.y;
+
+                    const dist = Math.hypot(x2 - x1, y2 - y1);
+                    if (dist < 4) return null;
+
+                    const mx = (x1 + x2) / 2;
+                    const my = (y1 + y2) / 2;
+                    const lift = Math.min(50, Math.max(12, dist * 0.14));
+                    const cx = mx;
+                    const cy = Math.max(12, my - lift);
+
+                    const pathD = `M ${x1.toFixed(1)} ${y1.toFixed(1)} Q ${cx.toFixed(1)} ${cy.toFixed(1)} ${x2.toFixed(1)} ${y2.toFixed(1)}`;
+
+                    const totalConns = geoConnections.length || 1;
+                    const ratio = node.count / totalConns;
+                    const pct = ratio * 100;
+                    const scaleFactor = Math.pow(zoom, 0.65);
+
+                    // Dynamic stroke width: base 1.2px + up to 5.5px proportional to sqrt(ratio), scaled by zoom
+                    const strokeWidth = Math.max(0.6, (1.2 + 5.5 * Math.sqrt(ratio)) / scaleFactor);
+                    const strokeColor = isSelected ? '#f59e0b' : '#38bdf8';
+                    const opacity = isSelected ? 0.95 : Math.min(0.85, Math.max(0.35, 0.35 + ratio * 0.5));
+                    const nodeKey = node.isCluster ? node.id : node.group.code;
+                    const titleText = node.isCluster
+                      ? `${node.members.map((m) => m.name).join(', ')}: ${node.count} (${pct.toFixed(1)}%)`
+                      : `${node.group.name} (${node.group.code}): ${node.count} (${pct.toFixed(1)}%)`;
+
+                    return (
+                      <g key={`flow-${nodeKey}`} data-testid={`flow-line-${nodeKey}`}>
+                        <title>{titleText}</title>
+                        {/* Subtle glow underlay for selected or high-share lines */}
+                        {(isSelected || ratio > 0.2) && (
+                          <path
+                            d={pathD}
+                            fill="none"
+                            stroke={strokeColor}
+                            strokeWidth={strokeWidth * 2.2}
+                            opacity={isSelected ? 0.35 : 0.2}
+                            strokeLinecap="round"
+                          />
+                        )}
+                        {/* Animated Directional Flow Line */}
+                        <path
+                          d={pathD}
+                          fill="none"
+                          stroke={strokeColor}
+                          strokeWidth={strokeWidth}
+                          strokeDasharray={`${6 / scaleFactor} ${4 / scaleFactor}`}
+                          opacity={opacity}
+                          strokeLinecap="round"
+                          className={isSelected ? 'map-flow-line-selected' : 'map-flow-line'}
+                        />
+                      </g>
+                    );
+                  })}
+                </g>
+              )}
+
+              {/* Origin Gateway Node (Router / Selected Instance) */}
+              {geoConnections.length > 0 && (
+                <g
+                  className="map-origin-node"
+                  data-testid="map-origin-node"
+                  style={{ cursor: 'pointer', transition: 'all 0.25s ease-out' }}
+                  onClick={() => {
+                    setZoomAndCenter(Math.min(20, zoom * 1.5), { x: originPoint.x, y: originPoint.y });
+                  }}
+                >
+                  <title>{`${t('world_map_origin')}: ${originLabel}\n${originGeo.publicIP ? `${originGeo.publicIP}\n` : ''}${geoConnections.length} ${t('connections_count')}`}</title>
+                  {/* Origin Glowing Aura */}
+                  <circle
+                    cx={originPoint.x}
+                    cy={originPoint.y}
+                    r={18 / Math.pow(zoom, 0.65)}
+                    fill="url(#originGlow)"
+                  />
+                  {/* Outer Pulsing Ring */}
+                  <circle
+                    cx={originPoint.x}
+                    cy={originPoint.y}
+                    r={12 / Math.pow(zoom, 0.65)}
+                    fill="none"
+                    stroke="#10b981"
+                    strokeWidth={Math.max(0.2, 1.5 / Math.pow(zoom, 0.65))}
+                    strokeDasharray={`${4 / Math.pow(zoom, 0.65)} ${2 / Math.pow(zoom, 0.65)}`}
+                    opacity={0.85}
+                  />
+                  {/* Central Core Circle */}
+                  <circle
+                    cx={originPoint.x}
+                    cy={originPoint.y}
+                    r={7.5 / Math.pow(zoom, 0.65)}
+                    fill="#059669"
+                    stroke="#ffffff"
+                    strokeWidth={Math.max(0.25, 2 / Math.pow(zoom, 0.65))}
+                  />
+                  {/* Center Dot */}
+                  <circle
+                    cx={originPoint.x}
+                    cy={originPoint.y}
+                    r={2.8 / Math.pow(zoom, 0.65)}
+                    fill="#ffffff"
+                  />
+                  {/* Origin Badge */}
+                  <g transform={`translate(${originPoint.x + 10 / Math.pow(zoom, 0.65)}, ${originPoint.y + 3 / Math.pow(zoom, 0.65)})`}>
+                    <rect
+                      x={-2 / Math.pow(zoom, 0.65)}
+                      y={-10 / Math.pow(zoom, 0.65)}
+                      width={(originLabel.length * 6.2 + 18) / Math.pow(zoom, 0.65)}
+                      height={14 / Math.pow(zoom, 0.65)}
+                      rx={3 / Math.pow(zoom, 0.65)}
+                      fill="rgba(6, 44, 34, 0.92)"
+                      stroke="#10b981"
+                      strokeWidth={Math.max(0.15, 1 / Math.pow(zoom, 0.65))}
+                    />
+                    <text
+                      x={4 / Math.pow(zoom, 0.65)}
+                      y={0.5 / Math.pow(zoom, 0.65)}
+                      fill="#a7f3d0"
+                      fontSize={`${Math.max(0.5, 7.5 / Math.pow(zoom, 0.65))}px`}
+                      fontWeight="700"
+                      letterSpacing="0.3px"
+                      pointerEvents="none"
+                    >
+                      ⌂ {originLabel}
+                    </text>
+                  </g>
+                </g>
+              )}
+
               {/* Active Connection Nodes (Dynamic Clusters & Individual Country Markers) */}
               {displayNodes.map((node) => {
                 const scaleFactor = Math.pow(zoom, 0.65);
@@ -639,7 +863,7 @@ export function WorldConnectionsModal({
                       className="map-node map-cluster-node"
                       data-testid={node.id}
                     >
-                      <title>{`${node.members.map((m) => `${m.name} (${m.count})`).join(', ')}\nClick to zoom in`}</title>
+                      <title>{`${node.members.map((m) => `${m.name} (${m.count})`).join(', ')}\n${node.count} ${t('connections_count')} (${((node.count / (geoConnections.length || 1)) * 100).toFixed(1)}%)\nClick to zoom in`}</title>
 
                       {/* Cluster Glowing Aura */}
                       <circle
@@ -729,6 +953,7 @@ export function WorldConnectionsModal({
                     className="map-node"
                     data-testid={`map-node-${g.code}`}
                   >
+                    <title>{`${g.name} (${g.code}): ${g.count} ${t('connections_count')} (${((g.count / (geoConnections.length || 1)) * 100).toFixed(1)}%)`}</title>
                     {/* Glowing Aura Ring */}
                     <circle
                       cx={node.x}
@@ -850,7 +1075,17 @@ export function WorldConnectionsModal({
                             {activeSelected.name}
                           </div>
                           <div style={{ fontSize: 'var(--fs-2xs, 11px)', color: 'var(--text-muted, #64748b)' }}>
-                            ISO: {activeSelected.code} • {activeSelected.count} {t('connections_count')}
+                            ISO: {activeSelected.code} • {activeSelected.count} {t('connections_count')} ({((activeSelected.count / (geoConnections.length || 1)) * 100).toFixed(1)}%)
+                          </div>
+                          <div style={{ marginTop: 4, height: 3, borderRadius: 2, background: 'rgba(255,255,255,0.08)', overflow: 'hidden', width: 140 }}>
+                            <div
+                              style={{
+                                height: '100%',
+                                width: `${Math.min(100, (activeSelected.count / (geoConnections.length || 1)) * 100)}%`,
+                                background: 'linear-gradient(90deg, #38bdf8, #3b82f6)',
+                                borderRadius: 2,
+                              }}
+                            />
                           </div>
                         </div>
                       </div>
@@ -998,7 +1233,7 @@ export function WorldConnectionsModal({
                           textAlign: 'center',
                         }}
                       >
-                        {g.count}
+                        {g.count} • {((g.count / (geoConnections.length || 1)) * 100).toFixed(0)}%
                       </span>
                     </button>
                   );

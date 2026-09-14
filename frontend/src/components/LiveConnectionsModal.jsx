@@ -66,6 +66,7 @@ export function LiveConnectionsModal({
   const [killingId, setKillingId] = useState(null);
   const [error, setError] = useState(null);
   const [showWorldMap, setShowWorldMap] = useState(false);
+  const [routerLocation, setRouterLocation] = useState(null);
 
   const timerRef = useRef(null);
 
@@ -107,6 +108,15 @@ export function LiveConnectionsModal({
       if (res?.data) {
         setConnections(res.data.items || []);
         setTotalMatched(res.data.total ?? (res.data.items || []).length);
+        if (res.data.router_lat != null && res.data.router_lng != null) {
+          setRouterLocation({
+            lat: res.data.router_lat,
+            lng: res.data.router_lng,
+            countryCode: res.data.router_country_code,
+            countryName: res.data.router_country_name,
+            publicIP: res.data.router_public_ip,
+          });
+        }
       }
     } catch (err) {
       // Deliberately does not clear `connections`: a transient fetch failure
@@ -634,6 +644,8 @@ export function LiveConnectionsModal({
           isOpen={showWorldMap}
           onClose={() => setShowWorldMap(false)}
           connections={connections}
+          routerLocation={routerLocation}
+          target={currentTarget}
         />
     </>
   );

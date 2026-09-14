@@ -722,6 +722,10 @@ export const translations = {
     world_map_traffic: "Bandwidth",
     world_map_active_endpoints: "Active Endpoints",
     world_map_back: "Back to List",
+    world_map_origin: "Origin",
+    world_map_gateway: "Router Gateway",
+    world_map_share: "Share",
+    world_map_direction_hint: "Line thickness reflects percentage of connections",
 
     // Router Logs
     router_logs_title: "Router Logs",
@@ -1552,6 +1556,10 @@ export const translations = {
     world_map_traffic: "Трафик",
     world_map_active_endpoints: "Узлы сети",
     world_map_back: "К списку",
+    world_map_origin: "Источник",
+    world_map_gateway: "Шлюз роутера",
+    world_map_share: "Доля",
+    world_map_direction_hint: "Толщина линий отражает долю от всех соединений",
 
     // Router Logs
     router_logs_title: "Журнал роутера (Логи)",

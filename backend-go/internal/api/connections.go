@@ -18,11 +18,21 @@ import (
 	"github.com/masseselsev/mikroman/internal/services"
 )
 
+type RouterGeoCache struct {
+	Lat         *float64
+	Lng         *float64
+	CountryCode *string
+	CountryName *string
+	PublicIP    *string
+	CachedAt    time.Time
+}
+
 type ConnectionsHandler struct {
 	database *db.DB
 	client   *routeros.Client
 	mu       sync.Mutex
 	clients  map[int]*routeros.Client
+	geoCache map[int]RouterGeoCache
 }
 
 func NewConnectionsHandler(database *db.DB, client *routeros.Client) *ConnectionsHandler {
@@ -38,6 +48,7 @@ func NewConnectionsHandler(database *db.DB, client *routeros.Client) *Connection
 		database: database,
 		client:   client,
 		clients:  clients,
+		geoCache: make(map[int]RouterGeoCache),
 	}
 }
 
@@ -71,7 +82,6 @@ func (h *ConnectionsHandler) getClient(routerID *int) (*routeros.Client, error) 
 		return nil, fmt.Errorf("router %d not found", targetID)
 	}
 
-
 	if h.client != nil && h.client.Matches(router.Host, router.Port) {
 		h.clients[targetID] = h.client
 		return h.client, nil
@@ -96,35 +106,40 @@ func (h *ConnectionsHandler) getClient(routerID *int) (*routeros.Client, error) 
 }
 
 type LiveConnectionItem struct {
-	ID          string  `json:"id"`
-	Protocol    string  `json:"protocol"`
-	SrcIP       string  `json:"src_ip"`
-	SrcPort     *int    `json:"src_port"`
-	DstIP       string  `json:"dst_ip"`
-	DstPort     *int    `json:"dst_port"`
-	DeviceID    *int    `json:"device_id"`
-	DeviceName  *string `json:"device_name"`
-	UserID      *int    `json:"user_id"`
-	UserName    *string `json:"user_name"`
-	Domain      *string `json:"domain"`
+	ID          string   `json:"id"`
+	Protocol    string   `json:"protocol"`
+	SrcIP       string   `json:"src_ip"`
+	SrcPort     *int     `json:"src_port"`
+	DstIP       string   `json:"dst_ip"`
+	DstPort     *int     `json:"dst_port"`
+	DeviceID    *int     `json:"device_id"`
+	DeviceName  *string  `json:"device_name"`
+	UserID      *int     `json:"user_id"`
+	UserName    *string  `json:"user_name"`
+	Domain      *string  `json:"domain"`
 	CountryCode *string  `json:"country_code"`
 	CountryName *string  `json:"country_name"`
 	FlagEmoji   *string  `json:"flag_emoji"`
 	Lat         *float64 `json:"lat,omitempty"`
 	Lng         *float64 `json:"lng,omitempty"`
 	TCPState    *string  `json:"tcp_state"`
-	OrigRate    int64   `json:"orig_rate"`
-	ReplRate    int64   `json:"repl_rate"`
-	OrigBytes   int64   `json:"orig_bytes"`
-	ReplBytes   int64   `json:"repl_bytes"`
-	TotalBytes  int64   `json:"total_bytes"`
-	Timeout     *string `json:"timeout"`
-	IsImmune    bool    `json:"is_immune"`
+	OrigRate    int64    `json:"orig_rate"`
+	ReplRate    int64    `json:"repl_rate"`
+	OrigBytes   int64    `json:"orig_bytes"`
+	ReplBytes   int64    `json:"repl_bytes"`
+	TotalBytes  int64    `json:"total_bytes"`
+	Timeout     *string  `json:"timeout"`
+	IsImmune    bool     `json:"is_immune"`
 }
 
 type PaginatedLiveConnections struct {
-	Total int                  `json:"total"`
-	Items []LiveConnectionItem `json:"items"`
+	Total             int                  `json:"total"`
+	Items             []LiveConnectionItem `json:"items"`
+	RouterLat         *float64             `json:"router_lat,omitempty"`
+	RouterLng         *float64             `json:"router_lng,omitempty"`
+	RouterCountryCode *string              `json:"router_country_code,omitempty"`
+	RouterCountryName *string              `json:"router_country_name,omitempty"`
+	RouterPublicIP    *string              `json:"router_public_ip,omitempty"`
 }
 
 type KillConnectionRequest struct {
@@ -279,6 +294,70 @@ func (h *ConnectionsHandler) GetLiveConnections(w http.ResponseWriter, r *http.R
 	if err != nil {
 		WriteError(w, http.StatusBadGateway, "Failed to read firewall connections: "+err.Error())
 		return
+	}
+
+	// Resolve router geographic origin for the live connections map
+	effectiveRouterID := 0
+	if routerID != nil && *routerID > 0 {
+		effectiveRouterID = *routerID
+	} else if def, err := h.database.GetDefaultRouter(); err == nil && def != nil {
+		effectiveRouterID = def.ID
+	}
+
+	var rLat, rLng *float64
+	var rCountryCode, rCountryName, rPubIP *string
+
+	h.mu.Lock()
+	cachedGeo, hasCached := h.geoCache[effectiveRouterID]
+	h.mu.Unlock()
+
+	if hasCached && time.Since(cachedGeo.CachedAt) < 60*time.Second {
+		rLat = cachedGeo.Lat
+		rLng = cachedGeo.Lng
+		rCountryCode = cachedGeo.CountryCode
+		rCountryName = cachedGeo.CountryName
+		rPubIP = cachedGeo.PublicIP
+	} else if client != nil {
+		var pubIP string
+		if cloudIP, err := client.GetCloudPublicAddress(ctx); err == nil && cloudIP != "" {
+			pubIP = cloudIP
+		} else if ipAddrs, err := client.GetIPAddresses(ctx); err == nil {
+			for _, entry := range ipAddrs {
+				clean := strings.TrimSpace(strings.Split(entry.Address, "/")[0])
+				if clean != "" && !isPrivateOrLocalIP(clean) {
+					pubIP = clean
+					break
+				}
+			}
+		}
+
+		if pubIP != "" && !isPrivateOrLocalIP(pubIP) {
+			rGeo := services.LookupGeoIP(pubIP)
+			if !rGeo.IsLocal && (rGeo.Lat != 0 || rGeo.Lng != 0) {
+				latVal := rGeo.Lat
+				lngVal := rGeo.Lng
+				cCode := rGeo.CountryCode
+				cName := rGeo.CountryName
+				ipVal := pubIP
+
+				rLat = &latVal
+				rLng = &lngVal
+				rCountryCode = &cCode
+				rCountryName = &cName
+				rPubIP = &ipVal
+			}
+		}
+
+		h.mu.Lock()
+		h.geoCache[effectiveRouterID] = RouterGeoCache{
+			Lat:         rLat,
+			Lng:         rLng,
+			CountryCode: rCountryCode,
+			CountryName: rCountryName,
+			PublicIP:    rPubIP,
+			CachedAt:    time.Now(),
+		}
+		h.mu.Unlock()
 	}
 
 	// Build Device & User attribution maps
@@ -515,8 +594,13 @@ func (h *ConnectionsHandler) GetLiveConnections(w http.ResponseWriter, r *http.R
 	}
 
 	WriteJSON(w, http.StatusOK, PaginatedLiveConnections{
-		Total: matched,
-		Items: items,
+		Total:             matched,
+		Items:             items,
+		RouterLat:         rLat,
+		RouterLng:         rLng,
+		RouterCountryCode: rCountryCode,
+		RouterCountryName: rCountryName,
+		RouterPublicIP:    rPubIP,
 	})
 }
 
