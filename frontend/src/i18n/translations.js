@@ -404,6 +404,8 @@ export const translations = {
 
     // Footer
     footer_source: "Source on GitHub",
+    footer_update_available: "v{version} available",
+    footer_update_title: "New release v{version} is available on GitHub",
 
     // Modals & Actions
     save: "Save",
@@ -1237,6 +1239,8 @@ export const translations = {
 
     // Footer
     footer_source: "Исходники на GitHub",
+    footer_update_available: "Доступна v{version}",
+    footer_update_title: "Доступна новая версия v{version} на GitHub",
 
     // Modals & Actions
     save: "Сохранить",

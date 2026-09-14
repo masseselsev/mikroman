@@ -257,6 +257,7 @@ export const api = {
 
   // System & Settings
   getSystemStatus: (routerId = null) => request(`/system/status${routerId ? `?router_id=${routerId}` : ''}`),
+  checkAppVersion: (force = false) => request(`/system/version-check${force ? '?force=true' : ''}`),
   getInterfaces: (routerId = null) => request(`/system/interfaces${routerId ? `?router_id=${routerId}` : ''}`),
   getAlerts: (routerId = null) => request(`/system/alerts${routerId ? `?router_id=${routerId}` : ''}`),
   getSettings: (routerId = null) => request(`/system/settings${routerId ? `?router_id=${routerId}` : ''}`),
