@@ -203,7 +203,10 @@ func (h *SystemHandler) GetSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	if _, ok := settings["telegram_bot_token"]; !ok {
 		settings["telegram_bot_token"] = ""
+	} else if tok, isStr := settings["telegram_bot_token"].(string); isStr && tok != "" {
+		settings["telegram_bot_token"] = "********"
 	}
+
 	if _, ok := settings["telegram_admin_ids"]; !ok {
 		settings["telegram_admin_ids"] = ""
 	}
@@ -232,6 +235,10 @@ func (h *SystemHandler) SaveSettings(w http.ResponseWriter, r *http.Request) {
 		default:
 			bytesVal, _ := json.Marshal(v)
 			strVal = string(bytesVal)
+		}
+		if k == "telegram_bot_token" && strVal == "********" {
+			// Do not overwrite stored token with mask placeholder
+			continue
 		}
 		_ = h.database.SetSetting(k, strVal, "")
 	}

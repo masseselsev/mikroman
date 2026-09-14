@@ -1654,3 +1654,125 @@ func TestUnassignedDevicesHiddenFilter(t *testing.T) {
 		t.Fatalf("expected hidden devices to be included when show_hidden=true")
 	}
 }
+
+func getValidSessionCookie(t *testing.T, handler http.Handler) (*http.Cookie, *http.Cookie) {
+	reqStatus := httptest.NewRequest(http.MethodGet, "/api/v1/auth/status", nil)
+	wStatus := httptest.NewRecorder()
+	handler.ServeHTTP(wStatus, reqStatus)
+	var csrfCookie *http.Cookie
+	for _, c := range wStatus.Result().Cookies() {
+		if c.Name == CSRFCookie {
+			csrfCookie = c
+			break
+		}
+	}
+
+	body := bytes.NewBufferString(`{"password": "SecretAdminPassword123"}`)
+	reqLogin := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", body)
+	if csrfCookie != nil {
+		reqLogin.AddCookie(csrfCookie)
+		reqLogin.Header.Set(CSRFHeader, csrfCookie.Value)
+	}
+	wLogin := httptest.NewRecorder()
+	handler.ServeHTTP(wLogin, reqLogin)
+
+	var sessionCookie *http.Cookie
+	for _, c := range wLogin.Result().Cookies() {
+		if c.Name == SessionCookie {
+			sessionCookie = c
+			break
+		}
+	}
+	if sessionCookie == nil {
+		t.Fatalf("failed to obtain session cookie")
+	}
+	return sessionCookie, csrfCookie
+}
+
+func TestSecretSettingsMask(t *testing.T) {
+	handler, database, _ := setupTestServer(t)
+	defer database.Close()
+
+	sessionCookie, csrfCookie := getValidSessionCookie(t, handler)
+	realToken := "secret_real_bot_token_123"
+
+	// 1. Save real token via API
+	savePayload, _ := json.Marshal(map[string]interface{}{
+		"telegram_bot_token": realToken,
+	})
+	saveReq := httptest.NewRequest(http.MethodPost, "/api/v1/system/settings", bytes.NewReader(savePayload))
+	saveReq.Header.Set("Content-Type", "application/json")
+	saveReq.AddCookie(sessionCookie)
+	if csrfCookie != nil {
+		saveReq.AddCookie(csrfCookie)
+		saveReq.Header.Set(CSRFHeader, csrfCookie.Value)
+	}
+	saveW := httptest.NewRecorder()
+	handler.ServeHTTP(saveW, saveReq)
+
+	if saveW.Code != http.StatusOK {
+		t.Fatalf("expected 200 saving settings, got %d", saveW.Code)
+	}
+
+	// 2. Query settings via GET: token MUST be masked
+	getReq := httptest.NewRequest(http.MethodGet, "/api/v1/system/settings", nil)
+	getReq.AddCookie(sessionCookie)
+	getW := httptest.NewRecorder()
+	handler.ServeHTTP(getW, getReq)
+
+	if getW.Code != http.StatusOK {
+		t.Fatalf("expected 200 reading settings, got %d", getW.Code)
+	}
+
+	bodyStr := getW.Body.String()
+	if strings.Contains(bodyStr, realToken) {
+		t.Fatalf("real token leaked in GET /api/v1/system/settings response!")
+	}
+
+	var getResp struct {
+		Success bool                   `json:"success"`
+		Data    map[string]interface{} `json:"data"`
+	}
+	_ = json.Unmarshal(getW.Body.Bytes(), &getResp)
+	if getResp.Data["telegram_bot_token"] != "********" {
+		t.Fatalf("expected masked token '********', got %v", getResp.Data["telegram_bot_token"])
+	}
+
+	// 3. Verify real token is preserved intact on disk in the database
+	storedVal, err := database.GetSetting("telegram_bot_token")
+	if err != nil || storedVal != realToken {
+		t.Fatalf("expected real token stored in db, got %q (err: %v)", storedVal, err)
+	}
+
+	// 4. Post back the masked token (simulating frontend saving other settings)
+	postBackPayload, _ := json.Marshal(map[string]interface{}{
+		"telegram_bot_token":         "********",
+		"telemetry_interval_seconds": "5",
+	})
+	postBackReq := httptest.NewRequest(http.MethodPost, "/api/v1/system/settings", bytes.NewReader(postBackPayload))
+	postBackReq.Header.Set("Content-Type", "application/json")
+	postBackReq.AddCookie(sessionCookie)
+	if csrfCookie != nil {
+		postBackReq.AddCookie(csrfCookie)
+		postBackReq.Header.Set(CSRFHeader, csrfCookie.Value)
+	}
+	postBackW := httptest.NewRecorder()
+	handler.ServeHTTP(postBackW, postBackReq)
+
+	if postBackW.Code != http.StatusOK {
+		t.Fatalf("expected 200 posting back settings, got %d", postBackW.Code)
+	}
+
+	// 5. Verify real token in DB was NOT overwritten with '********'
+	storedValAfter, _ := database.GetSetting("telegram_bot_token")
+	if storedValAfter != realToken {
+		t.Fatalf("stored token was overwritten with placeholder! got %q, want %q", storedValAfter, realToken)
+	}
+
+	// Verify telemetry interval was updated
+	intervalVal, _ := database.GetSetting("telemetry_interval_seconds")
+	if intervalVal != "5" {
+		t.Fatalf("expected telemetry interval to update to 5, got %q", intervalVal)
+	}
+}
+

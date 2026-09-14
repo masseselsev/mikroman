@@ -129,7 +129,7 @@ func main() {
 	backupSched.Start()
 
 	// Telegram Bot service (long polling & alerts)
-	telegramSvc := services.NewTelegramBotService(database, client)
+	telegramSvc := services.NewTelegramBotService(database, client, trafficSvc)
 	telegramSvc.Start()
 
 	// GeoIP Updater service (loads local MMDB and maintains background updates)
