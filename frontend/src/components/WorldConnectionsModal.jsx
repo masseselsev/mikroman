@@ -842,31 +842,6 @@ export function WorldConnectionsModal({
                     r={2.8 / Math.pow(zoom, 0.65)}
                     fill="#ffffff"
                   />
-                  {/* Origin Badge (Positioned above beacon to eliminate country code overlap) */}
-                  <g transform={`translate(${originPoint.x}, ${originPoint.y - 14 / Math.pow(zoom, 0.65)})`}>
-                    <rect
-                      x={-((originLabel.length * 6.2 + 18) / 2) / Math.pow(zoom, 0.65)}
-                      y={-10 / Math.pow(zoom, 0.65)}
-                      width={(originLabel.length * 6.2 + 18) / Math.pow(zoom, 0.65)}
-                      height={14 / Math.pow(zoom, 0.65)}
-                      rx={3 / Math.pow(zoom, 0.65)}
-                      fill="rgba(6, 44, 34, 0.92)"
-                      stroke="#10b981"
-                      strokeWidth={Math.max(0.15, 1 / Math.pow(zoom, 0.65))}
-                    />
-                    <text
-                      x={0}
-                      y={0.5 / Math.pow(zoom, 0.65)}
-                      textAnchor="middle"
-                      fill="#a7f3d0"
-                      fontSize={`${Math.max(0.5, 7.5 / Math.pow(zoom, 0.65))}px`}
-                      fontWeight="700"
-                      letterSpacing="0.3px"
-                      pointerEvents="none"
-                    >
-                      ⌂ {originLabel}
-                    </text>
-                  </g>
                 </g>
               )}
 

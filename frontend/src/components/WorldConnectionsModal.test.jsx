@@ -408,9 +408,11 @@ describe('WorldConnectionsModal', () => {
     expect(headerBadge).toHaveTextContent('Uzbekistan');
 
     // Origin beacon on map displays router name, not country name
+    // Origin beacon on map has tooltip with router name but no on-canvas text badge (preventing overlap)
     const originNode = screen.getByTestId('map-origin-node');
     expect(originNode).toBeInTheDocument();
     expect(originNode).toHaveTextContent('Main-CCR-Gateway');
+    expect(originNode.querySelector('text')).toBeNull();
   });
 });
 

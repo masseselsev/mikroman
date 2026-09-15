@@ -29,8 +29,8 @@ describe('AppFooter', () => {
     vi.clearAllMocks();
     api.checkAppVersion.mockResolvedValue({
       data: {
-        current_version: '0.3.27',
-        latest_version: '0.3.27',
+        current_version: '0.3.28',
+        latest_version: '0.3.28',
         has_update: false,
       },
     });
@@ -63,10 +63,10 @@ describe('AppFooter', () => {
   it('renders glowing update badge when a newer release is detected', async () => {
     api.checkAppVersion.mockResolvedValue({
       data: {
-        current_version: '0.3.26',
-        latest_version: '0.3.27',
+        current_version: '0.3.27',
+        latest_version: '0.3.28',
         has_update: true,
-        release_url: 'https://github.com/masseselsev/mikroman/releases/tag/v0.3.27',
+        release_url: 'https://github.com/masseselsev/mikroman/releases/tag/v0.3.28',
       },
     });
 
@@ -77,8 +77,8 @@ describe('AppFooter', () => {
     });
 
     const badge = container.querySelector('.footer-update-badge');
-    expect(badge.getAttribute('href')).toBe('https://github.com/masseselsev/mikroman/releases/tag/v0.3.27');
-    expect(badge.textContent).toContain('0.3.27');
+    expect(badge.getAttribute('href')).toBe('https://github.com/masseselsev/mikroman/releases/tag/v0.3.28');
+    expect(badge.textContent).toContain('0.3.28');
   });
 
   it('silently ignores network errors during version check', async () => {
