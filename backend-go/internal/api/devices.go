@@ -129,6 +129,17 @@ func (h *DeviceHandler) Update(w http.ResponseWriter, r *http.Request) {
 		query += "user_id = ?"
 		args = append(args, uID)
 		first = false
+
+		// When assigning a device to a user without an explicit speed_limit override,
+		// release any quarantine limit so the device inherits the user's limit.
+		if _, hasLimit := payload["speed_limit"]; !hasLimit && uID != nil {
+			unassignedLimit := "5M/5M"
+			if sVal, err := h.database.GetSetting("unassigned_device_speed_limit"); err == nil && sVal != "" {
+				unassignedLimit = sVal
+			}
+			query += ", speed_limit = CASE WHEN speed_limit = ? OR speed_limit = '5M/5M' THEN 'default' ELSE speed_limit END"
+			args = append(args, unassignedLimit)
+		}
 	}
 	if hidden, ok := payload["is_hidden"]; ok {
 		if !first {
