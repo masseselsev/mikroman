@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -87,6 +88,9 @@ func (s *TrafficService) ReconcileQueues(ctx context.Context, routerID int) erro
 	if err != nil || client == nil {
 		return err
 	}
+
+	// 0. Reconcile stranded device limits: owned devices should never carry quarantine limits
+	_, _ = s.ReconcileDeviceLimits(ctx, routerID)
 
 	users, err := s.database.GetUsers(&routerID)
 	if err != nil {
@@ -813,6 +817,58 @@ func (s *TrafficService) AccountingPass(ctx context.Context, routerID int) error
 	}
 
 	return nil
+}
+
+// ReconcileDeviceLimits clears quarantine limits left on devices that now belong to a user.
+// State that follows from having an owner must be derived where used, never frozen onto the row.
+func (s *TrafficService) ReconcileDeviceLimits(ctx context.Context, routerID int) ([]int, error) {
+	unassignedLimitStr := "5M/5M"
+	if sVal, err := s.database.GetSetting(fmt.Sprintf("unassigned_device_speed_limit_%d", routerID)); err == nil && sVal != "" {
+		unassignedLimitStr = sVal
+	} else if sVal, err := s.database.GetSetting("unassigned_device_speed_limit"); err == nil && sVal != "" {
+		unassignedLimitStr = sVal
+	}
+
+	rows, err := s.database.SqlDB.QueryContext(ctx, `
+		SELECT id, custom_name, mac_address, speed_limit
+		FROM devices
+		WHERE user_id IS NOT NULL
+		  AND (router_id = ? OR router_id IS NULL)
+		  AND (speed_limit = ? OR speed_limit = '5M/5M')
+	`, routerID, unassignedLimitStr)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var resetIDs []int
+	for rows.Next() {
+		var id int
+		var customName, mac, limit sql.NullString
+		if err := rows.Scan(&id, &customName, &mac, &limit); err == nil {
+			resetIDs = append(resetIDs, id)
+			name := customName.String
+			if name == "" {
+				name = mac.String
+			}
+			slog.Info("Resetting stranded quarantine limit on owned device to default", "device_id", id, "device", name, "limit", limit.String)
+		}
+	}
+
+	if len(resetIDs) > 0 {
+		_, err = s.database.SqlDB.ExecContext(ctx, `
+			UPDATE devices
+			SET speed_limit = 'default'
+			WHERE user_id IS NOT NULL
+			  AND (router_id = ? OR router_id IS NULL)
+			  AND (speed_limit = ? OR speed_limit = '5M/5M')
+		`, routerID, unassignedLimitStr)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return resetIDs, nil
 }
 
 func (s *TrafficService) StartBackgroundLoop(ctx context.Context, interval time.Duration) {

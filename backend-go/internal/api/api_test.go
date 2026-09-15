@@ -1490,9 +1490,9 @@ func TestUserCreateWithDevicesAndDefaultRouter(t *testing.T) {
 		}
 	}
 
-	// 3. Create router and device
+	// 3. Create router and device with quarantine limit
 	_, _ = database.SqlDB.Exec("INSERT INTO routers (id, name, host, is_default) VALUES (1, 'MainRouter', '127.0.0.1', 1)")
-	_, _ = database.SqlDB.Exec("INSERT INTO devices (id, router_id, mac_address, ip_address, is_active) VALUES (10, 1, '00:11:22:33:44:77', '192.0.2.77', 1)")
+	_, _ = database.SqlDB.Exec("INSERT INTO devices (id, router_id, mac_address, ip_address, speed_limit, is_active) VALUES (10, 1, '00:11:22:33:44:77', '192.0.2.77', '5M/5M', 1)")
 
 	// 4. Create User with device_macs and without explicit router_id
 	createPayload := []byte(`{
@@ -1519,6 +1519,9 @@ func TestUserCreateWithDevicesAndDefaultRouter(t *testing.T) {
 	}
 	if dev.UserID == nil {
 		t.Fatalf("expected device 10 to be assigned to user, got nil")
+	}
+	if dev.SpeedLimit != "default" {
+		t.Fatalf("expected device 10 speed_limit to be reset to 'default', got %s", dev.SpeedLimit)
 	}
 
 	// Verify user list includes user with assigned device
@@ -1551,6 +1554,24 @@ func TestUserCreateWithDevicesAndDefaultRouter(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("user Charlie not found in /api/v1/users")
+	}
+
+	// 4b. Test PATCH /devices/{id} releasing quarantine limit upon assignment
+	_, _ = database.SqlDB.Exec("INSERT INTO devices (id, router_id, mac_address, ip_address, speed_limit, is_active) VALUES (11, 1, '00:11:22:33:44:88', '192.0.2.88', '5M/5M', 1)")
+	patchPayload := []byte(fmt.Sprintf(`{"user_id": %d}`, *dev.UserID))
+	reqPatch := httptest.NewRequest(http.MethodPatch, "/api/v1/devices/11", bytes.NewReader(patchPayload))
+	reqPatch.Header.Set("Content-Type", "application/json")
+	reqPatch.AddCookie(csrfCookie)
+	reqPatch.AddCookie(sessionCookie)
+	reqPatch.Header.Set(CSRFHeader, csrfCookie.Value)
+	wPatch := httptest.NewRecorder()
+	handler.ServeHTTP(wPatch, reqPatch)
+	if wPatch.Code != http.StatusOK {
+		t.Fatalf("expected 200 for device patch, got %d: %s", wPatch.Code, wPatch.Body.String())
+	}
+	dev11, _ := database.GetDevice(11)
+	if dev11.SpeedLimit != "default" {
+		t.Fatalf("expected device 11 speed_limit to be reset to 'default', got %s", dev11.SpeedLimit)
 	}
 }
 
