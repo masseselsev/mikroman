@@ -312,13 +312,27 @@ func (h *UserHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 	// Assign selected devices to this user
 	if len(req.DeviceMACs) > 0 {
+		unassignedLimit := "5M/5M"
+		if sVal, err := h.database.GetSetting("unassigned_device_speed_limit"); err == nil && sVal != "" {
+			unassignedLimit = sVal
+		}
 		for _, mac := range req.DeviceMACs {
 			macClean := strings.ToUpper(strings.TrimSpace(mac))
 			if macClean != "" {
 				if effRouterID > 0 {
-					_, _ = h.database.SqlDB.Exec("UPDATE devices SET user_id = ?, router_id = ? WHERE UPPER(mac_address) = ?", user.ID, effRouterID, macClean)
+					_, _ = h.database.SqlDB.Exec(`
+						UPDATE devices 
+						SET user_id = ?, router_id = ?,
+						    speed_limit = CASE WHEN speed_limit = ? OR speed_limit = '5M/5M' THEN 'default' ELSE speed_limit END
+						WHERE UPPER(mac_address) = ?
+					`, user.ID, effRouterID, unassignedLimit, macClean)
 				} else {
-					_, _ = h.database.SqlDB.Exec("UPDATE devices SET user_id = ? WHERE UPPER(mac_address) = ?", user.ID, macClean)
+					_, _ = h.database.SqlDB.Exec(`
+						UPDATE devices 
+						SET user_id = ?,
+						    speed_limit = CASE WHEN speed_limit = ? OR speed_limit = '5M/5M' THEN 'default' ELSE speed_limit END
+						WHERE UPPER(mac_address) = ?
+					`, user.ID, unassignedLimit, macClean)
 				}
 			}
 		}
@@ -391,11 +405,25 @@ func (h *UserHandler) Update(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Assign newly selected devices
+		unassignedLimit := "5M/5M"
+		if sVal, err := h.database.GetSetting("unassigned_device_speed_limit"); err == nil && sVal != "" {
+			unassignedLimit = sVal
+		}
 		for _, mac := range targetMACs {
 			if existing.RouterID != nil {
-				_, _ = h.database.SqlDB.Exec("UPDATE devices SET user_id = ?, router_id = ? WHERE UPPER(mac_address) = ?", existing.ID, *existing.RouterID, mac)
+				_, _ = h.database.SqlDB.Exec(`
+					UPDATE devices 
+					SET user_id = ?, router_id = ?,
+					    speed_limit = CASE WHEN speed_limit = ? OR speed_limit = '5M/5M' THEN 'default' ELSE speed_limit END
+					WHERE UPPER(mac_address) = ?
+				`, existing.ID, *existing.RouterID, unassignedLimit, mac)
 			} else {
-				_, _ = h.database.SqlDB.Exec("UPDATE devices SET user_id = ? WHERE UPPER(mac_address) = ?", existing.ID, mac)
+				_, _ = h.database.SqlDB.Exec(`
+					UPDATE devices 
+					SET user_id = ?,
+					    speed_limit = CASE WHEN speed_limit = ? OR speed_limit = '5M/5M' THEN 'default' ELSE speed_limit END
+					WHERE UPPER(mac_address) = ?
+				`, existing.ID, unassignedLimit, mac)
 			}
 		}
 	}

@@ -689,6 +689,9 @@ func migrateColumns(db *sql.DB) error {
 		_, _ = db.Exec(sqlStmt)
 	}
 
+	// Clear stranded quarantine limits on devices that belong to a user (former Alembic migration 010)
+	_, _ = db.Exec("UPDATE devices SET speed_limit = 'default' WHERE user_id IS NOT NULL AND (speed_limit = '5M/5M' OR speed_limit = (SELECT value FROM app_settings WHERE key = 'unassigned_device_speed_limit'))")
+
 	return nil
 }
 

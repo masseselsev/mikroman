@@ -401,3 +401,57 @@ func TestReconcileQueuesNoSpamWhenMatching(t *testing.T) {
 		t.Fatalf("expected 0 queue creates, got %d", createCount)
 	}
 }
+
+func TestReconcileDeviceLimits(t *testing.T) {
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "reconcile_limits.db")
+	fernet, _ := crypto.NewFernet("cw_z4pYJ2-8_9V18R5v6R1XbJ9i9w9G1R1XbJ9i9w9E=")
+	database, _ := db.Open(dbPath, fernet)
+	defer database.Close()
+
+	ctx := context.Background()
+	_ = database.SetSetting("unassigned_device_speed_limit", "5M/5M", "")
+
+	_, _ = database.SqlDB.Exec("INSERT INTO routers (id, name, host) VALUES (1, 'TestRouter', '127.0.0.1')")
+	_, _ = database.SqlDB.Exec("INSERT INTO users (id, router_id, name, speed_limit) VALUES (1, 1, 'Kristina', 'unlimited')")
+
+	// 1. Owned device carrying quarantine 5M/5M limit -> must be reset to 'default'
+	_, _ = database.SqlDB.Exec("INSERT INTO devices (id, router_id, user_id, mac_address, ip_address, speed_limit, is_active) VALUES (1, 1, 1, '1A:FB:3A:9D:D2:2C', '192.0.2.10', '5M/5M', 1)")
+
+	// 2. Unassigned device with 5M/5M limit -> must NOT be reset
+	_, _ = database.SqlDB.Exec("INSERT INTO devices (id, router_id, user_id, mac_address, ip_address, speed_limit, is_active) VALUES (2, 1, NULL, 'AA:BB:CC:DD:EE:FF', '192.0.2.20', '5M/5M', 1)")
+
+	// 3. Owned device with explicit custom limit (25M/50M) -> must NOT be reset
+	_, _ = database.SqlDB.Exec("INSERT INTO devices (id, router_id, user_id, mac_address, ip_address, speed_limit, is_active) VALUES (3, 1, 1, '50:2E:91:A8:B7:C6', '192.0.2.30', '25M/50M', 1)")
+
+	trafficSvc := NewTrafficService(database, nil)
+	resetIDs, err := trafficSvc.ReconcileDeviceLimits(ctx, 1)
+	if err != nil {
+		t.Fatalf("ReconcileDeviceLimits failed: %v", err)
+	}
+
+	if len(resetIDs) != 1 || resetIDs[0] != 1 {
+		t.Fatalf("expected resetIDs=[1], got %v", resetIDs)
+	}
+
+	// Verify device 1 speed_limit is now 'default'
+	var limit1 string
+	_ = database.SqlDB.QueryRow("SELECT speed_limit FROM devices WHERE id = 1").Scan(&limit1)
+	if limit1 != "default" {
+		t.Errorf("expected device 1 limit='default', got '%s'", limit1)
+	}
+
+	// Verify device 2 speed_limit is still '5M/5M'
+	var limit2 string
+	_ = database.SqlDB.QueryRow("SELECT speed_limit FROM devices WHERE id = 2").Scan(&limit2)
+	if limit2 != "5M/5M" {
+		t.Errorf("expected device 2 limit='5M/5M', got '%s'", limit2)
+	}
+
+	// Verify device 3 speed_limit is still '25M/50M'
+	var limit3 string
+	_ = database.SqlDB.QueryRow("SELECT speed_limit FROM devices WHERE id = 3").Scan(&limit3)
+	if limit3 != "25M/50M" {
+		t.Errorf("expected device 3 limit='25M/50M', got '%s'", limit3)
+	}
+}
