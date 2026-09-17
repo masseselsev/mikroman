@@ -1,9 +1,11 @@
 # ==============================================================================
 # GitHub Actions Workflow: Automated Multi-Architecture Docker Container Release
 #
-# Builds and publishes production container images to GitHub Container Registry
-# (ghcr.io) on GitHub Releases. Supports multi-arch targets (amd64, arm64, arm/v7)
-# covering standard servers, x86/CHR, and modern/legacy MikroTik RouterOS devices.
+# Runs the quality gate (backend tests, frontend tests, bundle build) on every
+# pull request against master, and additionally builds and publishes production
+# container images to GitHub Container Registry (ghcr.io) on GitHub Releases.
+# Supports multi-arch targets (amd64, arm64, arm/v7) covering standard servers,
+# x86/CHR, and modern/legacy MikroTik RouterOS devices.
 # ==============================================================================
 
 name: Release Docker Container
@@ -11,6 +13,9 @@ name: Release Docker Container
 'on':
   release:
     types: [published]
+  pull_request:
+    branches: [master]
+    types: [opened, synchronize, reopened]
   workflow_dispatch:
 
 permissions:
@@ -67,10 +72,14 @@ jobs:
   # Stage 2: Multi-Architecture Build & GHCR Publishing
   # Executes cross-platform container builds (amd64, arm64, arm/v7) with BuildKit
   # caching and pushes tagged artifacts to ghcr.io using GITHUB_TOKEN.
+  #
+  # Skipped for pull requests: a PR must be able to run the gate without ever
+  # publishing an image. Images are only produced for a release or a manual run.
   # ============================================================================
   build-and-push:
     name: Build & Push Multi-Arch Docker Image
     needs: [validate]
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository source
