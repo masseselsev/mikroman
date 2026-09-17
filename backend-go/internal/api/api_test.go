@@ -1181,6 +1181,131 @@ func TestQuotaEndpoints(t *testing.T) {
 	}
 }
 
+func TestQuotaReconciliationAndBillingCycleTimeline(t *testing.T) {
+	handler, database, _ := setupTestServer(t)
+	defer database.Close()
+
+	sessionCookie, _ := loginForTest(t, handler)
+
+	// Create test router
+	router := &db.Router{
+		Name:      "GW-QuotaTest",
+		Host:      "192.0.2.1",
+		Port:      8728,
+		Username:  "admin",
+		Password:  "secret",
+		IsActive:  true,
+		IsDefault: true,
+	}
+	if err := database.CreateRouter(router); err != nil {
+		t.Fatalf("failed to create router: %v", err)
+	}
+	rID := router.ID
+
+	now := time.Now()
+	// Choose an anchor date that started 10 days ago
+	anchorTime := now.AddDate(0, 0, -10)
+	anchorDay := anchorTime.Day()
+
+	// Configure anchor day, non-zero anchor time (00:01), quota limit, and monitored WAN interface
+	_ = database.SetSetting(fmt.Sprintf("billing_cycle_anchor_day_%d", rID), strconv.Itoa(anchorDay), "Anchor day")
+	_ = database.SetSetting(fmt.Sprintf("billing_cycle_anchor_hour_%d", rID), "0", "Anchor hour")
+	_ = database.SetSetting(fmt.Sprintf("billing_cycle_anchor_minute_%d", rID), "1", "Anchor minute")
+	_ = database.SetSetting(fmt.Sprintf("quota_limit_bytes_%d", rID), "2199023255552", "Quota limit")
+	_ = database.SetSetting(fmt.Sprintf("monitored_interfaces_%d", rID), `["ether1"]`, "Monitored interfaces")
+
+	// 1. Insert older traffic into legacy router_traffic_rollups (day -8)
+	dayMinus8 := now.AddDate(0, 0, -8).Format("2006-01-02")
+	_, err := database.SqlDB.Exec(`
+		INSERT INTO router_traffic_rollups (router_id, record_date, bytes_in, bytes_out)
+		VALUES (?, ?, 5000000000, 5000000000)
+	`, rID, dayMinus8)
+	if err != nil {
+		t.Fatalf("failed to insert router_traffic_rollups: %v", err)
+	}
+
+	// 2. Insert WAN interface traffic into interface_traffic_rollups (day -3 and today)
+	dayMinus3 := now.AddDate(0, 0, -3).Format("2006-01-02")
+	todayStr := now.Format("2006-01-02")
+	_, err = database.SqlDB.Exec(`
+		INSERT INTO interface_traffic_rollups (router_id, interface_name, record_date, bytes_in, bytes_out)
+		VALUES (?, 'ether1', ?, 20000000000, 10000000000)
+	`, rID, dayMinus3)
+	if err != nil {
+		t.Fatalf("failed to insert interface_traffic_rollups day -3: %v", err)
+	}
+	_, err = database.SqlDB.Exec(`
+		INSERT INTO interface_traffic_rollups (router_id, interface_name, record_date, bytes_in, bytes_out)
+		VALUES (?, 'ether1', ?, 15000000000, 5000000000)
+	`, rID, todayStr)
+	if err != nil {
+		t.Fatalf("failed to insert interface_traffic_rollups today: %v", err)
+	}
+
+	// Total expected gateway traffic in current cycle:
+	// day -8: 10 GB (10000000000)
+	// day -3: 30 GB (30000000000)
+	// today:  20 GB (20000000000)
+	// Total:  60 GB (60000000000)
+	expectedTotalBytes := int64(60000000000)
+
+	// Test GET /api/v1/analytics/quota
+	reqQuota := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/v1/analytics/quota?router_id=%d", rID), nil)
+	reqQuota.AddCookie(sessionCookie)
+	wQuota := httptest.NewRecorder()
+	handler.ServeHTTP(wQuota, reqQuota)
+	if wQuota.Code != http.StatusOK {
+		t.Fatalf("expected 200 from quota endpoint, got %d: %s", wQuota.Code, wQuota.Body.String())
+	}
+
+	var quotaResp APIResponse
+	if err := json.NewDecoder(wQuota.Body).Decode(&quotaResp); err != nil {
+		t.Fatalf("failed to decode quota response: %v", err)
+	}
+	quotaData := quotaResp.Data.(map[string]interface{})
+	usedBytes := int64(quotaData["used_bytes"].(float64))
+	if usedBytes != expectedTotalBytes {
+		t.Fatalf("expected quota used_bytes = %d (60 GB), got %d", expectedTotalBytes, usedBytes)
+	}
+
+	// Test GET /api/v1/analytics/traffic?preset=billing_current
+	reqTraffic := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/v1/analytics/traffic?preset=billing_current&router_id=%d", rID), nil)
+	reqTraffic.AddCookie(sessionCookie)
+	wTraffic := httptest.NewRecorder()
+	handler.ServeHTTP(wTraffic, reqTraffic)
+	if wTraffic.Code != http.StatusOK {
+		t.Fatalf("expected 200 from traffic overview, got %d: %s", wTraffic.Code, wTraffic.Body.String())
+	}
+
+	var trafficResp APIResponse
+	if err := json.NewDecoder(wTraffic.Body).Decode(&trafficResp); err != nil {
+		t.Fatalf("failed to decode traffic response: %v", err)
+	}
+	trafficData := trafficResp.Data.(map[string]interface{})
+	gatewayData := trafficData["gateway"].(map[string]interface{})
+	gwTotalBytes := int64(gatewayData["total_bytes"].(float64))
+
+	// Reconciled: QuotaStrip used_bytes MUST match gateway.total_bytes
+	if gwTotalBytes != usedBytes {
+		t.Fatalf("mismatch between quota used_bytes (%d) and traffic gateway total (%d)", usedBytes, gwTotalBytes)
+	}
+
+	// Verify timeline contains today (non-zero anchor time must not cut off today)
+	timeline := trafficData["timeline"].([]interface{})
+	if len(timeline) == 0 {
+		t.Fatalf("expected non-empty timeline")
+	}
+	lastPoint := timeline[len(timeline)-1].(map[string]interface{})
+	lastDate := lastPoint["record_date"].(string)
+	if lastDate != todayStr {
+		t.Fatalf("expected timeline to end on today (%s), but got %s", todayStr, lastDate)
+	}
+	todayBytes := int64(lastPoint["total_bytes"].(float64))
+	if todayBytes != 20000000000 {
+		t.Fatalf("expected today's traffic to be 20000000000, got %d", todayBytes)
+	}
+}
+
 func TestDeviceLinkUnlinkMergeSplit(t *testing.T) {
 	handler, database, _ := setupTestServer(t)
 	defer database.Close()

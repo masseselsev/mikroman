@@ -224,15 +224,15 @@ func resolveDateRange(preset string, customStart, customEnd string, anchorDay, a
 		return time.Date(2000, 1, 1, 0, 0, 0, 0, now.Location()), today, "all_time"
 	case "billing_current":
 		sDt, eDt := db.CalculateBillingCycleBounds(anchorDay, anchorHour, anchorMinute, now, false)
-		endDate := eDt.Add(-time.Microsecond)
-		if endDate.After(today) {
-			endDate = today
+		endCal := time.Date(eDt.Year(), eDt.Month(), eDt.Day(), 0, 0, 0, 0, now.Location()).AddDate(0, 0, -1)
+		if endCal.After(today) {
+			endCal = today
 		}
-		return sDt, endDate, "billing_current"
+		return sDt, endCal, "billing_current"
 	case "billing_previous":
 		sDt, eDt := db.CalculateBillingCycleBounds(anchorDay, anchorHour, anchorMinute, now, true)
-		endDate := eDt.Add(-time.Microsecond)
-		return sDt, endDate, "billing_previous"
+		endCal := time.Date(eDt.Year(), eDt.Month(), eDt.Day(), 0, 0, 0, 0, now.Location()).AddDate(0, 0, -1)
+		return sDt, endCal, "billing_previous"
 	case "custom":
 		if customStart != "" && customEnd != "" {
 			s, err1 := time.Parse("2006-01-02", customStart)
@@ -248,6 +248,197 @@ func resolveDateRange(preset string, customStart, customEnd string, anchorDay, a
 	default:
 		return today.AddDate(0, 0, -6), today, "7d"
 	}
+}
+
+// queryRangeGatewayTraffic computes the daily timeline and total gateway traffic (in, out, total)
+// for a given router and date range [startDateStr, endDateStr]. It considers monitored WAN interfaces,
+// legacy router traffic rollups, and router-scoped device traffic rollups, selecting the maximum
+// volume per calendar day to reconcile transition periods seamlessly.
+func (h *AnalyticsHandler) queryRangeGatewayTraffic(
+	routerID *int,
+	startDateStr, endDateStr string,
+	loc *time.Location,
+) (timeline []DailyTrafficPoint, gwIn int64, gwOut int64, gwTotal int64) {
+	if loc == nil {
+		loc = time.Local
+	}
+	startCal, err1 := time.ParseInLocation("2006-01-02", startDateStr, loc)
+	endCal, err2 := time.ParseInLocation("2006-01-02", endDateStr, loc)
+	if err1 != nil || err2 != nil {
+		startCal, _ = time.Parse("2006-01-02", startDateStr)
+		endCal, _ = time.Parse("2006-01-02", endDateStr)
+	}
+	if startCal.After(endCal) {
+		startCal, endCal = endCal, startCal
+	}
+
+	// Read monitored interfaces for router
+	monKey := "monitored_interfaces_default"
+	if routerID != nil {
+		monKey = fmt.Sprintf("monitored_interfaces_%d", *routerID)
+	}
+	monVal, _ := h.database.GetSetting(monKey)
+	if monVal == "" && routerID != nil {
+		monVal, _ = h.database.GetSetting("monitored_interfaces_default")
+	}
+	var monitoredList []string
+	if monVal != "" {
+		_ = json.Unmarshal([]byte(monVal), &monitoredList)
+	}
+	if monitoredList == nil {
+		monitoredList = []string{}
+	}
+
+	// Query router traffic rollups per day (legacy table)
+	routerDailyMap := make(map[string][2]int64)
+	var rQuery string
+	var rArgs []interface{}
+	if routerID != nil {
+		rQuery = `SELECT DATE(record_date), SUM(bytes_in), SUM(bytes_out) FROM router_traffic_rollups WHERE (router_id = ? OR router_id IS NULL) AND DATE(record_date) >= ? AND DATE(record_date) <= ? GROUP BY DATE(record_date)`
+		rArgs = []interface{}{*routerID, startDateStr, endDateStr}
+	} else {
+		rQuery = `SELECT DATE(record_date), SUM(bytes_in), SUM(bytes_out) FROM router_traffic_rollups WHERE DATE(record_date) >= ? AND DATE(record_date) <= ? GROUP BY DATE(record_date)`
+		rArgs = []interface{}{startDateStr, endDateStr}
+	}
+	if rdRows, rdErr := h.database.SqlDB.Query(rQuery, rArgs...); rdErr == nil {
+		defer rdRows.Close()
+		for rdRows.Next() {
+			var dStr string
+			var bIn, bOut int64
+			if err := rdRows.Scan(&dStr, &bIn, &bOut); err == nil {
+				if len(dStr) >= 10 {
+					dStr = dStr[:10]
+				}
+				routerDailyMap[dStr] = [2]int64{bIn, bOut}
+			}
+		}
+	}
+
+	// Query interface traffic rollups per day (where Go collects WAN rollups)
+	ifaceDailyMap := make(map[string][2]int64)
+	var iQuery string
+	var iArgs []interface{}
+	if len(monitoredList) > 0 {
+		placeholders := make([]string, len(monitoredList))
+		for i := range monitoredList {
+			placeholders[i] = "?"
+		}
+		if routerID != nil {
+			iQuery = fmt.Sprintf(`SELECT DATE(record_date), SUM(bytes_in), SUM(bytes_out) FROM interface_traffic_rollups WHERE (router_id = ? OR router_id IS NULL) AND interface_name IN (%s) AND DATE(record_date) >= ? AND DATE(record_date) <= ? GROUP BY DATE(record_date)`, strings.Join(placeholders, ","))
+			iArgs = append(iArgs, *routerID)
+			for _, m := range monitoredList {
+				iArgs = append(iArgs, m)
+			}
+			iArgs = append(iArgs, startDateStr, endDateStr)
+		} else {
+			iQuery = fmt.Sprintf(`SELECT DATE(record_date), SUM(bytes_in), SUM(bytes_out) FROM interface_traffic_rollups WHERE interface_name IN (%s) AND DATE(record_date) >= ? AND DATE(record_date) <= ? GROUP BY DATE(record_date)`, strings.Join(placeholders, ","))
+			for _, m := range monitoredList {
+				iArgs = append(iArgs, m)
+			}
+			iArgs = append(iArgs, startDateStr, endDateStr)
+		}
+	} else {
+		if routerID != nil {
+			iQuery = `SELECT DATE(record_date), SUM(bytes_in), SUM(bytes_out) FROM interface_traffic_rollups WHERE (router_id = ? OR router_id IS NULL) AND DATE(record_date) >= ? AND DATE(record_date) <= ? GROUP BY DATE(record_date)`
+			iArgs = []interface{}{*routerID, startDateStr, endDateStr}
+		} else {
+			iQuery = `SELECT DATE(record_date), SUM(bytes_in), SUM(bytes_out) FROM interface_traffic_rollups WHERE DATE(record_date) >= ? AND DATE(record_date) <= ? GROUP BY DATE(record_date)`
+			iArgs = []interface{}{startDateStr, endDateStr}
+		}
+	}
+	if idRows, idErr := h.database.SqlDB.Query(iQuery, iArgs...); idErr == nil {
+		defer idRows.Close()
+		for idRows.Next() {
+			var dStr string
+			var bIn, bOut int64
+			if err := idRows.Scan(&dStr, &bIn, &bOut); err == nil {
+				if len(dStr) >= 10 {
+					dStr = dStr[:10]
+				}
+				ifaceDailyMap[dStr] = [2]int64{bIn, bOut}
+			}
+		}
+	}
+
+	// Query device traffic rollups per day (scoped by router)
+	deviceDailyMap := make(map[string][2]int64)
+	var ddQuery string
+	var ddArgs []interface{}
+	if routerID != nil {
+		ddQuery = `
+			SELECT DATE(dtr.record_date), SUM(dtr.bytes_in), SUM(dtr.bytes_out)
+			FROM device_traffic_rollups dtr
+			JOIN devices d ON d.id = dtr.device_id
+			WHERE (d.router_id = ? OR d.router_id IS NULL)
+			  AND DATE(dtr.record_date) >= ? AND DATE(dtr.record_date) <= ?
+			GROUP BY DATE(dtr.record_date)
+		`
+		ddArgs = []interface{}{*routerID, startDateStr, endDateStr}
+	} else {
+		ddQuery = `
+			SELECT DATE(record_date), SUM(bytes_in), SUM(bytes_out)
+			FROM device_traffic_rollups
+			WHERE DATE(record_date) >= ? AND DATE(record_date) <= ?
+			GROUP BY DATE(record_date)
+		`
+		ddArgs = []interface{}{startDateStr, endDateStr}
+	}
+	if ddRows, ddErr := h.database.SqlDB.Query(ddQuery, ddArgs...); ddErr == nil {
+		defer ddRows.Close()
+		for ddRows.Next() {
+			var dStr string
+			var bIn, bOut int64
+			if err := ddRows.Scan(&dStr, &bIn, &bOut); err == nil {
+				if len(dStr) >= 10 {
+					dStr = dStr[:10]
+				}
+				deviceDailyMap[dStr] = [2]int64{bIn, bOut}
+			}
+		}
+	}
+
+	// Build full date timeline (every calendar day in range)
+	timeline = make([]DailyTrafficPoint, 0)
+	for cur := startCal; !cur.After(endCal); cur = cur.AddDate(0, 0, 1) {
+		curStr := cur.Format("2006-01-02")
+		rTotals := routerDailyMap[curStr]
+		iTotals := ifaceDailyMap[curStr]
+		dTotals := deviceDailyMap[curStr]
+		dayIn := max(max(rTotals[0], iTotals[0]), dTotals[0])
+		dayOut := max(max(rTotals[1], iTotals[1]), dTotals[1])
+		timeline = append(timeline, DailyTrafficPoint{
+			RecordDate: curStr,
+			BytesIn:    dayIn,
+			BytesOut:   dayOut,
+			TotalBytes: dayIn + dayOut,
+		})
+		gwIn += dayIn
+		gwOut += dayOut
+	}
+	gwTotal = gwIn + gwOut
+
+	// Fallback if no interface or device rollups found, but router self traffic exists
+	if gwTotal == 0 {
+		var selfIn, selfOut int64
+		var sQuery string
+		var sArgs []interface{}
+		if routerID != nil {
+			sQuery = `SELECT COALESCE(SUM(bytes_in), 0), COALESCE(SUM(bytes_out), 0) FROM router_self_traffic_rollups WHERE (router_id = ? OR router_id IS NULL) AND DATE(record_date) >= ? AND DATE(record_date) <= ?`
+			sArgs = []interface{}{*routerID, startDateStr, endDateStr}
+		} else {
+			sQuery = `SELECT COALESCE(SUM(bytes_in), 0), COALESCE(SUM(bytes_out), 0) FROM router_self_traffic_rollups WHERE DATE(record_date) >= ? AND DATE(record_date) <= ?`
+			sArgs = []interface{}{startDateStr, endDateStr}
+		}
+		if err := h.database.SqlDB.QueryRow(sQuery, sArgs...).Scan(&selfIn, &selfOut); err == nil {
+			if selfIn > 0 || selfOut > 0 {
+				gwIn = selfIn
+				gwOut = selfOut
+				gwTotal = gwIn + gwOut
+			}
+		}
+	}
+
+	return timeline, gwIn, gwOut, gwTotal
 }
 
 func (h *AnalyticsHandler) GetTrafficOverview(w http.ResponseWriter, r *http.Request) {
@@ -298,14 +489,15 @@ func (h *AnalyticsHandler) GetTrafficOverview(w http.ResponseWriter, r *http.Req
 
 	cycStartDt, cycEndDt := db.CalculateBillingCycleBounds(anchorDay, anchorHour, anchorMinute, now, false)
 	cycStartStr := cycStartDt.Format("2006-01-02")
-	cycEndStr := cycEndDt.Add(-time.Microsecond).Format("2006-01-02")
+	cycEndCal := time.Date(cycEndDt.Year(), cycEndDt.Month(), cycEndDt.Day(), 0, 0, 0, 0, cycEndDt.Location()).AddDate(0, 0, -1)
+	cycEndStr := cycEndCal.Format("2006-01-02")
 
 	// Query device totals for selected range
 	devRangeTotals := make(map[int][2]int64)
 	rows, err := h.database.SqlDB.Query(`
 		SELECT device_id, SUM(bytes_in), SUM(bytes_out)
 		FROM device_traffic_rollups
-		WHERE record_date >= ? AND record_date <= ?
+		WHERE DATE(record_date) >= ? AND DATE(record_date) <= ?
 		GROUP BY device_id
 	`, startDateStr, endDateStr)
 	if err == nil {
@@ -324,7 +516,7 @@ func (h *AnalyticsHandler) GetTrafficOverview(w http.ResponseWriter, r *http.Req
 	cRows, cErr := h.database.SqlDB.Query(`
 		SELECT device_id, SUM(bytes_in), SUM(bytes_out)
 		FROM device_traffic_rollups
-		WHERE record_date >= ? AND record_date <= ?
+		WHERE DATE(record_date) >= ? AND DATE(record_date) <= ?
 		GROUP BY device_id
 	`, cycStartStr, cycEndStr)
 	if cErr == nil {
@@ -356,156 +548,21 @@ func (h *AnalyticsHandler) GetTrafficOverview(w http.ResponseWriter, r *http.Req
 		}
 	}
 
-	// Query router traffic rollups per day (legacy table)
-	routerDailyMap := make(map[string][2]int64)
-	var rQuery string
-	var rArgs []interface{}
-	if routerID != nil {
-		rQuery = `SELECT DATE(record_date), SUM(bytes_in), SUM(bytes_out) FROM router_traffic_rollups WHERE (router_id = ? OR router_id IS NULL) AND DATE(record_date) >= ? AND DATE(record_date) <= ? GROUP BY DATE(record_date)`
-		rArgs = []interface{}{*routerID, startDateStr, endDateStr}
-	} else {
-		rQuery = `SELECT DATE(record_date), SUM(bytes_in), SUM(bytes_out) FROM router_traffic_rollups WHERE DATE(record_date) >= ? AND DATE(record_date) <= ? GROUP BY DATE(record_date)`
-		rArgs = []interface{}{startDateStr, endDateStr}
-	}
-	rdRows, rdErr := h.database.SqlDB.Query(rQuery, rArgs...)
-	if rdErr == nil {
-		defer rdRows.Close()
-		for rdRows.Next() {
-			var dStr string
-			var bIn, bOut int64
-			if err := rdRows.Scan(&dStr, &bIn, &bOut); err == nil {
-				if len(dStr) >= 10 {
-					dStr = dStr[:10]
-				}
-				routerDailyMap[dStr] = [2]int64{bIn, bOut}
-			}
-		}
-	}
-
-	// Query interface traffic rollups per day (where Go collects WAN rollups)
-	ifaceDailyMap := make(map[string][2]int64)
-	var iQuery string
-	var iArgs []interface{}
-	if len(monitoredList) > 0 {
-		placeholders := make([]string, len(monitoredList))
-		for i := range monitoredList {
-			placeholders[i] = "?"
-		}
-		if routerID != nil {
-			iQuery = fmt.Sprintf(`SELECT DATE(record_date), SUM(bytes_in), SUM(bytes_out) FROM interface_traffic_rollups WHERE (router_id = ? OR router_id IS NULL) AND interface_name IN (%s) AND DATE(record_date) >= ? AND DATE(record_date) <= ? GROUP BY DATE(record_date)`, strings.Join(placeholders, ","))
-			iArgs = append(iArgs, *routerID)
-			for _, m := range monitoredList {
-				iArgs = append(iArgs, m)
-			}
-			iArgs = append(iArgs, startDateStr, endDateStr)
-		} else {
-			iQuery = fmt.Sprintf(`SELECT DATE(record_date), SUM(bytes_in), SUM(bytes_out) FROM interface_traffic_rollups WHERE interface_name IN (%s) AND DATE(record_date) >= ? AND DATE(record_date) <= ? GROUP BY DATE(record_date)`, strings.Join(placeholders, ","))
-			for _, m := range monitoredList {
-				iArgs = append(iArgs, m)
-			}
-			iArgs = append(iArgs, startDateStr, endDateStr)
-		}
-	} else {
-		if routerID != nil {
-			iQuery = `SELECT DATE(record_date), SUM(bytes_in), SUM(bytes_out) FROM interface_traffic_rollups WHERE (router_id = ? OR router_id IS NULL) AND DATE(record_date) >= ? AND DATE(record_date) <= ? GROUP BY DATE(record_date)`
-			iArgs = []interface{}{*routerID, startDateStr, endDateStr}
-		} else {
-			iQuery = `SELECT DATE(record_date), SUM(bytes_in), SUM(bytes_out) FROM interface_traffic_rollups WHERE DATE(record_date) >= ? AND DATE(record_date) <= ? GROUP BY DATE(record_date)`
-			iArgs = []interface{}{startDateStr, endDateStr}
-		}
-	}
-	idRows, idErr := h.database.SqlDB.Query(iQuery, iArgs...)
-	if idErr == nil {
-		defer idRows.Close()
-		for idRows.Next() {
-			var dStr string
-			var bIn, bOut int64
-			if err := idRows.Scan(&dStr, &bIn, &bOut); err == nil {
-				if len(dStr) >= 10 {
-					dStr = dStr[:10]
-				}
-				ifaceDailyMap[dStr] = [2]int64{bIn, bOut}
-			}
-		}
-	}
-
-	// Query device traffic rollups per day (scoped by router)
-	deviceDailyMap := make(map[string][2]int64)
-	var ddQuery string
-	var ddArgs []interface{}
-	if routerID != nil {
-		ddQuery = `
-			SELECT DATE(dtr.record_date), SUM(dtr.bytes_in), SUM(dtr.bytes_out)
-			FROM device_traffic_rollups dtr
-			JOIN devices d ON d.id = dtr.device_id
-			WHERE (d.router_id = ? OR d.router_id IS NULL)
-			  AND DATE(dtr.record_date) >= ? AND DATE(dtr.record_date) <= ?
-			GROUP BY DATE(dtr.record_date)
-		`
-		ddArgs = []interface{}{*routerID, startDateStr, endDateStr}
-	} else {
-		ddQuery = `
-			SELECT DATE(record_date), SUM(bytes_in), SUM(bytes_out)
-			FROM device_traffic_rollups
-			WHERE DATE(record_date) >= ? AND DATE(record_date) <= ?
-			GROUP BY DATE(record_date)
-		`
-		ddArgs = []interface{}{startDateStr, endDateStr}
-	}
-	ddRows, ddErr := h.database.SqlDB.Query(ddQuery, ddArgs...)
-	if ddErr == nil {
-		defer ddRows.Close()
-		for ddRows.Next() {
-			var dStr string
-			var bIn, bOut int64
-			if err := ddRows.Scan(&dStr, &bIn, &bOut); err == nil {
-				if len(dStr) >= 10 {
-					dStr = dStr[:10]
-				}
-				deviceDailyMap[dStr] = [2]int64{bIn, bOut}
-			}
-		}
-	}
-
 	// Query router self traffic in range
 	var selfIn, selfOut int64
 	var selfQuery string
 	var selfArgs []interface{}
 	if routerID != nil {
-		selfQuery = `SELECT SUM(bytes_in), SUM(bytes_out) FROM router_self_traffic_rollups WHERE router_id = ? AND record_date >= ? AND record_date <= ?`
+		selfQuery = `SELECT COALESCE(SUM(bytes_in), 0), COALESCE(SUM(bytes_out), 0) FROM router_self_traffic_rollups WHERE (router_id = ? OR router_id IS NULL) AND DATE(record_date) >= ? AND DATE(record_date) <= ?`
 		selfArgs = []interface{}{*routerID, startDateStr, endDateStr}
 	} else {
-		selfQuery = `SELECT SUM(bytes_in), SUM(bytes_out) FROM router_self_traffic_rollups WHERE record_date >= ? AND record_date <= ?`
+		selfQuery = `SELECT COALESCE(SUM(bytes_in), 0), COALESCE(SUM(bytes_out), 0) FROM router_self_traffic_rollups WHERE DATE(record_date) >= ? AND DATE(record_date) <= ?`
 		selfArgs = []interface{}{startDateStr, endDateStr}
 	}
 	_ = h.database.SqlDB.QueryRow(selfQuery, selfArgs...).Scan(&selfIn, &selfOut)
 
-	// Build full date timeline (every calendar day in range)
-	var timeline []DailyTrafficPoint
-	cur := startDt
-	for !cur.After(endDt) {
-		curStr := cur.Format("2006-01-02")
-		rTotals := routerDailyMap[curStr]
-		iTotals := ifaceDailyMap[curStr]
-		dTotals := deviceDailyMap[curStr]
-		dayIn := max(max(rTotals[0], iTotals[0]), dTotals[0])
-		dayOut := max(max(rTotals[1], iTotals[1]), dTotals[1])
-		timeline = append(timeline, DailyTrafficPoint{
-			RecordDate: curStr,
-			BytesIn:    dayIn,
-			BytesOut:   dayOut,
-			TotalBytes: dayIn + dayOut,
-		})
-		cur = cur.AddDate(0, 0, 1)
-	}
-
-	// Calculate Gateway Total
-	var gwIn, gwOut int64
-	for _, pt := range timeline {
-		gwIn += pt.BytesIn
-		gwOut += pt.BytesOut
-	}
-	gwTotal := gwIn + gwOut
+	// Build full date timeline and gateway totals
+	timeline, gwIn, gwOut, gwTotal := h.queryRangeGatewayTraffic(routerID, startDateStr, endDateStr, now.Location())
 
 	// Accounted volume: sum of devices + router self
 	var sumDevIn, sumDevOut int64
@@ -673,10 +730,10 @@ func (h *AnalyticsHandler) GetTrafficOverview(w http.ResponseWriter, r *http.Req
 	var ifaceQuery string
 	var ifaceArgs []interface{}
 	if routerID != nil {
-		ifaceQuery = `SELECT interface_name, SUM(bytes_in), SUM(bytes_out) FROM interface_traffic_rollups WHERE router_id = ? AND record_date >= ? AND record_date <= ? GROUP BY interface_name`
+		ifaceQuery = `SELECT interface_name, SUM(bytes_in), SUM(bytes_out) FROM interface_traffic_rollups WHERE (router_id = ? OR router_id IS NULL) AND DATE(record_date) >= ? AND DATE(record_date) <= ? GROUP BY interface_name`
 		ifaceArgs = []interface{}{*routerID, startDateStr, endDateStr}
 	} else {
-		ifaceQuery = `SELECT interface_name, SUM(bytes_in), SUM(bytes_out) FROM interface_traffic_rollups WHERE record_date >= ? AND record_date <= ? GROUP BY interface_name`
+		ifaceQuery = `SELECT interface_name, SUM(bytes_in), SUM(bytes_out) FROM interface_traffic_rollups WHERE DATE(record_date) >= ? AND DATE(record_date) <= ? GROUP BY interface_name`
 		ifaceArgs = []interface{}{startDateStr, endDateStr}
 	}
 	ifRows, ifErr := h.database.SqlDB.Query(ifaceQuery, ifaceArgs...)
@@ -958,7 +1015,8 @@ func (h *AnalyticsHandler) buildQuotaStatus(routerID *int) QuotaStatusDTO {
 
 	startDt, endDt := db.CalculateBillingCycleBounds(anchorDay, anchorHour, anchorMinute, now, false)
 	cycleStartStr := startDt.Format("2006-01-02")
-	cycleEndStr := endDt.Add(-time.Microsecond).Format("2006-01-02")
+	cycleEndCal := time.Date(endDt.Year(), endDt.Month(), endDt.Day(), 0, 0, 0, 0, endDt.Location()).AddDate(0, 0, -1)
+	cycleEndStr := cycleEndCal.Format("2006-01-02")
 
 	var cycleEndAt *string
 	if anchorHour != 0 || anchorMinute != 0 {
@@ -966,29 +1024,8 @@ func (h *AnalyticsHandler) buildQuotaStatus(routerID *int) QuotaStatusDTO {
 		cycleEndAt = &s
 	}
 
-	var usedIn, usedOut int64
-	if routerID != nil {
-		_ = h.database.SqlDB.QueryRow(`
-			SELECT COALESCE(SUM(bytes_in), 0), COALESCE(SUM(bytes_out), 0)
-			FROM router_traffic_rollups
-			WHERE router_id = ? AND record_date >= ? AND record_date <= ?
-		`, *routerID, cycleStartStr, todayStr).Scan(&usedIn, &usedOut)
-	} else {
-		_ = h.database.SqlDB.QueryRow(`
-			SELECT COALESCE(SUM(bytes_in), 0), COALESCE(SUM(bytes_out), 0)
-			FROM router_traffic_rollups
-			WHERE record_date >= ? AND record_date <= ?
-		`, cycleStartStr, todayStr).Scan(&usedIn, &usedOut)
-	}
-	usedBytes := usedIn + usedOut
-	if usedBytes == 0 {
-		_ = h.database.SqlDB.QueryRow(`
-			SELECT COALESCE(SUM(bytes_in), 0), COALESCE(SUM(bytes_out), 0)
-			FROM device_traffic_rollups
-			WHERE record_date >= ? AND record_date <= ?
-		`, cycleStartStr, todayStr).Scan(&usedIn, &usedOut)
-		usedBytes = usedIn + usedOut
-	}
+	// Calculate usedBytes and daily breakdown for current cycle up to today using the unified gateway traffic logic
+	cycleTimeline, _, _, usedBytes := h.queryRangeGatewayTraffic(routerID, cycleStartStr, todayStr, now.Location())
 
 	totalDays := math.Max(1.0, endDt.Sub(startDt).Seconds()/86400.0)
 	var elapsedDays float64
@@ -1021,47 +1058,22 @@ func (h *AnalyticsHandler) buildQuotaStatus(routerID *int) QuotaStatusDTO {
 
 	prevStartDt, prevEndDt := db.CalculateBillingCycleBounds(anchorDay, anchorHour, anchorMinute, now, true)
 	prevStartStr := prevStartDt.Format("2006-01-02")
-	prevEndStr := prevEndDt.Add(-time.Microsecond).Format("2006-01-02")
-	var prevIn, prevOut int64
-	if routerID != nil {
-		_ = h.database.SqlDB.QueryRow(`
-			SELECT COALESCE(SUM(bytes_in), 0), COALESCE(SUM(bytes_out), 0)
-			FROM router_traffic_rollups
-			WHERE router_id = ? AND record_date >= ? AND record_date <= ?
-		`, *routerID, prevStartStr, prevEndStr).Scan(&prevIn, &prevOut)
-	} else {
-		_ = h.database.SqlDB.QueryRow(`
-			SELECT COALESCE(SUM(bytes_in), 0), COALESCE(SUM(bytes_out), 0)
-			FROM router_traffic_rollups
-			WHERE record_date >= ? AND record_date <= ?
-		`, prevStartStr, prevEndStr).Scan(&prevIn, &prevOut)
-	}
-	prevCycleBytes := prevIn + prevOut
+	prevEndCal := time.Date(prevEndDt.Year(), prevEndDt.Month(), prevEndDt.Day(), 0, 0, 0, 0, prevEndDt.Location()).AddDate(0, 0, -1)
+	prevEndStr := prevEndCal.Format("2006-01-02")
+
+	_, _, _, prevCycleBytes := h.queryRangeGatewayTraffic(routerID, prevStartStr, prevEndStr, now.Location())
+
 	prevDays := math.Max(1.0, prevEndDt.Sub(prevStartDt).Seconds()/86400.0)
 	var prevPerDay float64
 	if prevCycleBytes > 0 {
 		prevPerDay = float64(prevCycleBytes) / prevDays
 	}
 
-	rows, err := h.database.SqlDB.Query(`
-		SELECT COALESCE(SUM(bytes_in + bytes_out), 0)
-		FROM (
-			SELECT record_date, bytes_in, bytes_out FROM router_traffic_rollups WHERE record_date >= ? AND record_date <= ?
-			UNION ALL
-			SELECT record_date, bytes_in, bytes_out FROM device_traffic_rollups WHERE record_date >= ? AND record_date <= ?
-		)
-		GROUP BY record_date
-		ORDER BY record_date DESC
-		LIMIT 7
-	`, cycleStartStr, todayStr, cycleStartStr, todayStr)
+	// Derive up to 7 recent active days from the current cycle timeline
 	var recentDaily []float64
-	if err == nil {
-		defer rows.Close()
-		for rows.Next() {
-			var b int64
-			if err := rows.Scan(&b); err == nil && b > 0 {
-				recentDaily = append(recentDaily, float64(b))
-			}
+	for i := len(cycleTimeline) - 1; i >= 0 && len(recentDaily) < 7; i-- {
+		if cycleTimeline[i].TotalBytes > 0 {
+			recentDaily = append(recentDaily, float64(cycleTimeline[i].TotalBytes))
 		}
 	}
 	recentMean := avgPerDay
