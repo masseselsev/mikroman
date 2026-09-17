@@ -16,6 +16,7 @@
   * Measured via dedicated RouterOS firewall mangle `action=passthrough` counters, bypassing unreliable queue byte counters.
   * Accumulates traffic deltas against persisted baselines, surviving network outages and distinguishing hardware reboots.
   * Configurable monthly ISP billing cycle anchors with optional time-of-day boundary slicing.
+  * Unified gateway quota reconciliation: quota progress metrics (`used_bytes`, previous cycle, pace forecast) and historical analytics timelines now query unified WAN interface and router-scoped rollups, ensuring exact byte-level parity and zero dropped boundary days even with non-zero time-of-day cycle anchors.
   * Configurable accounting scope (`traffic_accounting_scope`: `wan_only` vs `all_routed`) binding client counters to monitored WAN uplinks and excluding local inter-VLAN, Docker container, or unmonitored overlay transfers from ISP quota.
   * Built-in tools to reconcile historical LAN-to-LAN overcounts.
   * High-fidelity 15-minute intraday timeline resolution (`quarter_hour`) for 24-hour traffic history graphs with zero additional polling load on RouterOS gateways.
