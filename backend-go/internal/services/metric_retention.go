@@ -41,10 +41,14 @@ func getRetentionDays(database *db.DB, key string, def int) int {
 	return def
 }
 
-// pruneRawMetricTable deletes rows older than cutoff, oldest first, in batches. The
-// cursor is the primary key, not the timestamp, so each batch is a contiguous range of
-// the clustered rowid order (which is also time order for append-only metric tables)
-// instead of a fresh index range search per batch. Zero rows deleted stops the loop.
+// pruneRawMetricTable deletes rows older than cutoff, oldest first, in batches. Each
+// batch selects its rowids through the timestamp index — an ORDER-free seek to the
+// oldest survivors plus a LIMIT walk — so batch work is O(batch), not O(table), and the
+// predicate is exactly "timestamp < cutoff" regardless of insertion order. The earlier
+// design computed a max(id)-below-cutoff anchor per batch to walk the clustered rowid
+// order instead; that anchor cannot use any index (max over a filtered set), rescanned
+// every old row per batch, and on a router-sized history blew the prune deadline after
+// deleting only part of the backlog.
 func pruneRawMetricTable(ctx context.Context, database *db.DB, table, cutoff string) (int64, error) {
 	var total int64
 	for {
@@ -52,24 +56,11 @@ func pruneRawMetricTable(ctx context.Context, database *db.DB, table, cutoff str
 			return total, err
 		}
 
-		var maxID int64
-		// Anchor of one batch: the highest id of the rows below the cutoff. The rowid
-		// order matches insertion order, so "id <= anchor" is exactly the oldest rows.
-		// COALESCE: an empty tail (no row below the cutoff) yields NULL, which means done.
-		err := database.SqlDB.QueryRowContext(ctx,
-			fmt.Sprintf("SELECT coalesce(max(id), 0) FROM %s WHERE timestamp < ?", table), cutoff).Scan(&maxID)
-		if err != nil {
-			return total, fmt.Errorf("select %s prune anchor: %w", table, err)
-		}
-		if maxID == 0 {
-			return total, nil
-		}
-
-		// DELETE ... LIMIT is not plain SQLite syntax; the batch is a subselect over the
-		// clustered rowid order, which keeps each batch a contiguous oldest-first range.
+		// DELETE ... LIMIT is not plain SQLite syntax; the batch is a subselect whose
+		// index walk stops at rawMetricPruneBatch rowids.
 		res, err := database.SqlDB.ExecContext(ctx, fmt.Sprintf(
-			"DELETE FROM %s WHERE id IN (SELECT id FROM %s WHERE id <= ? AND timestamp < ? LIMIT ?)",
-			table, table), maxID, cutoff, rawMetricPruneBatch)
+			"DELETE FROM %s WHERE id IN (SELECT id FROM %s WHERE timestamp < ? LIMIT ?)",
+			table, table), cutoff, rawMetricPruneBatch)
 		if err != nil {
 			return total, fmt.Errorf("delete %s prune batch: %w", table, err)
 		}
