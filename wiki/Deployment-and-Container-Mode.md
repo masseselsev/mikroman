@@ -1,6 +1,11 @@
 # 📦 Deployment, Storage & Container Mode
 
-MikroMan can be deployed as a standard Docker container or hosted directly inside RouterOS 7.4+ hardware containers.
+MikroMan can be deployed as a standard Docker container or hosted directly inside RouterOS **7.20+** hardware containers.
+
+The RouterOS baseline is **7.20 or newer**: per-container memory reporting
+(`memory-current`, `memory-high`, `memory-max`) arrived in 7.20, and the container
+dashboard, its limits and the diagnostics view read those properties. Container
+support alone starts at 7.4, which is not enough to run MikroMan.
 
 ---
 
