@@ -20,16 +20,24 @@ export function formatVersionTag(version) {
 }
 
 /**
- * Page footer: the build version, a copyright line and a link back to the
- * project's source. Deliberately quiet - it sits below every screen's content,
- * muted, and never competes with the dashboard.
+ * Cadence for the background update check.
+ *
+ * One mount-time request was not enough: a release published while a dashboard
+ * stayed open remained invisible, because the browser never asked again and the
+ * server-side cache had already answered. Re-asking is cheap - the backend
+ * revalidates upstream with a conditional request, and a 304 reply carries no
+ * GitHub rate-limit cost.
+ */
+export const VERSION_RECHECK_INTERVAL_MS = 15 * 60 * 1000;
+
+/**
+ * Page footer: the build version, a copyright line, update notifications, and
+ * a link back to the project's source. Deliberately quiet - it sits below every
+ * screen's content, muted, and never competes with the dashboard.
  *
  * The version lives here rather than beside the app name in the header: it is
  * a fact you look up once when filing a bug, not one you read on every glance
  * at the dashboard, and the header needed the width for the router controls.
- * Page footer: the build version, a copyright line, update notifications, and
- * a link back to the project's source. Deliberately quiet - it sits below every
- * screen's content, muted, and never competes with the dashboard.
  */
 export function AppFooter() {
   const { t } = useI18n();
@@ -38,20 +46,34 @@ export function AppFooter() {
 
   useEffect(() => {
     let active = true;
-    api.checkAppVersion()
-      .then((res) => {
-        if (!active || !res) return;
-        const info = res.data || res;
-        if (info && info.has_update) {
-          setUpdateInfo(info);
-        }
-      })
-      .catch(() => {
-        // Silently ignore network or offline errors for background check
-      });
+
+    const load = () => {
+      api.checkAppVersion()
+        .then((res) => {
+          if (!active || !res) return;
+          const info = res.data || res;
+          // Replace the state rather than only setting it: once the running
+          // build matches the latest release the offer has to disappear, not
+          // linger from an earlier answer.
+          if (info) setUpdateInfo(info.has_update ? info : null);
+        })
+        .catch(() => {
+          // Silently ignore network or offline errors for background check
+        });
+    };
+
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') load();
+    };
+
+    load();
+    const timer = setInterval(load, VERSION_RECHECK_INTERVAL_MS);
+    document.addEventListener('visibilitychange', onVisible);
 
     return () => {
       active = false;
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisible);
     };
   }, []);
 

@@ -964,5 +964,35 @@ its recorded consumption with it everywhere.
 **[2026-09-13] Problem:** Three operational issues were identified: (1) In `WorldConnectionsModal`, zoom was capped at 6x and clustering enforced a static 10-unit distance floor (`Math.max(10, ...)`), permanently grouping adjacent European nations (such as Netherlands, Belgium, Luxembourg, Switzerland) into unseparable clusters; (2) The built-in speed test's 6-second measurement phases were too brief for mobile LTE/5G uplinks to complete TCP slow-start window scaling, under-reporting peak link capacity; (3) Live connections modal was empty when launched from a device card because conntrack filtering only matched `c.SrcAddress` and `c.DstAddress` (missing inbound port-forwarded and return traffic where internal device IPs appear in `c.ReplySrcAddress` or `c.ReplyDstAddress`), dropped multi-adapter devices linked via `linked_to_device_id`, and lacked aggregation by user.
 **→ Solution:** (1) Increased map zoom up to 20x (2000%), refactored the clustering threshold to scale down to sub-unit scale (`Math.max(0.5, 36 / Math.pow(zoom, 0.95))`) so all neighboring nations cleanly separate into individual country nodes at high zoom, and scaled node radii and badges proportionally; (2) Increased download and upload test durations to 12 seconds per phase and raised the client timeout to 35 seconds, giving mobile TCP congestion windows ample time to ramp up; (3) Enhanced `GetLiveConnections` to evaluate all 4 connection endpoints (`src-address`, `dst-address`, `reply-src-address`, `reply-dst-address`), resolve primary devices and their linked secondary adapters into unified ID/IP sets, support `user_id` query parameter for user-wide live connection aggregation, added an Activity button to the `UserCard` header, and displayed clearable contextual filter pill badges in `LiveConnectionsModal`.
 
+## Releases & versioning
+
+**[2026-09-17] Problem:** A release was published while a dashboard was open and
+the footer never offered it. Three compounding causes: (1) the update check ran
+once per page load (`useEffect(..., [])` in `AppFooter`), so a tab that had
+already asked never asked again; (2) the backend served a six-hour in-process
+cache (`defaultVersionCacheTTL` in `services/version_checker.go`) which is not
+revalidated while it is fresh, so a release published inside that window stayed
+invisible until the TTL lapsed *and* the page was reloaded; (3) a check whose
+upstream call failed (offline network, or GitHub's unauthenticated rate limit of
+60 requests/hour per source address) was indistinguishable from "up to date":
+`fallbackInfo` returned `has_update: false` with `latest_version` equal to the
+running version and logged at `Debug`, so a rate-limited installation silently
+claimed to be current.
+**→ Solution:** The TTL is now 15 minutes and every refresh is a conditional
+request, which costs nothing per refresh because GitHub does not count `304 Not
+Modified` replies against the rate limit. `VersionInfo` gained `check_failed`,
+set on every unconfirmed reply, so `has_update: false` together with
+`check_failed: true` reads as *unknown* rather than *current*; a failed attempt
+records its own timestamp, so a broken upstream is retried at most once per TTL
+instead of on every page load. The frontend re-asks on tab focus and every 15
+minutes and clears the badge when the running build catches up instead of only
+ever setting it, and failure logging moved from `Debug` to `Warn` carrying the
+status and the remaining rate-limit budget. The correspondence a published
+release must satisfy — published rather than draft or prerelease, `vX.Y.Z` equal
+to the bumped `APP_VERSION`, and `make_latest` left on unless an older tag is
+being back-filled, since GitHub elects "latest" by creation time and not by
+semver — is now written down in `docs/RELEASING.md` and in the wiki, because a
+release that breaks it fails silently rather than loudly.
+
 
 
