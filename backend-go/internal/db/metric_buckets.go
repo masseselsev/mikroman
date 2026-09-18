@@ -230,11 +230,23 @@ const MetricBucketBackfillMarker = "metric_buckets_backfilled"
 // shipped in a release yet, so "1" is the only version that will ever have been stored.
 const MetricBucketBackfillVersion = "1"
 
-// backfillChunkSeconds is the width of one backfill chunk: a day, a whole multiple of the
-// bucket grid. Chunking bounds the size of a single statement (and of SQLite's temporary
-// sort) so an install with months of history does not build one enormous aggregate, and
-// it lets an interrupted backfill resume without having written partial buckets.
-const backfillChunkSeconds = 24 * 60 * 60
+// backfillChunkSeconds is the width of one backfill chunk: an hour, a whole multiple of
+// the bucket grid. Chunking bounds the size of a single statement (and of SQLite's
+// temporary sort) so an install with months of history does not build one enormous
+// aggregate, and it lets an interrupted backfill resume without having written partial
+// buckets. The size is a lock-contention budget, not just a memory one: each chunk is a
+// write transaction, and the collector's 10 s tick needs the write lock too. A day-sized
+// chunk held it past the 5 s busy_timeout on router-class storage, so every tick that
+// landed during a chunk rolled back and its raw samples were lost (SQLITE_BUSY); an
+// hour-sized chunk plus a pause between chunks keeps each lock window short enough for
+// the tick to slip in.
+const backfillChunkSeconds = 60 * 60
+
+// backfillChunkPause is how long the backfill yields the database between chunks. It
+// does not have to be long — the collector ticks every 10 s — but zero pause lets one
+// connection re-acquire the write lock immediately and starve everyone else. (Kept a
+// var: tests shrink it, as with rawMetricPruneBatch.)
+var backfillChunkPause = 200 * time.Millisecond
 
 // BackfillMetricBuckets builds metric buckets from the raw samples already in the
 // database, so charts are populated the moment an existing install is upgraded instead of
@@ -284,6 +296,9 @@ func BackfillMetricBuckets(database *DB, retentionDays int) (bool, error) {
 		}); err != nil {
 			return false, fmt.Errorf("backfill metric buckets %d..%d: %w", chunkStart, chunkEnd, err)
 		}
+		// Yield between chunks so the collector's tick can take the write lock; see
+		// backfillChunkPause.
+		time.Sleep(backfillChunkPause)
 	}
 
 	if err := database.SetSetting(MetricBucketBackfillMarker, MetricBucketBackfillVersion,

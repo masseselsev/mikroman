@@ -268,6 +268,13 @@ func TestMetricBucketBackfillRunsOnceAndIsIdempotent(t *testing.T) {
 	database := openBucketTestDB(t)
 	defer database.Close()
 
+	// The backfill window spans the retention horizon (30 days of hourly chunks);
+	// the production inter-chunk pause would dominate the runtime here. Shrink it the
+	// same way rawMetricPruneBatch is shrunk in retention tests.
+	restore := backfillChunkPause
+	backfillChunkPause = time.Millisecond
+	defer func() { backfillChunkPause = restore }()
+
 	base := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
 	for i := 0; i < 4; i++ {
 		insertSystemRaw(t, database, base.Add(time.Duration(i)*10*time.Second), float64(i+1), 50, 100, 256, nil, nil)
@@ -330,6 +337,10 @@ func TestMetricBucketBackfillRunsOnceAndIsIdempotent(t *testing.T) {
 func TestMetricBucketBackfillEmptyDatabase(t *testing.T) {
 	database := openBucketTestDB(t)
 	defer database.Close()
+
+	restore := backfillChunkPause
+	backfillChunkPause = time.Millisecond
+	defer func() { backfillChunkPause = restore }()
 
 	ran, err := BackfillMetricBuckets(database, 30)
 	if err != nil {
