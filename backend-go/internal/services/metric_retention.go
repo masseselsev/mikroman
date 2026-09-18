@@ -51,9 +51,11 @@ func getRetentionDays(database *db.DB, key string, def int) int {
 // deleting only part of the backlog.
 func pruneRawMetricTable(ctx context.Context, database *db.DB, table, cutoff string) (int64, error) {
 	var total int64
+	var batches int
+	started := time.Now()
 	for {
 		if err := ctx.Err(); err != nil {
-			return total, err
+			return total, fmt.Errorf("%w (after %d batches, %d rows, %v)", err, batches, total, time.Since(started).Round(time.Millisecond))
 		}
 
 		// DELETE ... LIMIT is not plain SQLite syntax; the batch is a subselect whose
@@ -62,13 +64,15 @@ func pruneRawMetricTable(ctx context.Context, database *db.DB, table, cutoff str
 			"DELETE FROM %s WHERE id IN (SELECT id FROM %s WHERE timestamp < ? LIMIT ?)",
 			table, table), cutoff, rawMetricPruneBatch)
 		if err != nil {
-			return total, fmt.Errorf("delete %s prune batch: %w", table, err)
+			return total, fmt.Errorf("delete %s prune batch after %d batches/%d rows in %v: %w",
+				table, batches, total, time.Since(started).Round(time.Millisecond), err)
 		}
 		deleted, err := res.RowsAffected()
 		if err != nil {
 			return total, err
 		}
 		total += deleted
+		batches++
 
 		if deleted == 0 {
 			return total, nil
@@ -101,7 +105,15 @@ func (s *TelemetryService) PruneRawMetrics(ctx context.Context) (int64, error) {
 
 	var total int64
 	for _, table := range []string{"system_metrics", "interface_metrics"} {
+		started := time.Now()
 		deleted, err := pruneRawMetricTable(ctx, s.database, table, cutoff)
+		if deleted > 0 {
+			// Throughput is the field-diagnostic that matters for this loop: a pass that
+			// dies at its deadline should show how far it got and how fast, not just that
+			// it timed out. Logged on error paths too — `deleted` is the progress made.
+			slog.Info("Raw metric prune pass", "table", table, "deleted", deleted,
+				"seconds", time.Since(started).Round(time.Millisecond).Seconds(), "err", err)
+		}
 		if err != nil {
 			return total, fmt.Errorf("prune %s: %w", table, err)
 		}
@@ -130,7 +142,11 @@ func (s *TelemetryService) StartMetricRetentionLoop(ctx context.Context, interva
 	}
 	go func() {
 		prune := func() {
-			pruneCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+			// The budget is generous on purpose: the first pass after an upgrade can face
+			// a backlog of millions of raw rows on slow USB storage, and a pass that dies
+			// mid-backlog just retries the same work an hour later. Progress is logged per
+			// table so the next field report shows throughput, not just a deadline error.
+			pruneCtx, cancel := context.WithTimeout(ctx, 15*time.Minute)
 			defer cancel()
 			deleted, err := s.PruneRawMetrics(pruneCtx)
 			if err != nil {
