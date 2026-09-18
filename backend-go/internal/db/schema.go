@@ -209,6 +209,66 @@ CREATE TABLE IF NOT EXISTS interface_metrics (
     timestamp DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Pre-aggregated 15-minute downsampling of system_metrics. Historical health charts
+-- read these rows instead of the raw samples, so a 30-day window returns ~2 900 rows
+-- to aggregate instead of scanning ~259 200 raw rows per chart request. The collector
+-- refreshes the bucket it is sampling into on every sample tick, and the upsert makes
+-- the refresh idempotent: a bucket can be recomputed any number of times from the raw
+-- rows of its 15 minutes without double counting.
+CREATE TABLE IF NOT EXISTS system_metric_buckets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    router_id INTEGER REFERENCES routers(id) ON DELETE CASCADE,
+    bucket_start DATETIME NOT NULL,
+    samples INTEGER NOT NULL DEFAULT 0,
+    cpu_load_avg REAL NOT NULL DEFAULT 0.0,
+    cpu_load_max REAL NOT NULL DEFAULT 0.0,
+    memory_usage_pct_avg REAL NOT NULL DEFAULT 0.0,
+    memory_used_bytes_avg REAL NOT NULL DEFAULT 0.0,
+    memory_total_bytes_max BIGINT NOT NULL DEFAULT 0,
+    temperature_avg REAL,
+    temperature_max REAL,
+    temperature_nonnull_samples INTEGER NOT NULL DEFAULT 0,
+    voltage_avg REAL,
+    voltage_min REAL,
+    voltage_max REAL,
+    voltage_nonnull_samples INTEGER NOT NULL DEFAULT 0,
+    last_seen DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT uq_system_metric_bucket UNIQUE (router_id, bucket_start)
+);
+
+-- Same 15-minute downsampling for interface_metrics, keyed per interface because the
+-- chart lets the operator pick any subset of uplinks.
+--
+-- "samples" is the number of instants this interface was sampled at within the quarter
+-- hour. The collector samples every interface in one tick, so max(samples) over the
+-- selected interfaces equals the number of instants the raw per-instant sum saw — the
+-- mean's denominator when a chart recombines quarter-hours. It is exact except when an
+-- interface joined or left mid-quarter-hour, where it inflates by a bounded fraction.
+--
+-- "rx/tx_rate_bps_max" is the PER-INTERFACE peak. The chart's combined peak for a
+-- subset cannot be reconstructed exactly from per-interface aggregates: summing the
+-- peaks invents a simultaneous spike that never happened, and the true per-instant sum
+-- would need every interface's rate stored per instant again — the raw table. So the
+-- read side uses the maximum of the selected peaks: exact for one interface, and a
+-- strict lower bound for a subset — it can understate a genuine combined spike but
+-- never manufacture one. That asymmetry is deliberate; the raw path is the only
+-- construction that could invent data, and the buckets are never allowed to.
+CREATE TABLE IF NOT EXISTS interface_metric_buckets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    router_id INTEGER REFERENCES routers(id) ON DELETE CASCADE,
+    interface_name VARCHAR(100) NOT NULL,
+    bucket_start DATETIME NOT NULL,
+    samples INTEGER NOT NULL DEFAULT 0,
+    rx_rate_bps_sum REAL NOT NULL DEFAULT 0.0,
+    rx_rate_bps_max REAL NOT NULL DEFAULT 0.0,
+    tx_rate_bps_sum REAL NOT NULL DEFAULT 0.0,
+    tx_rate_bps_max REAL NOT NULL DEFAULT 0.0,
+    last_seen DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT uq_interface_metric_bucket UNIQUE (router_id, interface_name, bucket_start)
+);
+
 CREATE TABLE IF NOT EXISTS router_backups (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     router_id INTEGER NOT NULL REFERENCES routers(id) ON DELETE CASCADE,
@@ -271,8 +331,14 @@ CREATE INDEX IF NOT EXISTS ix_user_dest_dest_ip ON user_destination_stats (desti
 CREATE INDEX IF NOT EXISTS ix_user_dest_total_bytes ON user_destination_stats (total_bytes);
 CREATE INDEX IF NOT EXISTS ix_router_rollups_router_date ON router_traffic_rollups (router_id, record_date);
 CREATE INDEX IF NOT EXISTS ix_system_metrics_router_time ON system_metrics (router_id, timestamp);
+CREATE INDEX IF NOT EXISTS ix_system_metrics_timestamp ON system_metrics (timestamp);
 CREATE INDEX IF NOT EXISTS ix_interface_metrics_router_time ON interface_metrics (router_id, timestamp);
 CREATE INDEX IF NOT EXISTS ix_interface_metrics_name_time ON interface_metrics (interface_name, timestamp);
+CREATE INDEX IF NOT EXISTS ix_interface_metrics_timestamp ON interface_metrics (timestamp);
+CREATE INDEX IF NOT EXISTS ix_system_metric_buckets_router_start ON system_metric_buckets (router_id, bucket_start);
+CREATE INDEX IF NOT EXISTS ix_system_metric_buckets_start ON system_metric_buckets (bucket_start);
+CREATE INDEX IF NOT EXISTS ix_interface_metric_buckets_router_start ON interface_metric_buckets (router_id, bucket_start);
+CREATE INDEX IF NOT EXISTS ix_interface_metric_buckets_router_name_start ON interface_metric_buckets (router_id, interface_name, bucket_start);
 CREATE INDEX IF NOT EXISTS ix_router_logs_router_id ON router_logs (router_id);
 CREATE INDEX IF NOT EXISTS ix_router_logs_timestamp ON router_logs (timestamp);
 CREATE UNIQUE INDEX IF NOT EXISTS uq_router_logs_entry ON router_logs (router_id, external_id, message);
