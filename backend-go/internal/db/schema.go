@@ -227,19 +227,33 @@ CREATE TABLE IF NOT EXISTS system_metric_buckets (
     memory_total_bytes_max BIGINT NOT NULL DEFAULT 0,
     temperature_avg REAL,
     temperature_max REAL,
+    temperature_nonnull_samples INTEGER NOT NULL DEFAULT 0,
     voltage_avg REAL,
     voltage_min REAL,
     voltage_max REAL,
+    voltage_nonnull_samples INTEGER NOT NULL DEFAULT 0,
     last_seen DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT uq_system_metric_bucket UNIQUE (router_id, bucket_start)
 );
 
 -- Same 15-minute downsampling for interface_metrics, keyed per interface because the
--- chart lets the operator pick any subset of uplinks: the rates of the selected
--- interfaces are summed per sample instant before the mean and peak are taken, so the
--- per-interface sums stored here can be recombined at read time without inventing a
--- combined spike out of two unrelated moments.
+-- chart lets the operator pick any subset of uplinks.
+--
+-- "samples" is the number of instants this interface was sampled at within the quarter
+-- hour. The collector samples every interface in one tick, so max(samples) over the
+-- selected interfaces equals the number of instants the raw per-instant sum saw — the
+-- mean's denominator when a chart recombines quarter-hours. It is exact except when an
+-- interface joined or left mid-quarter-hour, where it inflates by a bounded fraction.
+--
+-- "rx/tx_rate_bps_max" is the PER-INTERFACE peak. The chart's combined peak for a
+-- subset cannot be reconstructed exactly from per-interface aggregates: summing the
+-- peaks invents a simultaneous spike that never happened, and the true per-instant sum
+-- would need every interface's rate stored per instant again — the raw table. So the
+-- read side uses the maximum of the selected peaks: exact for one interface, and a
+-- strict lower bound for a subset — it can understate a genuine combined spike but
+-- never manufacture one. That asymmetry is deliberate; the raw path is the only
+-- construction that could invent data, and the buckets are never allowed to.
 CREATE TABLE IF NOT EXISTS interface_metric_buckets (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     router_id INTEGER REFERENCES routers(id) ON DELETE CASCADE,
@@ -248,12 +262,8 @@ CREATE TABLE IF NOT EXISTS interface_metric_buckets (
     samples INTEGER NOT NULL DEFAULT 0,
     rx_rate_bps_sum REAL NOT NULL DEFAULT 0.0,
     rx_rate_bps_max REAL NOT NULL DEFAULT 0.0,
-    rx_rate_bps_avg REAL NOT NULL DEFAULT 0.0,
-    rx_rate_sum_bps_max REAL NOT NULL DEFAULT 0.0,
     tx_rate_bps_sum REAL NOT NULL DEFAULT 0.0,
     tx_rate_bps_max REAL NOT NULL DEFAULT 0.0,
-    tx_rate_bps_avg REAL NOT NULL DEFAULT 0.0,
-    tx_rate_sum_bps_max REAL NOT NULL DEFAULT 0.0,
     last_seen DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT uq_interface_metric_bucket UNIQUE (router_id, interface_name, bucket_start)

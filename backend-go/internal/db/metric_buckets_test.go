@@ -187,23 +187,25 @@ func TestMetricBucketAggregationFromRawRows(t *testing.T) {
 		t.Fatal("expected an ether1 bucket for 12:00")
 	}
 	// The map is keyed only by bucket_start + router, so fetch ether1 explicitly here.
+	// The bucket row is the per-interface aggregate; there is no avg column and no
+	// combined-sum peak — see the schema comment on interface_metric_buckets.
 	var samples int64
-	var rxSum, rxMax, rxAvg, txSum, txMax, txAvg float64
+	var rxSum, rxMax, txSum, txMax float64
 	if err := database.SqlDB.QueryRow(`
-		SELECT samples, rx_rate_bps_sum, rx_rate_bps_max, rx_rate_bps_avg, tx_rate_bps_sum, tx_rate_bps_max, tx_rate_bps_avg
+		SELECT samples, rx_rate_bps_sum, rx_rate_bps_max, tx_rate_bps_sum, tx_rate_bps_max
 		FROM interface_metric_buckets
 		WHERE router_id = 1 AND interface_name = 'ether1' AND bucket_start = ?
-	`, base.Format("2006-01-02 15:04:05")).Scan(&samples, &rxSum, &rxMax, &rxAvg, &txSum, &txMax, &txAvg); err != nil {
+	`, base.Format("2006-01-02 15:04:05")).Scan(&samples, &rxSum, &rxMax, &txSum, &txMax); err != nil {
 		t.Fatalf("failed to read ether1 bucket A: %v", err)
 	}
 	if samples != 2 {
 		t.Fatalf("ether1 bucket A samples: got %d, want 2", samples)
 	}
-	if rxSum != 300 || rxMax != 200 || rxAvg != 150 {
-		t.Fatalf("ether1 bucket A rx sum/max/avg: got %v/%v/%v, want 300/200/150", rxSum, rxMax, rxAvg)
+	if rxSum != 300 || rxMax != 200 {
+		t.Fatalf("ether1 bucket A rx sum/max: got %v/%v, want 300/200", rxSum, rxMax)
 	}
-	if txSum != 30 || txMax != 20 || txAvg != 15 {
-		t.Fatalf("ether1 bucket A tx sum/max/avg: got %v/%v/%v, want 30/20/15", txSum, txMax, txAvg)
+	if txSum != 30 || txMax != 20 {
+		t.Fatalf("ether1 bucket A tx sum/max: got %v/%v, want 30/20", txSum, txMax)
 	}
 	_ = ibA1
 }
