@@ -32,6 +32,21 @@ import (
 //     cannot straddle the drift, and the comparison is phase-independent.
 func seedChartSamples(t *testing.T, database *db.DB, window time.Duration, sampleEvery time.Duration) {
 	t.Helper()
+	// Phase normalization: the handler derives startTime from the wall clock, and when
+	// (now - window) sits within ~15 s of a quarter-hour grid edge, the two requests the
+	// test issues (bucket path, then raw path after a wipe) can land on different sides
+	// of it and disagree on the point count for reasons that belong to no product bug.
+	// Wait for a phase where the whole request pair is confined inside one grid cell.
+	for {
+		frac := (time.Now().UTC().Unix() - int64(window.Seconds())) % db.MetricBucketSeconds
+		if frac < 0 {
+			frac += db.MetricBucketSeconds
+		}
+		if frac >= 60 && frac <= db.MetricBucketSeconds-60 {
+			break
+		}
+		time.Sleep(150 * time.Millisecond)
+	}
 	now := time.Now().UTC().Truncate(time.Second).Add(-db.MetricBucketSeconds)
 	// Floor the seed start to a bucket boundary and step TWO full buckets past it.
 	// With a sample inside the window's first bucket the two paths diverge by one
