@@ -23,10 +23,16 @@ import (
 //     the handler's startTime will land on (the handler computes startTime from the
 //     wall clock at request time, which is a tick later than this seeding call — a
 //     sample sitting exactly on startTime would be counted by the bucket row but cut
-//     off by the raw path's timestamp filter).
+//     off by the raw path's timestamp filter);
+//   - the seed STOPS a bucket-width before now. The test issues the bucket-path and
+//     raw-path requests ~0.2 s apart, and each derives its own startTime from the wall
+//     clock; samples in the last minute of the window sat exactly on that moving edge,
+//     so the two paths legitimately disagreed (96 vs 95 points) depending on the seed
+//     phase within the 15-minute grid. With the tail empty the newest sample's bucket
+//     cannot straddle the drift, and the comparison is phase-independent.
 func seedChartSamples(t *testing.T, database *db.DB, window time.Duration, sampleEvery time.Duration) {
 	t.Helper()
-	now := time.Now().UTC().Truncate(time.Second)
+	now := time.Now().UTC().Truncate(time.Second).Add(-db.MetricBucketSeconds)
 	// Floor the seed start to a bucket boundary, then step one full bucket past it so
 	// no sample can sit exactly on the chart's startTime second.
 	base := time.Unix(db.MetricBucketEpoch(now.Add(-window)), 0).UTC()

@@ -44,22 +44,22 @@ type Execer interface {
 	Exec(query string, args ...interface{}) (sql.Result, error)
 }
 
-// bucketTimeFilter builds the raw-sample predicate of a window as a plain timestamp range
-// — no strftime/cast, so the composite (router_id, timestamp) indexes apply as a range
-// search instead of degrading into a router-wide index scan. The window bounds are always
-// bucket-aligned (callers floor with MetricBucketEpoch), so selecting raw samples with
-// `from <= timestamp < until + bucket` is exactly the set whose bucket start falls in
-// [from, until).
+// bucketTimeFilter builds the raw-sample predicate of a window: the sample's own bucket
+// start is compared, not its raw timestamp, so the grid lives in exactly one place.
+//
+// The comparison runs on integer epoch seconds rather than text timestamps: SQLite
+// applies COLLATE BINARY to bare `timestamp` comparisons, and a stored value whose text
+// differs from the datetime()-produced bound by anything (fractional seconds, for
+// instance) then falls to the wrong side of the bound — the text form silently changed
+// which samples entered the newest bucket, and the chart's bucket/raw equivalence
+// drifted by one point at boundary phases.
 func bucketTimeFilter(window MetricBucketWindow) (string, []interface{}) {
 	// Inclusive lower edge on the bucket grid: any sample at/after FromEpoch has its
-	// bucket start at/after FromEpoch. Exclusive upper edge: a sample whose timestamp
-	// reaches UntilEpoch starts a bucket at UntilEpoch or later, because the bounds are
-	// bucket-aligned — so the plain range equals the old "compare the derived bucket
-	// start" predicate exactly, without a per-row strftime.
-	where := "timestamp >= datetime(?, 'unixepoch')"
+	// bucket start at/after FromEpoch.
+	where := "cast(strftime('%s', timestamp) as integer) >= ?"
 	args := []interface{}{window.FromEpoch}
 	if window.UntilEpoch > 0 {
-		where += " AND timestamp < datetime(?, 'unixepoch')"
+		where += " AND cast(strftime('%s', timestamp) as integer) < ?"
 		args = append(args, window.UntilEpoch)
 	}
 	return where, args
