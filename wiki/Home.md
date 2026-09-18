@@ -28,7 +28,7 @@ RouterOS package update tracking across channels, RouterBOOT bootloader staging,
 Live connection tracking via `/ip/firewall/connection`, offline GeoIP resolution, terminal log viewer, regex event classifier, and RouterOS logging topic rules.
 
 ### 8. [Deployment, Storage & Container Mode](Deployment-and-Container-Mode.md)
-Docker Compose installation, running inside RouterOS 7.4+ container mode on external USB storage, SQLite WAL mode, and online hot backups.
+Docker Compose installation, running inside RouterOS 7.20+ container mode on external USB storage, SQLite WAL mode, and online hot backups.
 
 ---
 
