@@ -312,6 +312,34 @@ func TestMetricsSingleInterfaceSelectionExact(t *testing.T) {
 	assertSamePoints(t, "interfaces/single", fromBuckets["points"], fromRaw["points"], 1)
 }
 
+// TestMetricsPartialCoverageFallsBackToRaw pins the coverage rule: when only one of the
+// two selected interfaces has bucket rows for the range, the bucket path must not serve
+// a chart that sums a partial selection — the raw path owns the request.
+func TestMetricsPartialCoverageFallsBackToRaw(t *testing.T) {
+	handler, database, _ := setupTestServer(t)
+	defer database.Close()
+
+	_, _ = database.SqlDB.Exec(`INSERT INTO routers (id, name, host, is_default, is_active) VALUES (1, 'Chart-Router', '192.0.2.10', 1, 1)`)
+	seedChartSamples(t, database, 24*time.Hour, 5*time.Minute)
+
+	// Drop ether2's buckets: coverage is now 1 of 2 selected names.
+	if _, err := database.SqlDB.Exec(
+		"DELETE FROM interface_metric_buckets WHERE interface_name = 'ether2'"); err != nil {
+		t.Fatalf("failed to wipe ether2 buckets: %v", err)
+	}
+
+	path := "/api/v1/metrics/interfaces?range=24h&interfaces=ether1,ether2&router_id=1"
+	partial, _ := callMetricsEndpoint(t, handler, path)
+
+	if _, err := database.SqlDB.Exec("DELETE FROM interface_metric_buckets"); err != nil {
+		t.Fatalf("failed to wipe all interface buckets: %v", err)
+	}
+	allRaw, _ := callMetricsEndpoint(t, handler, path)
+
+	// Both requests must be served from raw now, so identical output is required.
+	assertSamePoints(t, "interfaces/coverage", partial["points"], allRaw["points"], 0)
+}
+
 // TestMetricsLongRangeFallsBackToRawWhenBucketsEmpty covers the "just deployed, backfill
 // not run yet" case: a long range with raw data but no buckets must still return points
 // (from raw) instead of an empty chart.
