@@ -312,21 +312,21 @@ func bucketsCoverRange(database *db.DB, routerID int, startTime string) bool {
 	return sysCount > 0
 }
 
-// countInterfaceBucketsInRange reports how many bucket rows exist for the *selected*
-// interfaces within a range; the interface handler uses it for the same empty-range
-// fallback as bucketsCoverRange. Counting every interface of the router would let one
-// bucketed name switch the range to the bucket path while the requested names are still
-// missing, silently returning a half-empty chart.
+// countInterfaceBucketsInRange reports how many DISTINCT selected interfaces have
+// bucket rows within the range; the interface handler uses it for the same empty-range
+// fallback as bucketsCoverRange. Counting rows would let one bucketed name switch the
+// range to the bucket path while the others are still missing and the chart silently
+// shows a partial sum; the name has to appear in the selection exactly as asked.
 func countInterfaceBucketsInRange(database *db.DB, routerID int, startTime string, selected []string) (int, error) {
 	var count int
 	var err error
 	if len(selected) == 0 {
 		err = database.SqlDB.QueryRow(
-			"SELECT count(*) FROM interface_metric_buckets WHERE router_id = ? AND bucket_start >= ?",
+			"SELECT count(DISTINCT interface_name) FROM interface_metric_buckets WHERE router_id = ? AND bucket_start >= ?",
 			routerID, startTime).Scan(&count)
 		return count, err
 	}
-	query := "SELECT count(*) FROM interface_metric_buckets WHERE router_id = ? AND bucket_start >= ?" +
+	query := "SELECT count(DISTINCT interface_name) FROM interface_metric_buckets WHERE router_id = ? AND bucket_start >= ?" +
 		fmt.Sprintf(" AND interface_name IN (%s)", placeholdersOf(len(selected)))
 	all := make([]interface{}, 0, len(selected)+2)
 	all = append(all, routerID, startTime)
@@ -354,6 +354,7 @@ func placeholdersOf(n int) string {
 // columns — bucket id, newest timestamp, then avg/peak pairs per direction — so the JSON
 // response is byte-identical whichever path served the range.
 func scanInterfacePoints(rows *sql.Rows, points *[]InterfaceRatePoint) {
+	defer rows.Close()
 	for rows.Next() {
 		var bucket int64
 		var tsEpoch int64
@@ -398,6 +399,7 @@ func formatRateBps(bps float64) string {
 // — bucket id, newest timestamp, then avg/peak pairs per metric — which is what lets the
 // JSON response stay byte-identical whichever path served the range.
 func scanSystemPoints(rows *sql.Rows, points *[]SystemMetricPoint) {
+	defer rows.Close()
 	for rows.Next() {
 		var bucket int64
 		var tsEpoch int64
@@ -705,7 +707,11 @@ func (h *MetricsHandler) GetInterfaceMetrics(w http.ResponseWriter, r *http.Requ
 	// backfill ran, so a chart never silently goes empty).
 	useBuckets := false
 	if routerID != nil && bucketsServeRange(rangeKey) && len(selectedList) > 0 {
-		if count, err := countInterfaceBucketsInRange(h.database, *routerID, startTime, selectedList); err == nil && count > 0 {
+		// Every selected name must have bucket rows for the range: with only some of
+		// them bucketed, the bucket path would sum a partial selection while looking
+		// complete. Raw is the honest fallback then — short-retention installs pay it
+		// only until the backfill catches the missing names up.
+		if count, err := countInterfaceBucketsInRange(h.database, *routerID, startTime, selectedList); err == nil && count == len(selectedList) {
 			useBuckets = true
 		}
 	}
