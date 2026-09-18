@@ -63,6 +63,36 @@ type QueueReconciler interface {
 	ReconcileQueues(ctx context.Context, routerID int) error
 }
 
+// telegramPollRun is one generation of the long-poll loop. It exists so that a
+// loop owns the channel it watches: the loop captures its own stopCh instead of
+// re-reading a service field that the next Start() replaces.
+//
+//   - stopCh is closed by Stop()/Reconfigure() to tell *this* loop to return;
+//   - cancel aborts an in-flight getUpdates long poll, so the loop does not have
+//     to sit out the 20 s Telegram poll (up to 35 s with the client timeout)
+//     before it can notice that it was asked to stop;
+//   - done is closed when the loop goroutine has actually returned, which lets
+//     Stop() and Reconfigure() wait for the loop instead of hoping it went away;
+//   - ctx carries the same cancellation into the other Telegram calls made by the
+//     goroutine (fetchMe, deleteWebhook), so none of them can outlive the run.
+type telegramPollRun struct {
+	ctx    context.Context
+	stopCh chan struct{}
+	cancel context.CancelFunc
+	done   chan struct{}
+}
+
+// newTelegramPollRun builds a fresh, fully independent poll run.
+func newTelegramPollRun() *telegramPollRun {
+	ctx, cancel := context.WithCancel(context.Background())
+	return &telegramPollRun{
+		ctx:    ctx,
+		stopCh: make(chan struct{}),
+		cancel: cancel,
+		done:   make(chan struct{}),
+	}
+}
+
 // TelegramBotService manages Telegram bot polling, commands, callbacks, and alerts.
 type TelegramBotService struct {
 	database            *db.DB
@@ -71,7 +101,7 @@ type TelegramBotService struct {
 	httpClient          *http.Client
 	mu                  sync.Mutex
 	running             bool
-	stopCh              chan struct{}
+	poll                *telegramPollRun
 	token               string
 	adminIDs            []int64
 	mode                string
@@ -87,7 +117,6 @@ func NewTelegramBotService(database *db.DB, client *routeros.Client, reconciler 
 		client:              client,
 		reconciler:          reconciler,
 		httpClient:          &http.Client{Timeout: 35 * time.Second},
-		stopCh:              make(chan struct{}),
 		activeRouterPerChat: make(map[int64]int),
 		clients:             make(map[int]*routeros.Client),
 	}
@@ -107,11 +136,19 @@ func (s *TelegramBotService) Start() {
 		return
 	}
 
+	// Every start gets a fresh run, and the loop below receives it as an argument
+	// rather than reading a service field: a loop can therefore only ever watch
+	// the channel that belongs to its own run, so a later Start() cannot re-point
+	// a still-running loop at a new channel.
+	run := newTelegramPollRun()
+	s.poll = run
 	s.running = true
-	s.stopCh = make(chan struct{})
 
 	go func() {
-		botName, err := s.fetchMe()
+		defer close(run.done)
+		defer run.cancel()
+
+		botName, err := s.fetchMe(run.ctx)
 		if err != nil {
 			log.Printf("[TelegramBot] Error fetching bot info: %v", err)
 		} else {
@@ -121,27 +158,64 @@ func (s *TelegramBotService) Start() {
 			log.Printf("[TelegramBot] Connected as @%s", botName)
 		}
 
-		_ = s.deleteWebhook()
-		s.pollLoop()
+		_ = s.deleteWebhook(run.ctx)
+		s.pollLoop(run)
 	}()
 }
 
+// Stop stops the long-poll loop and returns only after the loop goroutine has
+// actually exited, so "stopped" means stopped and not "asked to stop".
+//
+// It is idempotent: the running flag is flipped under s.mu, so only the caller
+// that performs running -> stopped closes the run's channel, and a second Stop()
+// (or a Stop() after Reconfigure()) is a no-op instead of a panic on closing an
+// already closed channel.
 func (s *TelegramBotService) Stop() {
-	s.mu.Lock()
-	if !s.running {
-		s.mu.Unlock()
+	run := s.detachPollRun()
+	if run == nil {
 		return
 	}
-	s.running = false
-	close(s.stopCh)
-	s.mu.Unlock()
 
+	<-run.done
 	log.Printf("[TelegramBot] Stopped bot polling")
 }
 
+// detachPollRun takes the active poll run out of the service and signals it to
+// stop, returning nil when the bot was not running. The caller owns the returned
+// run and should wait on its done channel before assuming the loop is gone.
+func (s *TelegramBotService) detachPollRun() *telegramPollRun {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if !s.running {
+		return nil
+	}
+	s.running = false
+
+	run := s.poll
+	s.poll = nil
+	if run != nil {
+		close(run.stopCh)
+		// Abort the in-flight getUpdates: closing stopCh alone would leave the
+		// loop parked in the long poll until Telegram (or the 35 s client
+		// timeout) answered it.
+		run.cancel()
+	}
+	return run
+}
+
+// Reconfigure applies freshly saved settings by restarting the poll loop.
+//
+// Waiting inside Stop() is the whole point here: Start() installs a new run
+// while the previous loop would otherwise still be alive, and Telegram serves a
+// single getUpdates consumer per bot token. Two concurrent pollers overwrite each
+// other's offset and answer each other with HTTP 409 "terminated by other
+// getUpdates request", so the previous loop must be gone — goroutine and HTTP
+// request included — before (or as) the new one starts. The old 500 ms sleep
+// between stop and start is gone: it was a guess, and it did not hold while the
+// loop was parked in a 20 s long poll.
 func (s *TelegramBotService) Reconfigure() {
 	s.Stop()
-	time.Sleep(500 * time.Millisecond)
 	s.Start()
 }
 
@@ -276,9 +350,17 @@ func (s *TelegramBotService) getClientForRouter(routerID int) (*routeros.Client,
 	return newClient, nil
 }
 
-func (s *TelegramBotService) fetchMe() (string, error) {
-	url := fmt.Sprintf("https://api.telegram.org/bot%s/getMe", s.token)
-	resp, err := s.httpClient.Get(url)
+func (s *TelegramBotService) fetchMe(ctx context.Context) (string, error) {
+	s.mu.Lock()
+	token := s.token
+	s.mu.Unlock()
+
+	url := fmt.Sprintf("https://api.telegram.org/bot%s/getMe", token)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := s.httpClient.Do(req)
 	if err != nil {
 		return "", err
 	}
@@ -300,9 +382,17 @@ func (s *TelegramBotService) fetchMe() (string, error) {
 	return res.Result.FirstName, nil
 }
 
-func (s *TelegramBotService) deleteWebhook() error {
-	url := fmt.Sprintf("https://api.telegram.org/bot%s/deleteWebhook?drop_pending_updates=false", s.token)
-	resp, err := s.httpClient.Get(url)
+func (s *TelegramBotService) deleteWebhook(ctx context.Context) error {
+	s.mu.Lock()
+	token := s.token
+	s.mu.Unlock()
+
+	url := fmt.Sprintf("https://api.telegram.org/bot%s/deleteWebhook?drop_pending_updates=false", token)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := s.httpClient.Do(req)
 	if err != nil {
 		return err
 	}
@@ -310,13 +400,32 @@ func (s *TelegramBotService) deleteWebhook() error {
 	return nil
 }
 
-func (s *TelegramBotService) pollLoop() {
+// pauseUnlessStopped waits for d and reports true when the wait elapsed normally.
+// It returns false as soon as the run is asked to stop, so a backoff sleep never
+// delays a Stop() or Reconfigure() past the current scheduling slot.
+func pauseUnlessStopped(stopCh <-chan struct{}, d time.Duration) bool {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-stopCh:
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+// pollLoop is the long-poll supervisor for one run. It receives the run as an
+// argument on purpose: a loop must capture the channel that belongs to it, since
+// a loop that re-read a service field would silently follow the channel installed
+// by the *next* Start() and never see its own close. That stranded loop keeps
+// polling next to its successor, which is what produces the 409 conflicts.
+func (s *TelegramBotService) pollLoop(run *telegramPollRun) {
 	log.Printf("[TelegramBot] Starting long polling loop...")
 	var offset int64 = 0
 
 	for {
 		select {
-		case <-s.stopCh:
+		case <-run.stopCh:
 			return
 		default:
 		}
@@ -335,9 +444,13 @@ func (s *TelegramBotService) pollLoop() {
 		}
 		data, _ := json.Marshal(payload)
 
-		req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, url, bytes.NewReader(data))
+		// The request is bound to the run's context, so Stop()/Reconfigure() can
+		// abort a 20 s long poll in flight instead of waiting it out.
+		req, err := http.NewRequestWithContext(run.ctx, http.MethodPost, url, bytes.NewReader(data))
 		if err != nil {
-			time.Sleep(2 * time.Second)
+			if !pauseUnlessStopped(run.stopCh, 2*time.Second) {
+				return
+			}
 			continue
 		}
 		req.Header.Set("Content-Type", "application/json")
@@ -345,7 +458,7 @@ func (s *TelegramBotService) pollLoop() {
 		resp, err := s.httpClient.Do(req)
 		if err != nil {
 			select {
-			case <-s.stopCh:
+			case <-run.stopCh:
 				return
 			case <-time.After(2 * time.Second):
 				continue
@@ -356,7 +469,7 @@ func (s *TelegramBotService) pollLoop() {
 			log.Printf("[TelegramBot] Polling conflict 409, waiting 5s...")
 			resp.Body.Close()
 			select {
-			case <-s.stopCh:
+			case <-run.stopCh:
 				return
 			case <-time.After(5 * time.Second):
 				continue
@@ -365,7 +478,9 @@ func (s *TelegramBotService) pollLoop() {
 
 		if resp.StatusCode != http.StatusOK {
 			resp.Body.Close()
-			time.Sleep(2 * time.Second)
+			if !pauseUnlessStopped(run.stopCh, 2*time.Second) {
+				return
+			}
 			continue
 		}
 
@@ -377,7 +492,9 @@ func (s *TelegramBotService) pollLoop() {
 		resp.Body.Close()
 
 		if decodeErr != nil || !updateRes.Ok {
-			time.Sleep(2 * time.Second)
+			if !pauseUnlessStopped(run.stopCh, 2*time.Second) {
+				return
+			}
 			continue
 		}
 
