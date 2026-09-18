@@ -106,8 +106,11 @@ func main() {
 
 	// One-off backfill: build 15-minute metric buckets from the raw samples an existing
 	// install already holds, so charts are populated right after the upgrade instead of
-	// only from the next sample onward. Runs even without a router client because the
-	// database can still carry history; idempotent and marked done in app_settings.
+	// only from the next sample onward. It runs in the background — never on the startup
+	// path — because a router must answer requests within seconds of a restart no matter
+	// how much history it carries; until a range's buckets exist the chart handlers read
+	// the raw tables (slower, correct). Idempotent and marked done in app_settings, so an
+	// interrupted run converges on the next start.
 	backfillDays := func() int {
 		days := 30
 		if val, err := database.GetSetting("metric_bucket_retention_days"); err == nil && val != "" {
@@ -117,11 +120,6 @@ func main() {
 		}
 		return days
 	}()
-	if ran, err := db.BackfillMetricBuckets(database, backfillDays); err != nil {
-		slog.Warn("Metric bucket backfill failed", "err", err)
-	} else if ran {
-		slog.Info("Backfilled metric buckets from existing raw samples", "days", backfillDays)
-	}
 
 	var telemSvc *services.TelemetryService
 	var trafficSvc *services.TrafficService
@@ -147,7 +145,20 @@ func main() {
 	// with an immediate first pass so an upgraded install reclaims its history right away.
 	// Started on its own handle so it runs whether or not a router is connected.
 	retentionSvc := services.NewTelemetryService(database, nil, nil)
-	retentionSvc.StartMetricRetentionLoop(ctx, time.Hour)
+
+	// The backfill and the first retention pass must not race: retention prunes raw
+	// samples oldest-first while the backfill consumes them newest-first, and whichever
+	// ate the middle of the history first would leave the charts with a hole (buckets
+	// never built for pruned days). The backfill therefore finishes in this goroutine
+	// before retention's first pass starts; the HTTP server does not wait for either.
+	go func() {
+		if ran, err := db.BackfillMetricBuckets(database, backfillDays); err != nil {
+			slog.Warn("Metric bucket backfill failed", "err", err)
+		} else if ran {
+			slog.Info("Backfilled metric buckets from existing raw samples", "days", backfillDays)
+		}
+		retentionSvc.StartMetricRetentionLoop(ctx, time.Hour)
+	}()
 
 	// Backup scheduler (hourly check)
 	backupSvc := services.NewBackupService(database)
