@@ -16,10 +16,14 @@ One version number lives in two places, and both must move together:
 | `frontend/package.json` | `version` — compiled into the bundle as `__APP_VERSION__` by `vite.config.js` |
 | `backend-go/internal/config/config.go` | the `APP_VERSION` default — what the API reports and what the update check compares |
 
-The same commit carries `frontend/package-lock.json` (two occurrences) and the
-version fixtures in `frontend/src/components/AppFooter.test.jsx`. That is a
-four-file change reading **11 insertions, 11 deletions** — if `git diff --stat`
-shows anything else, a site was missed.
+The same commit carries `frontend/package-lock.json` (its two app-version
+entries) and the version fixtures in `frontend/src/components/AppFooter.test.jsx`.
+The insertion count grows with the fixture set, so don't verify by a fixed
+number — verify that no stale old version survives, and that a transitive
+dependency which happens to be released under the same number keeps its own
+version: anchor lockfile edits on the package name (`"name":
+"mikroman-frontend"`), never on `"version": "<x.y.z>"`, because a dependency can
+legitimately be published as the same triple and would be silently corrupted.
 
 ```bash
 git checkout -b chore/bump-vX.Y.Z

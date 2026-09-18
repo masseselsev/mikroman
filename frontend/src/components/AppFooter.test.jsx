@@ -29,8 +29,8 @@ describe('AppFooter', () => {
     vi.clearAllMocks();
     api.checkAppVersion.mockResolvedValue({
       data: {
-        current_version: '0.3.31',
-        latest_version: '0.3.31',
+        current_version: '0.3.32',
+        latest_version: '0.3.32',
         has_update: false,
       },
     });
@@ -63,10 +63,10 @@ describe('AppFooter', () => {
   it('renders glowing update badge when a newer release is detected', async () => {
     api.checkAppVersion.mockResolvedValue({
       data: {
-        current_version: '0.3.30',
-        latest_version: '0.3.31',
+        current_version: '0.3.31',
+        latest_version: '0.3.32',
         has_update: true,
-        release_url: 'https://github.com/masseselsev/mikroman/releases/tag/v0.3.31',
+        release_url: 'https://github.com/masseselsev/mikroman/releases/tag/v0.3.32',
       },
     });
 
@@ -77,8 +77,8 @@ describe('AppFooter', () => {
     });
 
     const badge = container.querySelector('.footer-update-badge');
-    expect(badge.getAttribute('href')).toBe('https://github.com/masseselsev/mikroman/releases/tag/v0.3.31');
-    expect(badge.textContent).toContain('0.3.31');
+    expect(badge.getAttribute('href')).toBe('https://github.com/masseselsev/mikroman/releases/tag/v0.3.32');
+    expect(badge.textContent).toContain('0.3.32');
   });
 
   it('silently ignores network errors during version check', async () => {
@@ -102,10 +102,10 @@ describe('AppFooter', () => {
       // The release lands after the first answer was already served.
       api.checkAppVersion.mockResolvedValue({
         data: {
-          current_version: '0.3.30',
-          latest_version: '0.3.31',
+          current_version: '0.3.31',
+          latest_version: '0.3.32',
           has_update: true,
-          release_url: 'https://github.com/masseselsev/mikroman/releases/tag/v0.3.31',
+          release_url: 'https://github.com/masseselsev/mikroman/releases/tag/v0.3.32',
         },
       });
 
@@ -125,10 +125,10 @@ describe('AppFooter', () => {
 
     api.checkAppVersion.mockResolvedValue({
       data: {
-        current_version: '0.3.30',
-        latest_version: '0.3.31',
+        current_version: '0.3.31',
+        latest_version: '0.3.32',
         has_update: true,
-        release_url: 'https://github.com/masseselsev/mikroman/releases/tag/v0.3.31',
+        release_url: 'https://github.com/masseselsev/mikroman/releases/tag/v0.3.32',
       },
     });
 
@@ -141,7 +141,7 @@ describe('AppFooter', () => {
 
   it('drops the offer once the running build catches up with the latest release', async () => {
     api.checkAppVersion.mockResolvedValue({
-      data: { current_version: '0.3.30', latest_version: '0.3.31', has_update: true },
+      data: { current_version: '0.3.31', latest_version: '0.3.32', has_update: true },
     });
 
     const { container } = renderWithProviders(<AppFooter />);
@@ -149,7 +149,7 @@ describe('AppFooter', () => {
 
     // Same tab, after the upgrade: the answer now says "current".
     api.checkAppVersion.mockResolvedValue({
-      data: { current_version: '0.3.31', latest_version: '0.3.31', has_update: false },
+      data: { current_version: '0.3.32', latest_version: '0.3.32', has_update: false },
     });
 
     Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true });
