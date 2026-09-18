@@ -312,14 +312,28 @@ func bucketsCoverRange(database *db.DB, routerID int, startTime string) bool {
 	return sysCount > 0
 }
 
-// countInterfaceBucketsInRange reports how many interface bucket rows exist for a router
-// within a range; the interface handler uses it for the same empty-range fallback as
-// bucketsCoverRange.
-func countInterfaceBucketsInRange(database *db.DB, routerID int, startTime string) (int, error) {
+// countInterfaceBucketsInRange reports how many bucket rows exist for the *selected*
+// interfaces within a range; the interface handler uses it for the same empty-range
+// fallback as bucketsCoverRange. Counting every interface of the router would let one
+// bucketed name switch the range to the bucket path while the requested names are still
+// missing, silently returning a half-empty chart.
+func countInterfaceBucketsInRange(database *db.DB, routerID int, startTime string, selected []string) (int, error) {
 	var count int
-	err := database.SqlDB.QueryRow(
-		"SELECT count(*) FROM interface_metric_buckets WHERE router_id = ? AND bucket_start >= ?",
-		routerID, startTime).Scan(&count)
+	var err error
+	if len(selected) == 0 {
+		err = database.SqlDB.QueryRow(
+			"SELECT count(*) FROM interface_metric_buckets WHERE router_id = ? AND bucket_start >= ?",
+			routerID, startTime).Scan(&count)
+		return count, err
+	}
+	query := "SELECT count(*) FROM interface_metric_buckets WHERE router_id = ? AND bucket_start >= ?" +
+		fmt.Sprintf(" AND interface_name IN (%s)", placeholdersOf(len(selected)))
+	all := make([]interface{}, 0, len(selected)+2)
+	all = append(all, routerID, startTime)
+	for _, s := range selected {
+		all = append(all, s)
+	}
+	err = database.SqlDB.QueryRow(query, all...).Scan(&count)
 	return count, err
 }
 
@@ -466,18 +480,23 @@ func (h *MetricsHandler) GetSystemMetrics(w http.ResponseWriter, r *http.Request
 	useBuckets := routerID != nil && bucketsServeRange(rangeKey) && bucketsCoverRange(h.database, *routerID, startTime)
 
 	if useBuckets {
+		// Weights: avg columns are means over `samples` rows of the quarter hour, so
+		// recombining quarter-hours into a display bucket weights by samples; the
+		// temperature/voltage averages exclude NULL readings and are weighted by the
+		// non-NULL counts recorded alongside. Peaks and min/max pass through unchanged.
+		// ts_epoch is aggregated (max) — a display bucket usually spans many rows.
 		bucketQuery := fmt.Sprintf(`
 			SELECT
 				cast(strftime('%%s', bucket_start) as integer) / %d AS bucket,
-				strftime('%%s', last_seen) AS ts_epoch,
-				sum(cpu_load_avg * samples) / sum(samples),
+				max(strftime('%%s', last_seen)) AS ts_epoch,
+				sum(cpu_load_avg * samples) / nullif(sum(samples), 0),
 				max(cpu_load_max),
-				sum(memory_usage_pct_avg * samples) / sum(samples),
-				sum(memory_used_bytes_avg * samples) / sum(samples),
+				sum(memory_usage_pct_avg * samples) / nullif(sum(samples), 0),
+				sum(memory_used_bytes_avg * samples) / nullif(sum(samples), 0),
 				max(memory_total_bytes_max),
-				sum(temperature_avg * samples) / nullif(sum(case when temperature_avg is not null then samples else 0 end), 0),
+				sum(temperature_avg * temperature_nonnull_samples) / nullif(sum(temperature_nonnull_samples), 0),
 				max(temperature_max),
-				sum(voltage_avg * samples) / nullif(sum(case when voltage_avg is not null then samples else 0 end), 0),
+				sum(voltage_avg * voltage_nonnull_samples) / nullif(sum(voltage_nonnull_samples), 0),
 				min(voltage_min),
 				max(voltage_max)
 			FROM system_metric_buckets
@@ -686,35 +705,41 @@ func (h *MetricsHandler) GetInterfaceMetrics(w http.ResponseWriter, r *http.Requ
 	// backfill ran, so a chart never silently goes empty).
 	useBuckets := false
 	if routerID != nil && bucketsServeRange(rangeKey) && len(selectedList) > 0 {
-		if count, err := countInterfaceBucketsInRange(h.database, *routerID, startTime); err == nil && count > 0 {
+		if count, err := countInterfaceBucketsInRange(h.database, *routerID, startTime, selectedList); err == nil && count > 0 {
 			useBuckets = true
 		}
 	}
 
 	if useBuckets {
-		// Rebuild the chart's two-level aggregation from the per-interface buckets. The
-		// inner level of the raw query summed the selected interfaces per sample instant;
-		// summing the per-interface bucket sums reproduces exactly that sum, and dividing
-		// by the instant count (the sample count of one interface — every interface in a
-		// bucket sampled the same instants) reproduces its mean. The peak of the summed
-		// rate is the max over per-instant totals, which equals the sum of per-interface
-		// maxima only when all interfaces peaked at the same instant; when they did not,
-		// the honest reconstruction is the largest per-instant total, so the buckets
-		// additionally carry that sum: sum of the per-interface maxima would be the
-		// "invented combined spike" the chart's semantics exist to avoid, and the max of
-		// per-interface peaks would understate a genuine simultaneous load. The bucket
-		// row stores the true summed peak at write time (rx_sum_rate_bps_max), so the
-		// read side just takes its max.
+		// Mirror of the raw query's two levels. Inner: one row per quarter hour — the
+		// summed rate of the selected interfaces (exact: the raw per-instant sums add
+		// up to the sum of per-interface sums), and max(samples) as that quarter hour's
+		// instant count (every interface is sampled in the same ticks). Outer: display
+		// bucket — mean = total sum / total instants (same value the raw avg over the
+		// per-instant sums computes), peak = max over the selected interfaces' own
+		// peaks: exact for a single interface, a documented lower bound for a subset,
+		// and never a spike invented from unrelated moments. ts_epoch is aggregated:
+		// the newest sample of the display bucket, like max(timestamp) in the raw path.
 		bucketQuery := fmt.Sprintf(`
 			SELECT
 				cast(strftime('%%s', bucket_start) as integer) / %d AS bucket,
-				strftime('%%s', last_seen) AS ts_epoch,
-				sum(rx_rate_bps_sum) / nullif(max(samples), 0) AS rx_avg,
-				max(rx_rate_sum_bps_max) AS rx_peak,
-				sum(tx_rate_bps_sum) / nullif(max(samples), 0) AS tx_avg,
-				max(tx_rate_sum_bps_max) AS tx_peak
-			FROM interface_metric_buckets
-			WHERE router_id = ? AND bucket_start >= datetime(?, '-900 seconds') AND interface_name IN (%s)
+				max(strftime('%%s', last_seen)) AS ts_epoch,
+				sum(q_rx_sum) / nullif(sum(q_instants), 0) AS rx_avg,
+				max(q_rx_peak) AS rx_peak,
+				sum(q_tx_sum) / nullif(sum(q_instants), 0) AS tx_avg,
+				max(q_tx_peak) AS tx_peak
+			FROM (
+				SELECT bucket_start,
+					sum(rx_rate_bps_sum) AS q_rx_sum,
+					sum(tx_rate_bps_sum) AS q_tx_sum,
+					max(samples) AS q_instants,
+					max(rx_rate_bps_max) AS q_rx_peak,
+					max(tx_rate_bps_max) AS q_tx_peak,
+					max(last_seen) AS last_seen
+				FROM interface_metric_buckets
+				WHERE router_id = ? AND bucket_start >= datetime(?, '-900 seconds') AND interface_name IN (%s)
+				GROUP BY bucket_start
+			)
 			GROUP BY bucket
 			ORDER BY bucket ASC
 		`, cfg.bucketSeconds, placeholdersOf(len(selectedList)))

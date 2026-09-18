@@ -70,11 +70,17 @@ func bucketTimeFilter(window MetricBucketWindow) (string, []interface{}) {
 // re-running it any number of times converges on the same row instead of double counting.
 // Grouping is done on the derived bucket start, therefore one statement covers as many
 // buckets as the window spans.
+// temperature_avg and voltage_avg are averages over NON-NULL samples (SQLite avg()
+// semantics), and *_nonnull_samples records that denominator. A display bucket
+// combining quarter-hour buckets must weight them by the non-NULL counts, not by the
+// total sample counts — otherwise a bucket with many NULL readings silently dilutes
+// the average it contributes.
 const recomputeSystemBucketsSQL = `
 INSERT INTO system_metric_buckets (
     router_id, bucket_start, samples, cpu_load_avg, cpu_load_max,
     memory_usage_pct_avg, memory_used_bytes_avg, memory_total_bytes_max,
-    temperature_avg, temperature_max, voltage_avg, voltage_min, voltage_max,
+    temperature_avg, temperature_max, temperature_nonnull_samples,
+    voltage_avg, voltage_min, voltage_max, voltage_nonnull_samples,
     last_seen, updated_at
 )
 SELECT
@@ -88,9 +94,11 @@ SELECT
     max(memory_total_bytes),
     avg(temperature),
     max(temperature),
+    count(temperature),
     avg(voltage),
     min(voltage),
     max(voltage),
+    count(voltage),
     max(timestamp),
     CURRENT_TIMESTAMP
 FROM system_metrics
@@ -105,80 +113,56 @@ ON CONFLICT(router_id, bucket_start) DO UPDATE SET
     memory_total_bytes_max = excluded.memory_total_bytes_max,
     temperature_avg = excluded.temperature_avg,
     temperature_max = excluded.temperature_max,
+    temperature_nonnull_samples = excluded.temperature_nonnull_samples,
     voltage_avg = excluded.voltage_avg,
     voltage_min = excluded.voltage_min,
     voltage_max = excluded.voltage_max,
+    voltage_nonnull_samples = excluded.voltage_nonnull_samples,
     last_seen = excluded.last_seen,
     updated_at = CURRENT_TIMESTAMP
 `
 
 // recomputeInterfaceBucketsSQL rebuilds every interface bucket touched by a window, one
-// row per interface. sum/max/avg are all kept, which is what lets a chart recombine a
-// subset of uplinks; the extra *_sum_bps_max columns carry the peak of the ROUTER-WIDE
-// per-instant rate sum within the bucket, taken at write time. The chart's peak for a
-// selected set of interfaces is the max over per-instant totals, which cannot be
-// reconstructed from per-interface rows alone (sum of peaks overstates it, max of peaks
-// understates it), so the true summed peak is materialized here per bucket.
+// row per interface present in the window: the number of sample instants, the summed
+// rate and the per-interface rate peak.
 //
-// The statement is a single pass over the window with two CTEs:
-//   - win:   the raw rows of the window (parameterised once, reused twice);
-//   - inst: per-instant totals across ALL of the router's interfaces in the window —
-//     exactly the inner GROUP BY of the raw chart query — aggregated per bucket.
-//
-// A join then attaches each interface's aggregates to the summed peak of the bucket it
-// falls in. Both CTEs consume the same arg list, hence the SQL declares the window
-// predicate twice and the caller passes the window args twice.
+// What is deliberately NOT stored: the peak of the per-instant SUM across interfaces.
+// For a chart selecting a proper subset of the router's interfaces that value is not
+// reconstructable from per-interface aggregates at all — summing per-interface peaks
+// invents a simultaneous spike, the maximum of them understates a genuine one — and the
+// collector samples every interface, so a selection is almost always a proper subset.
+// The read side therefore recombines averages exactly (the summed rate of a display
+// bucket is the sum of the per-interface sums; the number of instants is the maximum of
+// per-interface sample counts within each quarter hour, since one tick samples every
+// interface at the same instant) and reports the subset peak as the maximum of the
+// selected interfaces' own peaks: exact for a single interface, a strict lower bound for
+// a subset — it can understate a combined spike but never manufacture one.
 const recomputeInterfaceBucketsSQL = `
-WITH win AS (
-    SELECT router_id, interface_name, rx_rate_bps, tx_rate_bps, timestamp
-    FROM interface_metrics
-    WHERE router_id IS NOT NULL AND %s
-),
-inst AS (
-    SELECT
-        cast(strftime('%%s', timestamp) as integer) / %d AS bnum,
-        sum(rx_rate_bps) AS rx,
-        sum(tx_rate_bps) AS tx
-    FROM win
-    GROUP BY timestamp
-),
-instb AS (
-    SELECT bnum, max(rx) AS rx_sum_max, max(tx) AS tx_sum_max FROM inst GROUP BY bnum
-)
 INSERT INTO interface_metric_buckets (
     router_id, interface_name, bucket_start, samples,
-    rx_rate_bps_sum, rx_rate_bps_max, rx_rate_bps_avg, rx_rate_sum_bps_max,
-    tx_rate_bps_sum, tx_rate_bps_max, tx_rate_bps_avg, tx_rate_sum_bps_max,
+    rx_rate_bps_sum, rx_rate_bps_max, tx_rate_bps_sum, tx_rate_bps_max,
     last_seen, updated_at
 )
 SELECT
-    w.router_id,
-    w.interface_name,
-    datetime(bnum * %d, 'unixepoch') AS bstart,
+    router_id,
+    interface_name,
+    datetime((cast(strftime('%%s', timestamp) as integer) / %d) * %d, 'unixepoch') AS bstart,
     count(*),
-    sum(w.rx_rate_bps),
-    max(w.rx_rate_bps),
-    avg(w.rx_rate_bps),
-    b.rx_sum_max,
-    sum(w.tx_rate_bps),
-    max(w.tx_rate_bps),
-    avg(w.tx_rate_bps),
-    b.tx_sum_max,
-    max(w.timestamp),
+    sum(rx_rate_bps),
+    max(rx_rate_bps),
+    sum(tx_rate_bps),
+    max(tx_rate_bps),
+    max(timestamp),
     CURRENT_TIMESTAMP
-FROM win w
-JOIN instb b ON b.bnum = cast(strftime('%%s', w.timestamp) as integer) / %d
-GROUP BY w.router_id, w.interface_name, bstart
+FROM interface_metrics
+WHERE router_id IS NOT NULL AND %s
+GROUP BY router_id, interface_name, bstart
 ON CONFLICT(router_id, interface_name, bucket_start) DO UPDATE SET
     samples = excluded.samples,
     rx_rate_bps_sum = excluded.rx_rate_bps_sum,
     rx_rate_bps_max = excluded.rx_rate_bps_max,
-    rx_rate_bps_avg = excluded.rx_rate_bps_avg,
-    rx_rate_sum_bps_max = excluded.rx_rate_sum_bps_max,
     tx_rate_bps_sum = excluded.tx_rate_bps_sum,
     tx_rate_bps_max = excluded.tx_rate_bps_max,
-    tx_rate_bps_avg = excluded.tx_rate_bps_avg,
-    tx_rate_sum_bps_max = excluded.tx_rate_sum_bps_max,
     last_seen = excluded.last_seen,
     updated_at = CURRENT_TIMESTAMP
 `
@@ -203,8 +187,6 @@ func RecomputeSystemMetricBuckets(ex Execer, window MetricBucketWindow) error {
 
 // RecomputeInterfaceMetricBuckets rebuilds the interface buckets covering a window of
 // raw samples, one row per interface present in the window.
-// The subqueries carry the same window predicate as the outer scan (with their own
-// placeholder copies), so the summed peak covers exactly the window being recomputed.
 func RecomputeInterfaceMetricBuckets(ex Execer, window MetricBucketWindow) error {
 	where, timeArgs := bucketTimeFilter(window)
 	// Same placeholder order as the system recompute: time predicates first, router last.
@@ -214,17 +196,16 @@ func RecomputeInterfaceMetricBuckets(ex Execer, window MetricBucketWindow) error
 		args = append(args, *window.RouterID)
 	}
 
-	// The SQL declares the window predicate twice (CTE "win" and — via win — the outer
-	// pass is derived from it), so the fmt verbs are: where, bucket, bucket, bucket and
-	// the exec args repeat the window args once.
+	// Verb order follows the SQL text: the two %d of the bucket formula come before the
+	// %s window predicate of the WHERE clause.
 	s := MetricBucketSeconds
-	query := fmt.Sprintf(recomputeInterfaceBucketsSQL, where, s, s, s)
-	_, err := ex.Exec(query, append(append([]interface{}{}, args...), args...)...)
+	query := fmt.Sprintf(recomputeInterfaceBucketsSQL, s, s, where)
+	_, err := ex.Exec(query, args...)
 	return err
 }
 
-// ComposeMetricBuckets rebuilds both bucket tables for the same window in one call, so
-// the two tables cannot disagree about which buckets exist.
+// ComposeMetricBuckets rebuilds all bucket-side tables for the same window in one call,
+// so the tables cannot disagree about which buckets exist.
 func ComposeMetricBuckets(ex Execer, window MetricBucketWindow) error {
 	if err := RecomputeSystemMetricBuckets(ex, window); err != nil {
 		return err
@@ -237,7 +218,8 @@ func ComposeMetricBuckets(ex Execer, window MetricBucketWindow) error {
 const MetricBucketBackfillMarker = "metric_buckets_backfilled"
 
 // MetricBucketBackfillVersion is bumped when the bucket layout changes in a way that
-// needs existing buckets rebuilt from the raw rows again.
+// needs existing buckets rebuilt from the raw rows again. The bucket feature has not
+// shipped in a release yet, so "1" is the only version that will ever have been stored.
 const MetricBucketBackfillVersion = "1"
 
 // backfillChunkSeconds is the width of one backfill chunk: a day, a whole multiple of the
