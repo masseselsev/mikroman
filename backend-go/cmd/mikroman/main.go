@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime/debug"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -103,6 +104,25 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// One-off backfill: build 15-minute metric buckets from the raw samples an existing
+	// install already holds, so charts are populated right after the upgrade instead of
+	// only from the next sample onward. Runs even without a router client because the
+	// database can still carry history; idempotent and marked done in app_settings.
+	backfillDays := func() int {
+		days := 30
+		if val, err := database.GetSetting("metric_bucket_retention_days"); err == nil && val != "" {
+			if v, err := strconv.Atoi(val); err == nil && v > 0 {
+				days = v
+			}
+		}
+		return days
+	}()
+	if ran, err := db.BackfillMetricBuckets(database, backfillDays); err != nil {
+		slog.Warn("Metric bucket backfill failed", "err", err)
+	} else if ran {
+		slog.Info("Backfilled metric buckets from existing raw samples", "days", backfillDays)
+	}
+
 	var telemSvc *services.TelemetryService
 	var trafficSvc *services.TrafficService
 	if client != nil {
@@ -122,6 +142,12 @@ func main() {
 	} else {
 		trafficSvc = services.NewTrafficService(database, nil)
 	}
+
+	// Metric retention (raw + buckets): batched, oldest-first pruning on an hourly tick,
+	// with an immediate first pass so an upgraded install reclaims its history right away.
+	// Started on its own handle so it runs whether or not a router is connected.
+	retentionSvc := services.NewTelemetryService(database, nil, nil)
+	retentionSvc.StartMetricRetentionLoop(ctx, time.Hour)
 
 	// Backup scheduler (hourly check)
 	backupSvc := services.NewBackupService(database)
