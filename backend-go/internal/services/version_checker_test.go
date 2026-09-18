@@ -160,4 +160,93 @@ func TestVersionChecker_FallbackOnError(t *testing.T) {
 	if info.CurrentVersion != "0.3.25" {
 		t.Errorf("expected CurrentVersion = 0.3.25, got %s", info.CurrentVersion)
 	}
+	// "could not tell" must be distinguishable from "up to date", otherwise a
+	// rate-limited check reads as a current install.
+	if !info.CheckFailed {
+		t.Errorf("expected CheckFailed = true when the upstream check was rejected")
+	}
+}
+
+// A release published after the community's last check must become visible once
+// the TTL lapses, without restarting the service.
+func TestVersionChecker_RefreshesAfterTTL(t *testing.T) {
+	var requestCount int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&requestCount, 1)
+		tag := "v0.3.25"
+		if atomic.LoadInt32(&requestCount) > 1 {
+			tag = "v0.3.26"
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"tag_name": "` + tag + `", "html_url": "https://example.invalid/releases"}`))
+	}))
+	defer ts.Close()
+
+	checker := NewVersionChecker("0.3.25")
+	checker.SetAPIURL(ts.URL)
+	checker.cacheTTL = 20 * time.Millisecond
+
+	first, err := checker.Check(context.Background(), false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if first.HasUpdate {
+		t.Errorf("expected HasUpdate = false while no newer release exists")
+	}
+
+	time.Sleep(30 * time.Millisecond)
+	second, err := checker.Check(context.Background(), false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !second.HasUpdate || second.LatestVersion != "0.3.26" {
+		t.Errorf("expected the newer release after the TTL lapsed, got %+v", second)
+	}
+	if atomic.LoadInt32(&requestCount) != 2 {
+		t.Errorf("expected a revalidation request after the TTL, got %d requests", atomic.LoadInt32(&requestCount))
+	}
+}
+
+// When the upstream goes away after a successful check, the last known release
+// has to survive (the offer must not vanish) and the reply must be flagged.
+func TestVersionChecker_KeepsLastKnownReleaseOnFailure(t *testing.T) {
+	var fail int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.LoadInt32(&fail) == 1 {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"tag_name": "v0.3.26", "html_url": "https://example.invalid/releases"}`))
+	}))
+	defer ts.Close()
+
+	checker := NewVersionChecker("0.3.25")
+	checker.SetAPIURL(ts.URL)
+	checker.cacheTTL = 20 * time.Millisecond
+
+	if _, err := checker.Check(context.Background(), false); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	atomic.StoreInt32(&fail, 1)
+	time.Sleep(30 * time.Millisecond)
+
+	degraded, err := checker.Check(context.Background(), false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !degraded.HasUpdate || degraded.LatestVersion != "0.3.26" {
+		t.Errorf("expected the last known release to survive a failed check, got %+v", degraded)
+	}
+	if !degraded.CheckFailed {
+		t.Errorf("expected CheckFailed = true on the degraded reply")
+	}
+
+	// The attempt itself must be throttled: a broken upstream may not be
+	// re-queried on every page load.
+	_, _ = checker.Check(context.Background(), false)
+	if checker.lastChecked.IsZero() {
+		t.Errorf("expected the failed attempt time to be recorded")
+	}
 }
