@@ -1,7 +1,7 @@
 import React from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { renderWithProviders, screen, waitFor } from '../test/render';
-import { AppFooter, formatVersionTag } from './AppFooter';
+import { renderWithProviders, screen, waitFor, act } from '../test/render';
+import { AppFooter, formatVersionTag, VERSION_RECHECK_INTERVAL_MS } from './AppFooter';
 import { api } from '../api/client';
 
 vi.mock('../api/client', () => ({
@@ -88,5 +88,73 @@ describe('AppFooter', () => {
 
     expect(container.querySelector('.version-tag')).toBeTruthy();
     expect(container.querySelector('.footer-update-badge')).toBeNull();
+  });
+
+  it('re-asks on an interval, so a release published while the tab stays open is not missed', async () => {
+    vi.useFakeTimers();
+    try {
+      const { container } = renderWithProviders(<AppFooter />);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(api.checkAppVersion).toHaveBeenCalledTimes(1);
+
+      // The release lands after the first answer was already served.
+      api.checkAppVersion.mockResolvedValue({
+        data: {
+          current_version: '0.3.30',
+          latest_version: '0.3.31',
+          has_update: true,
+          release_url: 'https://github.com/masseselsev/mikroman/releases/tag/v0.3.31',
+        },
+      });
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(VERSION_RECHECK_INTERVAL_MS);
+      });
+      expect(api.checkAppVersion).toHaveBeenCalledTimes(2);
+      expect(container.querySelector('.footer-update-badge')).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('re-asks when the tab becomes visible again', async () => {
+    const { container } = renderWithProviders(<AppFooter />);
+    await waitFor(() => expect(api.checkAppVersion).toHaveBeenCalledTimes(1));
+
+    api.checkAppVersion.mockResolvedValue({
+      data: {
+        current_version: '0.3.30',
+        latest_version: '0.3.31',
+        has_update: true,
+        release_url: 'https://github.com/masseselsev/mikroman/releases/tag/v0.3.31',
+      },
+    });
+
+    Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true });
+    document.dispatchEvent(new Event('visibilitychange'));
+
+    await waitFor(() => expect(api.checkAppVersion).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(container.querySelector('.footer-update-badge')).toBeTruthy());
+  });
+
+  it('drops the offer once the running build catches up with the latest release', async () => {
+    api.checkAppVersion.mockResolvedValue({
+      data: { current_version: '0.3.30', latest_version: '0.3.31', has_update: true },
+    });
+
+    const { container } = renderWithProviders(<AppFooter />);
+    await waitFor(() => expect(container.querySelector('.footer-update-badge')).toBeTruthy());
+
+    // Same tab, after the upgrade: the answer now says "current".
+    api.checkAppVersion.mockResolvedValue({
+      data: { current_version: '0.3.31', latest_version: '0.3.31', has_update: false },
+    });
+
+    Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true });
+    document.dispatchEvent(new Event('visibilitychange'));
+
+    await waitFor(() => expect(container.querySelector('.footer-update-badge')).toBeNull());
   });
 });

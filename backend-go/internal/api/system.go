@@ -130,6 +130,7 @@ func (h *SystemHandler) GetVersionCheck(w http.ResponseWriter, r *http.Request) 
 			"current_version": h.cfg.AppVersion,
 			"latest_version":  h.cfg.AppVersion,
 			"has_update":      false,
+			"check_failed":    true,
 		})
 		return
 	}
@@ -140,6 +141,7 @@ func (h *SystemHandler) GetVersionCheck(w http.ResponseWriter, r *http.Request) 
 			"current_version": h.cfg.AppVersion,
 			"latest_version":  h.cfg.AppVersion,
 			"has_update":      false,
+			"check_failed":    true,
 		})
 		return
 	}

@@ -14,8 +14,17 @@ import (
 
 const (
 	defaultGitHubReleasesURL = "https://api.github.com/repos/masseselsev/mikroman/releases/latest"
-	defaultVersionCacheTTL   = 6 * time.Hour
-	defaultCheckTimeout      = 6 * time.Second
+	// defaultVersionCacheTTL bounds how long a discovery result may be served
+	// without asking GitHub again.
+	//
+	// It is deliberately short: refreshes are conditional (If-None-Match) and
+	// a 304 "Not Modified" reply does not count against GitHub's
+	// unauthenticated rate limit, so revalidation is free per request. A long
+	// TTL buys nothing and costs freshness - a release published while a
+	// dashboard is open stays invisible until the TTL lapses *and* the page is
+	// loaded again.
+	defaultVersionCacheTTL = 15 * time.Minute
+	defaultCheckTimeout    = 6 * time.Second
 )
 
 // VersionInfo models the application version state and update availability.
@@ -27,6 +36,14 @@ type VersionInfo struct {
 	ReleaseName    string    `json:"release_name,omitempty"`
 	PublishedAt    string    `json:"published_at,omitempty"`
 	CheckedAt      time.Time `json:"checked_at"`
+	// CheckFailed marks a reply that GitHub could not confirm: the process
+	// reached neither a fresh payload nor a 304, so the fields above may hold
+	// the last known release or the running version.
+	//
+	// Consumers must treat HasUpdate=false together with CheckFailed=true as
+	// "unknown", never as "up to date" - otherwise a rate-limited or offline
+	// router silently claims to be current.
+	CheckFailed bool `json:"check_failed,omitempty"`
 }
 
 type githubReleasePayload struct {
@@ -155,7 +172,7 @@ func (v *VersionChecker) Check(ctx context.Context, force bool) (*VersionInfo, e
 
 	resp, err := client.Do(req)
 	if err != nil {
-		slog.Debug("Failed to check GitHub releases for update", "err", err)
+		slog.Warn("GitHub release check failed: upstream unreachable", "err", err)
 		return v.fallbackInfo(curVersion), nil
 	}
 	defer resp.Body.Close()
@@ -174,13 +191,15 @@ func (v *VersionChecker) Check(ctx context.Context, force bool) (*VersionInfo, e
 
 	// Any non-200 status (e.g. rate limit 403, network glitch 5xx)
 	if resp.StatusCode != http.StatusOK {
-		slog.Debug("GitHub release check returned non-200", "status", resp.StatusCode)
+		slog.Warn("GitHub release check failed: unexpected status",
+			"status", resp.StatusCode,
+			"remaining", resp.Header.Get("X-RateLimit-Remaining"))
 		return v.fallbackInfo(curVersion), nil
 	}
 
 	var payload githubReleasePayload
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-		slog.Debug("Failed to parse GitHub release payload", "err", err)
+		slog.Warn("GitHub release check failed: unparsable payload", "err", err)
 		return v.fallbackInfo(curVersion), nil
 	}
 
@@ -207,11 +226,22 @@ func (v *VersionChecker) Check(ctx context.Context, force bool) (*VersionInfo, e
 	return info, nil
 }
 
+// fallbackInfo answers when the upstream check could not be completed.
+//
+// Three things have to hold at once: a release that was already visible must
+// not disappear because one request failed, the caller must be able to tell
+// "no update" from "could not tell" (CheckFailed), and a broken upstream must
+// not be retried on every page load - the attempt time is recorded so the next
+// attempt comes at most one TTL later.
 func (v *VersionChecker) fallbackInfo(curVersion string) *VersionInfo {
-	v.mu.RLock()
-	defer v.mu.RUnlock()
+	v.mu.Lock()
+	defer v.mu.Unlock()
+
+	v.lastChecked = time.Now()
 	if v.cachedInfo != nil {
 		cached := *v.cachedInfo
+		cached.CheckFailed = true
+		cached.CheckedAt = time.Now()
 		return &cached
 	}
 	cleanCur := strings.TrimPrefix(curVersion, "v")
@@ -219,6 +249,7 @@ func (v *VersionChecker) fallbackInfo(curVersion string) *VersionInfo {
 		CurrentVersion: cleanCur,
 		LatestVersion:  cleanCur,
 		HasUpdate:      false,
+		CheckFailed:    true,
 		CheckedAt:      time.Now(),
 	}
 }
