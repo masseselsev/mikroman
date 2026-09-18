@@ -2,7 +2,7 @@
 
 [![Go](https://img.shields.io/badge/Go-1.23+-00ADD8.svg)](https://go.dev)
 [![React](https://img.shields.io/badge/React-18.3-61DAFB.svg)](https://react.dev)
-[![RouterOS](https://img.shields.io/badge/RouterOS-7.x-red.svg)](https://mikrotik.com)
+[![RouterOS](https://img.shields.io/badge/RouterOS-7.20%2B-red.svg)](https://mikrotik.com)
 [![Docker Image Size](https://img.shields.io/badge/image--size-<30MB-brightgreen.svg)](https://ghcr.io/masseselsev/mikroman)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
@@ -267,7 +267,9 @@ npm run build
 
 ## 📋 RouterOS Compatibility
 
-MikroMan targets **RouterOS 7.x** (version 7.4 or higher recommended for REST API and container support).
+MikroMan requires **RouterOS 7.20 or newer**.
+
+The floor comes from container-mode monitoring: per-container memory reporting and limits (`memory-current`, `memory-high`, `memory-max`) only exist from 7.20, and the container dashboard, its limits and the diagnostics view read exactly those properties. Older 7.x builds still answer the REST API and can host the container itself (that has been possible since 7.4), but the container view reports no memory figures — that configuration is not supported.
 
 | Architecture | Supported Devices | Notes |
 |---|---|---|

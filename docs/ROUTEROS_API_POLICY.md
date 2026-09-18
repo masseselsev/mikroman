@@ -16,7 +16,11 @@ table — it is not a number typed into a README.
 
 **Current floor: RouterOS 7.1** (the release that first shipped the REST API).
 **Verified against: 7.25.** **Container deployment: 7.4** (the `container`
-package).
+package) — but **MikroMan itself requires 7.20 or newer**, because per-container
+memory reporting (`memory-current`, `memory-high`, `memory-max`) only exists from
+7.20 and the container dashboard, its limits and the diagnostics view read those
+properties directly. A 7.4–7.19 router can host the container and serve the REST
+API, but the container view stays empty; that is not a supported configuration.
 
 If you change the floor, `tests/test_routeros_compat.py` fails on purpose. Fix
 the table, the README, and this document together.
@@ -113,6 +117,7 @@ within a fraction of a percent.
 | Wi-Fi 7 `mld-interfaces` / `mld-link-addresses` | 7.13 + 802.11be hardware | no | One link shown instead of each radio |
 | `/certificate`, `/file`, `/ip/service` | 7.1 | no | No HTTPS auto-provisioning |
 | `container` package (deployment) | 7.4 | no | Run on a Docker host instead |
+| per-container memory reporting (`memory-current`/`-high`/`-max`) | 7.20 | no | Container dashboard shows no memory figures — below MikroMan's supported baseline |
 
 ## Sources
 
