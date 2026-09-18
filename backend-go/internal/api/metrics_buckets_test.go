@@ -33,10 +33,16 @@ import (
 func seedChartSamples(t *testing.T, database *db.DB, window time.Duration, sampleEvery time.Duration) {
 	t.Helper()
 	now := time.Now().UTC().Truncate(time.Second).Add(-db.MetricBucketSeconds)
-	// Floor the seed start to a bucket boundary, then step one full bucket past it so
-	// no sample can sit exactly on the chart's startTime second.
+	// Floor the seed start to a bucket boundary and step TWO full buckets past it: the
+	// first sample then sits at least one bucket after the chart's startTime (which the
+	// handler derives from its own wall clock, ~0.2–2 s after seeding, on every request).
+	// With any sample inside the window's first bucket, the two paths diverge by one
+	// point at most phases: the bucket query includes the window-straddling bucket via
+	// its -900 s allowance, while the raw query drops that bucket once its (few) samples
+	// fall below the request-specific startTime. Two buckets of clearance make the
+	// comparison independent of that drift.
 	base := time.Unix(db.MetricBucketEpoch(now.Add(-window)), 0).UTC()
-	start := base.Add(db.MetricBucketSeconds)
+	start := base.Add(2 * db.MetricBucketSeconds)
 
 	for at := start; !at.After(now); at = at.Add(sampleEvery) {
 		elapsed := at.Sub(start).Seconds()
