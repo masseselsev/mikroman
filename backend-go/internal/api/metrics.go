@@ -285,6 +285,89 @@ func roundFloat(val float64, precision int) float64 {
 	return math.Round(val*ratio) / ratio
 }
 
+// bucketsServeRange reports whether a range is served from the pre-aggregated 15-minute
+// bucket tables. The short ranges (1 h, 6 h) stay on the raw tables because their windows
+// are small enough that the raw scan is already the cheaper query (~7 ms and ~15 ms on a
+// 30-day synthetic database); the long ranges are where the scan of every raw sample in
+// the window dominated the request.
+func bucketsServeRange(rangeKey string) bool {
+	switch rangeKey {
+	case "24h", "7d", "30d":
+		return true
+	}
+	return false
+}
+
+// bucketsCoverRange checks whether the bucket tables actually have rows covering a range
+// on a router. Immediately after an upgrade the backfill may not have run (or only
+// partially), and a chart must not silently go empty: the handler falls back to the raw
+// tables until buckets exist for the range.
+func bucketsCoverRange(database *db.DB, routerID int, startTime string) bool {
+	var sysCount int
+	if err := database.SqlDB.QueryRow(
+		"SELECT count(*) FROM system_metric_buckets WHERE router_id = ? AND bucket_start >= ? AND bucket_start <= ?",
+		routerID, startTime, time.Now().UTC().Format("2006-01-02 15:04:05")).Scan(&sysCount); err != nil {
+		return false
+	}
+	return sysCount > 0
+}
+
+// countInterfaceBucketsInRange reports how many interface bucket rows exist for a router
+// within a range; the interface handler uses it for the same empty-range fallback as
+// bucketsCoverRange.
+func countInterfaceBucketsInRange(database *db.DB, routerID int, startTime string) (int, error) {
+	var count int
+	err := database.SqlDB.QueryRow(
+		"SELECT count(*) FROM interface_metric_buckets WHERE router_id = ? AND bucket_start >= ?",
+		routerID, startTime).Scan(&count)
+	return count, err
+}
+
+// placeholdersOf renders a comma-joined "?, ?, …" list for an IN clause of n items.
+func placeholdersOf(n int) string {
+	if n <= 0 {
+		return "''"
+	}
+	items := make([]string, n)
+	for i := range items {
+		items[i] = "?"
+	}
+	return strings.Join(items, ",")
+}
+
+// scanInterfacePoints turns the (identically shaped) rows of either the raw-sample
+// query or the bucket-reaggregated query into chart points. Both emit the same six
+// columns — bucket id, newest timestamp, then avg/peak pairs per direction — so the JSON
+// response is byte-identical whichever path served the range.
+func scanInterfacePoints(rows *sql.Rows, points *[]InterfaceRatePoint) {
+	for rows.Next() {
+		var bucket int64
+		var tsEpoch int64
+		var rxAvg, rxPeak, txAvg, txPeak sql.NullFloat64
+
+		if err := rows.Scan(&bucket, &tsEpoch, &rxAvg, &rxPeak, &txAvg, &txPeak); err != nil {
+			continue
+		}
+
+		rxVal := roundFloat(rxAvg.Float64, 1)
+		txVal := roundFloat(txAvg.Float64, 1)
+		rxP := roundFloat(rxPeak.Float64, 1)
+		txP := roundFloat(txPeak.Float64, 1)
+
+		*points = append(*points, InterfaceRatePoint{
+			Timestamp:       time.Unix(tsEpoch, 0).UTC().Format("2006-01-02T15:04:05Z"),
+			RxRateBps:       rxVal,
+			TxRateBps:       txVal,
+			RxRateFormatted: formatRateBps(rxVal),
+			TxRateFormatted: formatRateBps(txVal),
+			RxPeakBps:       rxP,
+			TxPeakBps:       txP,
+			RxPeakFormatted: formatRateBps(rxP),
+			TxPeakFormatted: formatRateBps(txP),
+		})
+	}
+}
+
 func formatRateBps(bps float64) string {
 	if bps >= 1_000_000_000 {
 		return fmt.Sprintf("%.2f Gbps", bps/1_000_000_000)
@@ -296,68 +379,11 @@ func formatRateBps(bps float64) string {
 	return fmt.Sprintf("%.0f bps", bps)
 }
 
-func (h *MetricsHandler) GetSystemMetrics(w http.ResponseWriter, r *http.Request) {
-	rangeKey := r.URL.Query().Get("range")
-	cfg, ok := rangeConfigs[rangeKey]
-	if !ok {
-		rangeKey = "1h"
-		cfg = rangeConfigs["1h"]
-	}
-
-	var routerID *int
-	if rID := r.URL.Query().Get("router_id"); rID != "" {
-		if id, err := strconv.Atoi(rID); err == nil && id > 0 {
-			routerID = &id
-		}
-	}
-	if routerID == nil {
-		if def, err := h.database.GetDefaultRouter(); err == nil && def != nil {
-			routerID = &def.ID
-		}
-	}
-
-	now := time.Now().UTC()
-	startTime := now.Add(-cfg.duration).Format("2006-01-02 15:04:05")
-
-	whereClause := "timestamp >= ?"
-	args := []interface{}{startTime}
-	if routerID != nil {
-		whereClause += " AND router_id = ?"
-		args = append(args, *routerID)
-	}
-
-	query := fmt.Sprintf(`
-		SELECT
-			cast(strftime('%%s', timestamp) as integer) / %d AS bucket,
-			max(strftime('%%s', timestamp)) AS ts_epoch,
-			avg(cpu_load),
-			max(cpu_load),
-			avg(memory_usage_pct),
-			avg(memory_used_bytes),
-			max(memory_total_bytes),
-			avg(temperature),
-			max(temperature),
-			avg(voltage),
-			min(voltage),
-			max(voltage)
-		FROM system_metrics
-		WHERE %s
-		GROUP BY bucket
-		ORDER BY bucket ASC
-	`, cfg.bucketSeconds, whereClause)
-
-	rows, err := h.database.SqlDB.Query(query, args...)
-	if err != nil {
-		WriteJSON(w, http.StatusOK, SystemMetricsResponse{
-			Range:         rangeKey,
-			Points:        []SystemMetricPoint{},
-			BucketSeconds: cfg.bucketSeconds,
-		})
-		return
-	}
-	defer rows.Close()
-
-	points := []SystemMetricPoint{}
+// scanSystemPoints turns the (identically shaped) rows of either the raw-sample query or
+// the bucket-reaggregated query into chart points. Both queries emit the same 12 columns
+// — bucket id, newest timestamp, then avg/peak pairs per metric — which is what lets the
+// JSON response stay byte-identical whichever path served the range.
+func scanSystemPoints(rows *sql.Rows, points *[]SystemMetricPoint) {
 	for rows.Next() {
 		var bucket int64
 		var tsEpoch int64
@@ -397,7 +423,111 @@ func (h *MetricsHandler) GetSystemMetrics(w http.ResponseWriter, r *http.Request
 			v := roundFloat(voltMax.Float64, 1)
 			point.VoltageMax = &v
 		}
-		points = append(points, point)
+		*points = append(*points, point)
+	}
+}
+
+func (h *MetricsHandler) GetSystemMetrics(w http.ResponseWriter, r *http.Request) {
+	rangeKey := r.URL.Query().Get("range")
+	cfg, ok := rangeConfigs[rangeKey]
+	if !ok {
+		rangeKey = "1h"
+		cfg = rangeConfigs["1h"]
+	}
+
+	var routerID *int
+	if rID := r.URL.Query().Get("router_id"); rID != "" {
+		if id, err := strconv.Atoi(rID); err == nil && id > 0 {
+			routerID = &id
+		}
+	}
+	if routerID == nil {
+		if def, err := h.database.GetDefaultRouter(); err == nil && def != nil {
+			routerID = &def.ID
+		}
+	}
+
+	now := time.Now().UTC()
+	startTime := now.Add(-cfg.duration).Format("2006-01-02 15:04:05")
+
+	whereClause := "timestamp >= ?"
+	args := []interface{}{startTime}
+	if routerID != nil {
+		whereClause += " AND router_id = ?"
+		args = append(args, *routerID)
+	}
+
+	points := []SystemMetricPoint{}
+
+	// Long ranges are served from the pre-aggregated 15-minute buckets; the raw table is
+	// scanned only for the short ranges where it is already the cheaper query, and as a
+	// fallback when the bucket range is empty (e.g. right after deploy, before the
+	// backfill ran, so a chart never silently goes empty).
+	useBuckets := routerID != nil && bucketsServeRange(rangeKey) && bucketsCoverRange(h.database, *routerID, startTime)
+
+	if useBuckets {
+		bucketQuery := fmt.Sprintf(`
+			SELECT
+				cast(strftime('%%s', bucket_start) as integer) / %d AS bucket,
+				strftime('%%s', last_seen) AS ts_epoch,
+				sum(cpu_load_avg * samples) / sum(samples),
+				max(cpu_load_max),
+				sum(memory_usage_pct_avg * samples) / sum(samples),
+				sum(memory_used_bytes_avg * samples) / sum(samples),
+				max(memory_total_bytes_max),
+				sum(temperature_avg * samples) / nullif(sum(case when temperature_avg is not null then samples else 0 end), 0),
+				max(temperature_max),
+				sum(voltage_avg * samples) / nullif(sum(case when voltage_avg is not null then samples else 0 end), 0),
+				min(voltage_min),
+				max(voltage_max)
+			FROM system_metric_buckets
+			WHERE router_id = ? AND bucket_start >= datetime(?, '-900 seconds')
+			GROUP BY bucket
+			ORDER BY bucket ASC
+		`, cfg.bucketSeconds)
+		rows, err := h.database.SqlDB.Query(bucketQuery, *routerID, startTime)
+		if err != nil {
+			WriteJSON(w, http.StatusOK, SystemMetricsResponse{
+				Range:         rangeKey,
+				Points:        []SystemMetricPoint{},
+				BucketSeconds: cfg.bucketSeconds,
+			})
+			return
+		}
+		defer rows.Close()
+		scanSystemPoints(rows, &points)
+	} else {
+		query := fmt.Sprintf(`
+			SELECT
+				cast(strftime('%%s', timestamp) as integer) / %d AS bucket,
+				max(strftime('%%s', timestamp)) AS ts_epoch,
+				avg(cpu_load),
+				max(cpu_load),
+				avg(memory_usage_pct),
+				avg(memory_used_bytes),
+				max(memory_total_bytes),
+				avg(temperature),
+				max(temperature),
+				avg(voltage),
+				min(voltage),
+				max(voltage)
+			FROM system_metrics
+			WHERE %s
+			GROUP BY bucket
+			ORDER BY bucket ASC
+		`, cfg.bucketSeconds, whereClause)
+
+		rows, err := h.database.SqlDB.Query(query, args...)
+		if err != nil {
+			WriteJSON(w, http.StatusOK, SystemMetricsResponse{
+				Range:         rangeKey,
+				Points:        []SystemMetricPoint{},
+				BucketSeconds: cfg.bucketSeconds,
+			})
+			return
+		}
+		defer rows.Close()
+		scanSystemPoints(rows, &points)
 	}
 
 	var curCPU, curRAM, curTemp, curVolt *float64
@@ -516,6 +646,26 @@ func (h *MetricsHandler) GetInterfaceMetrics(w http.ResponseWriter, r *http.Requ
 	whereClause := strings.Join(whereParts, " AND ")
 
 	if len(selectedList) == 0 {
+		// No interface list was pinned (and no monitored setting): discover the names from
+		// the bucket table first — cheap for long ranges — and only fall back to the raw
+		// table's DISTINCT scan when buckets are empty for the range.
+		if routerID != nil {
+			rows, err := h.database.SqlDB.Query(
+				"SELECT DISTINCT interface_name FROM interface_metric_buckets WHERE router_id = ? AND bucket_start >= ?",
+				*routerID, startTime)
+			if err == nil {
+				for rows.Next() {
+					var name string
+					if err := rows.Scan(&name); err == nil && name != "" {
+						selectedList = append(selectedList, name)
+					}
+				}
+				rows.Close()
+			}
+		}
+	}
+
+	if len(selectedList) == 0 {
 		rows, err := h.database.SqlDB.Query(fmt.Sprintf("SELECT DISTINCT interface_name FROM interface_metrics WHERE %s", whereClause), args...)
 		if err == nil {
 			for rows.Next() {
@@ -528,66 +678,101 @@ func (h *MetricsHandler) GetInterfaceMetrics(w http.ResponseWriter, r *http.Requ
 		}
 	}
 
-	query := fmt.Sprintf(`
-		SELECT
-			cast(strftime('%%s', timestamp) as integer) / %d AS bucket,
-			max(strftime('%%s', timestamp)) AS ts_epoch,
-			avg(rx) AS rx_avg,
-			max(rx) AS rx_peak,
-			avg(tx) AS tx_avg,
-			max(tx) AS tx_peak
-		FROM (
-			SELECT
-				timestamp,
-				sum(rx_rate_bps) AS rx,
-				sum(tx_rate_bps) AS tx
-			FROM interface_metrics
-			WHERE %s
-			GROUP BY timestamp
-		)
-		GROUP BY bucket
-		ORDER BY bucket ASC
-	`, cfg.bucketSeconds, whereClause)
-
-	rows, err := h.database.SqlDB.Query(query, args...)
-	if err != nil {
-		WriteJSON(w, http.StatusOK, InterfaceHistoryResponse{
-			Range:         rangeKey,
-			Interfaces:    selectedList,
-			IsSummed:      true,
-			Points:        []InterfaceRatePoint{},
-			BucketSeconds: cfg.bucketSeconds,
-		})
-		return
-	}
-	defer rows.Close()
-
 	points := []InterfaceRatePoint{}
-	for rows.Next() {
-		var bucket int64
-		var tsEpoch int64
-		var rxAvg, rxPeak, txAvg, txPeak sql.NullFloat64
 
-		if err := rows.Scan(&bucket, &tsEpoch, &rxAvg, &rxPeak, &txAvg, &txPeak); err != nil {
-			continue
+	// Long ranges are served from the pre-aggregated 15-minute buckets; the raw table is
+	// scanned only for the short ranges where it is already the cheaper query, and as a
+	// fallback when the bucket range is empty (e.g. right after deploy, before the
+	// backfill ran, so a chart never silently goes empty).
+	useBuckets := false
+	if routerID != nil && bucketsServeRange(rangeKey) && len(selectedList) > 0 {
+		if count, err := countInterfaceBucketsInRange(h.database, *routerID, startTime); err == nil && count > 0 {
+			useBuckets = true
+		}
+	}
+
+	if useBuckets {
+		// Rebuild the chart's two-level aggregation from the per-interface buckets. The
+		// inner level of the raw query summed the selected interfaces per sample instant;
+		// summing the per-interface bucket sums reproduces exactly that sum, and dividing
+		// by the instant count (the sample count of one interface — every interface in a
+		// bucket sampled the same instants) reproduces its mean. The peak of the summed
+		// rate is the max over per-instant totals, which equals the sum of per-interface
+		// maxima only when all interfaces peaked at the same instant; when they did not,
+		// the honest reconstruction is the largest per-instant total, so the buckets
+		// additionally carry that sum: sum of the per-interface maxima would be the
+		// "invented combined spike" the chart's semantics exist to avoid, and the max of
+		// per-interface peaks would understate a genuine simultaneous load. The bucket
+		// row stores the true summed peak at write time (rx_sum_rate_bps_max), so the
+		// read side just takes its max.
+		bucketQuery := fmt.Sprintf(`
+			SELECT
+				cast(strftime('%%s', bucket_start) as integer) / %d AS bucket,
+				strftime('%%s', last_seen) AS ts_epoch,
+				sum(rx_rate_bps_sum) / nullif(max(samples), 0) AS rx_avg,
+				max(rx_rate_sum_bps_max) AS rx_peak,
+				sum(tx_rate_bps_sum) / nullif(max(samples), 0) AS tx_avg,
+				max(tx_rate_sum_bps_max) AS tx_peak
+			FROM interface_metric_buckets
+			WHERE router_id = ? AND bucket_start >= datetime(?, '-900 seconds') AND interface_name IN (%s)
+			GROUP BY bucket
+			ORDER BY bucket ASC
+		`, cfg.bucketSeconds, placeholdersOf(len(selectedList)))
+
+		bucketArgs := make([]interface{}, 0, len(selectedList)+2)
+		bucketArgs = append(bucketArgs, *routerID, startTime)
+		for _, s := range selectedList {
+			bucketArgs = append(bucketArgs, s)
 		}
 
-		rxVal := roundFloat(rxAvg.Float64, 1)
-		txVal := roundFloat(txAvg.Float64, 1)
-		rxP := roundFloat(rxPeak.Float64, 1)
-		txP := roundFloat(txPeak.Float64, 1)
+		rows, err := h.database.SqlDB.Query(bucketQuery, bucketArgs...)
+		if err != nil {
+			WriteJSON(w, http.StatusOK, InterfaceHistoryResponse{
+				Range:         rangeKey,
+				Interfaces:    selectedList,
+				IsSummed:      true,
+				Points:        []InterfaceRatePoint{},
+				BucketSeconds: cfg.bucketSeconds,
+			})
+			return
+		}
+		defer rows.Close()
+		scanInterfacePoints(rows, &points)
+	} else {
+		query := fmt.Sprintf(`
+			SELECT
+				cast(strftime('%%s', timestamp) as integer) / %d AS bucket,
+				max(strftime('%%s', timestamp)) AS ts_epoch,
+				avg(rx) AS rx_avg,
+				max(rx) AS rx_peak,
+				avg(tx) AS tx_avg,
+				max(tx) AS tx_peak
+			FROM (
+				SELECT
+					timestamp,
+					sum(rx_rate_bps) AS rx,
+					sum(tx_rate_bps) AS tx
+				FROM interface_metrics
+				WHERE %s
+				GROUP BY timestamp
+			)
+			GROUP BY bucket
+			ORDER BY bucket ASC
+		`, cfg.bucketSeconds, whereClause)
 
-		points = append(points, InterfaceRatePoint{
-			Timestamp:       time.Unix(tsEpoch, 0).UTC().Format("2006-01-02T15:04:05Z"),
-			RxRateBps:       rxVal,
-			TxRateBps:       txVal,
-			RxRateFormatted: formatRateBps(rxVal),
-			TxRateFormatted: formatRateBps(txVal),
-			RxPeakBps:       rxP,
-			TxPeakBps:       txP,
-			RxPeakFormatted: formatRateBps(rxP),
-			TxPeakFormatted: formatRateBps(txP),
-		})
+		rows, err := h.database.SqlDB.Query(query, args...)
+		if err != nil {
+			WriteJSON(w, http.StatusOK, InterfaceHistoryResponse{
+				Range:         rangeKey,
+				Interfaces:    selectedList,
+				IsSummed:      true,
+				Points:        []InterfaceRatePoint{},
+				BucketSeconds: cfg.bucketSeconds,
+			})
+			return
+		}
+		defer rows.Close()
+		scanInterfacePoints(rows, &points)
 	}
 
 	var curRx, curTx float64
