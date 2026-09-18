@@ -56,11 +56,19 @@ type Execer interface {
 func bucketTimeFilter(window MetricBucketWindow) (string, []interface{}) {
 	// Inclusive lower edge on the bucket grid: any sample at/after FromEpoch has its
 	// bucket start at/after FromEpoch.
-	where := "cast(strftime('%s', timestamp) as integer) >= ?"
-	args := []interface{}{window.FromEpoch}
+	//
+	// The epoch cast is the exact predicate (see the COLLATE BINARY history above), but
+	// an expression on the column is not sargable: alone it forces a full scan of the
+	// raw table for every backfill chunk, which on a real router's 30-day history took
+	// the one-off backfill past half an hour and blocked startup behind it. The text
+	// bounds are lexicographically ordered for the CURRENT_TIMESTAMP format, so they
+	// prune through the timestamp index first; the cast then double-checks each
+	// surviving row and keeps the semantics identical.
+	where := "timestamp >= datetime(?, 'unixepoch') AND cast(strftime('%s', timestamp) as integer) >= ?"
+	args := []interface{}{window.FromEpoch, window.FromEpoch}
 	if window.UntilEpoch > 0 {
-		where += " AND cast(strftime('%s', timestamp) as integer) < ?"
-		args = append(args, window.UntilEpoch)
+		where += " AND timestamp < datetime(?, 'unixepoch') AND cast(strftime('%s', timestamp) as integer) < ?"
+		args = append(args, window.UntilEpoch, window.UntilEpoch)
 	}
 	return where, args
 }
