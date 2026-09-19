@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/masseselsev/mikroman/internal/db"
 )
 
 var upgrader = websocket.Upgrader{
@@ -33,6 +34,11 @@ type Hub struct {
 	mu         sync.RWMutex
 	clients    map[*clientConn]bool
 	lastFrames map[int][]byte // routerID -> cached telemetry frame (0 = default router)
+	// bootDB enables the bootstrap frame: history summarised for a client that
+	// connects before any live tick exists. nil (unit tests of the hub alone)
+	// keeps the old "wait for the first tick" behavior.
+	bootDB    *db.DB
+	bootCache map[int]bootstrapEntry
 }
 
 func NewHub() *Hub {
@@ -69,6 +75,28 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 		cachedFrame = f
 	}
 	h.mu.Unlock()
+
+	// No live tick for this router has ever arrived (cold server, or a router
+	// that is down right now). Fall back to a frame summarised from stored
+	// history so the dashboard is not blank until the first poll succeeds. The
+	// frame is tagged "bootstrap" and carries bootstrapped:true in the router
+	// object; the first real tick overwrites both hub caches and the UI alike.
+	// The live cache is re-checked after building: a tick may land while the
+	// history queries run, and a frame claiming "now" must not arrive after the
+	// real "now" it would overwrite.
+	if cachedFrame == nil {
+		boot := h.bootstrapFrame(routerID)
+		h.mu.RLock()
+		live := h.lastFrames[routerID]
+		if live == nil {
+			live = h.lastFrames[0]
+		}
+		h.mu.RUnlock()
+		cachedFrame = live
+		if cachedFrame == nil {
+			cachedFrame = boot
+		}
+	}
 
 	defer func() {
 		h.mu.Lock()
@@ -130,6 +158,13 @@ func (h *Hub) BroadcastRouter(routerID int, isDefault bool, event interface{}) {
 	h.lastFrames[routerID] = data
 	if isDefault {
 		h.lastFrames[0] = data
+	}
+	// A bootstrap frame summarised from history is stale the moment a live tick
+	// exists: drop the cache for this router and for the alias id 0 that the
+	// bootstrap resolves against the default router.
+	delete(h.bootCache, routerID)
+	if isDefault {
+		delete(h.bootCache, 0)
 	}
 	targets := make([]*clientConn, 0, len(h.clients))
 	for c := range h.clients {
