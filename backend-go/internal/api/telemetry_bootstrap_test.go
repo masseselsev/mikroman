@@ -90,7 +90,10 @@ func seedBootstrapHistory(t *testing.T, database *db.DB) {
 			t.Fatalf("seed system bucket: %v", err)
 		}
 	}
-	iface := []struct{ start, name string; rx, tx float64 }{
+	iface := []struct {
+		start, name string
+		rx, tx      float64
+	}{
 		{"2026-09-19 08:00:00", "ether1", 1e6, 5e5},
 		{"2026-09-19 08:00:00", "ether2", 2e6, 1e6},
 		{"2026-09-19 08:15:00", "ether1", 3e6, 1.5e6},
@@ -165,12 +168,13 @@ func TestBootstrapFrameMedians(t *testing.T) {
 		t.Fatal("frame has no router object")
 	}
 
-	// CPU median over {10,20,30,40,50} = 30; memory % median = 60.
+	// CPU median over {10,20,30,40,50} = 30. Memory pct is derived from the
+	// median free/total (not the stored pct column): (1024-424)/1024 = 58.6%.
 	if got := router["cpu_load"]; got != 30.0 {
 		t.Errorf("cpu_load: got %v want 30", got)
 	}
-	if got := router["memory_usage_pct"]; got != 60.0 {
-		t.Errorf("memory_usage_pct: got %v want 60", got)
+	if got := router["memory_usage_pct"]; got != 58.6 {
+		t.Errorf("memory_usage_pct: got %v want 58.6", got)
 	}
 	// Temperature: 4 non-null of 5 buckets, median of {44,46,50,52} = 48.
 	if got := router["temperature"]; got != 48.0 {
@@ -281,5 +285,17 @@ func TestHubBootstrapFallbackOnColdConnect(t *testing.T) {
 	}
 	if second["live"] != true {
 		t.Errorf("expected the live frame, got %v", second)
+	}
+
+	// The broadcast also revokes the bootstrap cache itself — for the actual
+	// router id AND for the alias 0 it was built under — so a later connect
+	// never races with a minute-old median frame; HandleWS prefers lastFrames,
+	// and a cold router_id can only get a freshly built bootstrap, never a
+	// cached one from before the router came alive.
+	hub.mu.RLock()
+	cached := len(hub.bootCache)
+	hub.mu.RUnlock()
+	if cached != 0 {
+		t.Errorf("bootstrap cache survived the live tick: %d entries", cached)
 	}
 }

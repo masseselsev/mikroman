@@ -154,6 +154,8 @@ export function App() {
   // refresh - the single biggest source of "the dashboard feels sluggish".
   // Split out, it runs on mount, on a switch, and every 30s for the selector's
   // online dots, while loadData() below only moves user/device data.
+  // Returns true when this pass *adopted* a router (resolved an id the data
+  // load was waiting on) and fired loadData itself.
   const loadRouters = async () => {
     const routersRes = await api.getRouters().catch(() => ({ data: [] }));
     const routerList = routersRes.data || [];
@@ -168,25 +170,35 @@ export function App() {
       : null;
     if (!fresh) {
       const current = routerList.find(r => r.is_default) || routerList[0] || null;
+      // The adoption moment is a *new* target for loadData: open its WS socket
+      // and fetch its data as soon as the id exists, rather than returning and
+      // waiting for the effect's sequential `await loadData()` (and, before
+      // that, for the full /routers response — which includes a live probe of
+      // every other router, two seconds per dead box).
       activeRouterIdRef.current = current ? current.id : null;
       setActiveRouter(current || null);
-    } else {
-      setActiveRouter(prev => (prev && prev.is_online === fresh.is_online ? prev : fresh));
+      if (current) void loadData(current.id);
+      return !!current;
     }
+    setActiveRouter(prev => (prev && prev.is_online === fresh.is_online ? prev : fresh));
+    return false;
   };
 
   // Full refresh: the router list AND the active router's data. Used where the
   // set of routers may have changed (first-run wizard, add/remove in Settings),
-  // not on the fast data poll.
+  // not on the fast data poll. loadRouters fires the data load itself when it
+  // adopted a new router; only fill in a second load when it did not.
   const reloadAll = async () => {
-    await loadRouters();
-    await loadData();
+    const adopted = await loadRouters();
+    if (!adopted) await loadData();
   };
 
   const loadData = async (routerIdOverride = null) => {
     // The router this load is for: an explicit override wins, otherwise the ref
     // (never the closure's activeRouter, which lags a switch). Null means the
     // first loadRouters() has not resolved a target yet - nothing to fetch.
+    // (The server's no-router_id path is a cross-router union, so guessing by
+    // omitting the id is not an available shortcut — the wait is short.)
     const effectiveId = routerIdOverride ?? activeRouterIdRef.current;
     if (effectiveId == null) return;
     try {
@@ -258,12 +270,22 @@ export function App() {
     }
   };
 
+  // The initial load + the polls, keyed on auth alone. activeRouter?.id must
+  // NOT be a dependency: resolving the default router after mount (null ->
+  // an id) would re-run this effect and repeat the whole loadRouters+loadData
+  // sequence, so every refresh fetched the user/device/alert data twice.
+  // Router switches reload through handleSelectRouter, and both poll
+  // intervals read the active id from a ref — neither needs the effect to
+  // restart.
   useEffect(() => {
     if (authEnabled && !isAuthenticated) return;
     let cancelled = false;
     (async () => {
-      await loadRouters();
-      if (!cancelled) await loadData();
+      // loadRouters fires loadData itself when it adopts a router (the id is
+      // only known at that moment); the sequential call below covers the
+      // other path — the id was already resolved, e.g. after re-login.
+      const adopted = await loadRouters();
+      if (!cancelled && !adopted) await loadData();
     })();
     // Data poll: fast, so a new active device or an IP shift shows quickly.
     const dataPoll = setInterval(() => loadData(), 6000);
@@ -274,7 +296,7 @@ export function App() {
       clearInterval(dataPoll);
       clearInterval(routerPoll);
     };
-  }, [activeRouter?.id, authEnabled, isAuthenticated]);
+  }, [authEnabled, isAuthenticated]);
 
   const [interfacesOpen, setInterfacesOpen] = useState(false);
   const [draggedUserId, setDraggedUserId] = useState(null);

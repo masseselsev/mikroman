@@ -180,7 +180,7 @@ func resolveBootstrapRouter(database *db.DB, routerID int) (int, bool) {
 // by the median, which is exactly what a placeholder is allowed to do.
 func bootstrapSystemReading(database *db.DB, routerID int) (cpu, memPct, freeMB, totalMB float64, temp *float64, ok bool) {
 	rows, err := database.SqlDB.Query(`
-		SELECT cpu_load_avg, memory_usage_pct_avg,
+		SELECT cpu_load_avg,
 		       memory_used_bytes_avg, memory_total_bytes_max, temperature_avg
 		FROM system_metric_buckets
 		WHERE router_id = ?
@@ -191,16 +191,15 @@ func bootstrapSystemReading(database *db.DB, routerID int) (cpu, memPct, freeMB,
 	}
 	defer rows.Close()
 
-	var cpus, pcts, frees, totals []float64
+	var cpus, frees, totals []float64
 	var temps []float64
 	for rows.Next() {
-		var cpuAvg, pctAvg, usedAvg, totalMax float64
+		var cpuAvg, usedAvg, totalMax float64
 		var tempAvg sql.NullFloat64
-		if err := rows.Scan(&cpuAvg, &pctAvg, &usedAvg, &totalMax, &tempAvg); err != nil {
+		if err := rows.Scan(&cpuAvg, &usedAvg, &totalMax, &tempAvg); err != nil {
 			continue
 		}
 		cpus = append(cpus, cpuAvg)
-		pcts = append(pcts, pctAvg)
 		totalMBv := totalMax / (1024 * 1024)
 		frees = append(frees, math.Max(totalMBv-usedAvg/(1024*1024), 0))
 		totals = append(totals, totalMBv)
@@ -211,11 +210,22 @@ func bootstrapSystemReading(database *db.DB, routerID int) (cpu, memPct, freeMB,
 	if len(cpus) == 0 {
 		return 0, 0, 0, 0, nil, false
 	}
+	if rows.Err() != nil {
+		return 0, 0, 0, 0, nil, false
+	}
 	if len(temps) > 0 {
 		t := medianFloat(temps)
 		temp = &t
 	}
-	return medianFloat(cpus), medianFloat(pcts), medianFloat(frees), medianFloat(totals), temp, true
+	// The memory triple must be coherent (free + used == total, pct matching
+	// them): medians taken independently from the stored pct column could land
+	// on a bucket whose footprint differed and print an impossible split. The
+	// derived pct says exactly what the two printed MB figures agree on.
+	freeMed, totalMed := medianFloat(frees), medianFloat(totals)
+	if totalMed > 0 {
+		memPct = math.Min(math.Max((totalMed-freeMed)/totalMed*100, 0), 100)
+	}
+	return medianFloat(cpus), memPct, freeMed, totalMed, temp, true
 }
 
 // bootstrapWanReading returns median rx/tx of the SUM of the monitored
@@ -263,6 +273,9 @@ func bootstrapWanReading(database *db.DB, routerID int) (rx, tx float64, ok bool
 		txs = append(txs, txSum)
 	}
 	if len(rxs) == 0 {
+		return 0, 0, false
+	}
+	if rows.Err() != nil {
 		return 0, 0, false
 	}
 	return medianFloat(rxs), medianFloat(txs), true
