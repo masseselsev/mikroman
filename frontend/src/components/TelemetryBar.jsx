@@ -222,18 +222,20 @@ export function TelemetryBar({ router, activeRouter, interfaces = [], onNavigate
     // appends onto the seed line — the median "gradually updates" toward the
     // real curve instead of the bar snapping from empty to busy.
     if (router.bootstrapped) {
-      const flat = (setter, value) => {
-        if (value != null && !Number.isNaN(value)) setter([value]);
+      // Seed every series explicitly: a field missing from the bootstrap must
+      // clear the previous router's line, not let it linger on the new one.
+      const seed = (setter, value) => {
+        setter(value != null && !Number.isNaN(value) ? [value] : []);
       };
-      flat(setRxHistory, router.wan_rx_bps);
-      flat(setTxHistory, router.wan_tx_bps);
-      flat(setCpuHistory, router.cpu_load);
+      seed(setRxHistory, router.wan_rx_bps);
+      seed(setTxHistory, router.wan_tx_bps);
+      seed(setCpuHistory, router.cpu_load);
+      seed(setTempHistory, router.temperature);
       if (router.total_memory_mb) {
-        setMemHistory(prev => prev.length
-          ? prev
-          : [((router.total_memory_mb - (router.free_memory_mb || 0)) / router.total_memory_mb) * 100]);
+        setMemHistory([((router.total_memory_mb - (router.free_memory_mb || 0)) / router.total_memory_mb) * 100]);
+      } else {
+        setMemHistory([]);
       }
-      flat(setTempHistory, router.temperature);
       return;
     }
     setRxHistory(prev => pushHistory(prev, router.wan_rx_bps));

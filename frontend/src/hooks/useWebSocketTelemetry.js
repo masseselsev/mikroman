@@ -6,6 +6,18 @@ export function useWebSocketTelemetry(routerId = null) {
   const wsRef = useRef(null);
 
   useEffect(() => {
+    // Until the app has resolved which router is active (first render, or the
+    // brief gap of a router deletion), do not open a socket at all. A probe
+    // connection on an unresolved id is not free: the hub answers it with the
+    // default router's replay/bootstrap, and then the id settling (undefined
+    // → the real id) tears it down and repeats the whole exchange — the bar
+    // visibly loads twice on every refresh. The default-router semantics
+    // (router_id=0) stay available to clients that dial in deliberately.
+    if (routerId == null) {
+      setTelemetry(null);
+      setIsConnected(false);
+      return undefined;
+    }
     // Drop the previous router's last frame the moment the selection changes,
     // so its CPU / traffic / user list do not linger on screen until the new
     // socket delivers its first tick.

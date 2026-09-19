@@ -81,8 +81,21 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 	// history so the dashboard is not blank until the first poll succeeds. The
 	// frame is tagged "bootstrap" and carries bootstrapped:true in the router
 	// object; the first real tick overwrites both hub caches and the UI alike.
+	// The live cache is re-checked after building: a tick may land while the
+	// history queries run, and a frame claiming "now" must not arrive after the
+	// real "now" it would overwrite.
 	if cachedFrame == nil {
-		cachedFrame = h.bootstrapFrame(routerID)
+		boot := h.bootstrapFrame(routerID)
+		h.mu.RLock()
+		live := h.lastFrames[routerID]
+		if live == nil {
+			live = h.lastFrames[0]
+		}
+		h.mu.RUnlock()
+		cachedFrame = live
+		if cachedFrame == nil {
+			cachedFrame = boot
+		}
 	}
 
 	defer func() {
@@ -145,6 +158,13 @@ func (h *Hub) BroadcastRouter(routerID int, isDefault bool, event interface{}) {
 	h.lastFrames[routerID] = data
 	if isDefault {
 		h.lastFrames[0] = data
+	}
+	// A bootstrap frame summarised from history is stale the moment a live tick
+	// exists: drop the cache for this router and for the alias id 0 that the
+	// bootstrap resolves against the default router.
+	delete(h.bootCache, routerID)
+	if isDefault {
+		delete(h.bootCache, 0)
 	}
 	targets := make([]*clientConn, 0, len(h.clients))
 	for c := range h.clients {
