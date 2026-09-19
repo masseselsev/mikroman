@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/masseselsev/mikroman/internal/db"
 )
 
 var upgrader = websocket.Upgrader{
@@ -33,6 +34,11 @@ type Hub struct {
 	mu         sync.RWMutex
 	clients    map[*clientConn]bool
 	lastFrames map[int][]byte // routerID -> cached telemetry frame (0 = default router)
+	// bootDB enables the bootstrap frame: history summarised for a client that
+	// connects before any live tick exists. nil (unit tests of the hub alone)
+	// keeps the old "wait for the first tick" behavior.
+	bootDB    *db.DB
+	bootCache map[int]bootstrapEntry
 }
 
 func NewHub() *Hub {
@@ -69,6 +75,15 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 		cachedFrame = f
 	}
 	h.mu.Unlock()
+
+	// No live tick for this router has ever arrived (cold server, or a router
+	// that is down right now). Fall back to a frame summarised from stored
+	// history so the dashboard is not blank until the first poll succeeds. The
+	// frame is tagged "bootstrap" and carries bootstrapped:true in the router
+	// object; the first real tick overwrites both hub caches and the UI alike.
+	if cachedFrame == nil {
+		cachedFrame = h.bootstrapFrame(routerID)
+	}
 
 	defer func() {
 		h.mu.Lock()
