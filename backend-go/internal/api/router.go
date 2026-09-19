@@ -39,6 +39,9 @@ func NewRouter(rc RouterConfig) http.Handler {
 
 	// WebSocket Telemetry endpoint for frontend (/ws/telemetry)
 	if rc.Hub != nil {
+		// Give the hub history access so a client that connects before the
+		// first live tick still gets the telemetry bar filled from buckets.
+		rc.Hub.AttachDatabase(rc.DB)
 		r.With(CORSMiddleware).Get("/ws/telemetry", rc.Hub.HandleWS)
 	}
 

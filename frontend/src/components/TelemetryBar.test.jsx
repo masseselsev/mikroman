@@ -133,6 +133,41 @@ describe('TelemetryBar redesigned tile labels', () => {
   });
 });
 
+describe('TelemetryBar bootstrap frame', () => {
+  const sparklines = (container) => container.querySelectorAll('svg[viewBox="0 0 100 18"]');
+
+  it('fills the tiles from history medians and dims them until a live tick lands', () => {
+    // The hub's cold-start frame: same schema as a tick, tagged bootstrapped.
+    const frame = {
+      cpu_load: 30, memory_usage_pct: 60, free_memory_mb: 424, total_memory_mb: 1024,
+      temperature: 48, wan_rx_bps: 9000000, wan_tx_bps: 4500000,
+      user_count: 2, client_device_count: 2, active_clients: 1,
+      monitored_interfaces: ['ether1', 'ether2'], bootstrapped: true,
+    };
+    const { container, rerender } = renderWithProviders(
+      <TelemetryBar router={frame} activeRouter={{ id: 1 }} />
+    );
+
+    // The medians are on screen, not dashes: 30% CPU, 9.0 Mbps download.
+    expect(screen.getByText('30%')).toBeInTheDocument();
+    expect(screen.getByText('9.0 Mbps')).toBeInTheDocument();
+    // Measurement tiles carry the dimmed marker; the values themselves are not
+    // hidden, only visibly "not live yet".
+    expect(container.querySelectorAll('.tile-bootstrapped').length).toBe(5);
+
+    // The first real tick lifts the dim, replaces the figures, and the seeded
+    // median becomes the anchor of the now-two-point sparkline.
+    rerender(<TelemetryBar
+      router={{ ...frame, bootstrapped: false, cpu_load: 12, wan_rx_bps: 1200 }}
+      activeRouter={{ id: 1 }}
+    />);
+    expect(container.querySelectorAll('.tile-bootstrapped').length).toBe(0);
+    expect(screen.getByText('12%')).toBeInTheDocument();
+    expect(screen.getByText('1.2 Kbps')).toBeInTheDocument();
+    expect(sparklines(container).length).toBeGreaterThan(0);
+  });
+});
+
 describe('TelemetryBar sparklines across a router switch', () => {
   // The sparkline SVG is identifiable by its own viewBox; lucide icons in the
   // same tiles are also SVGs, so anything looser would count those too.

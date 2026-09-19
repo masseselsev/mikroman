@@ -40,6 +40,12 @@
 * **🛡️ Multi-Router Management & Isolated Environments**:
   * Complete operational isolation: users, devices, queues, rollups, quotas, and timezone offsets exist strictly per-router.
   * Instant context switching in UI and WebSocket telemetry.
+  * The telemetry bar never opens empty: when a client connects before the first
+    live tick exists (cold server start, or a router that is briefly unreachable),
+    the hub replays a bootstrap frame — 15-minute medians from the stored metric
+    buckets for CPU/RAM/traffic, plus live user and device counts — tagged so the
+    UI can render the values subdued until a real tick replaces them. A router
+    with no history gets no frame at all: placeholders stay, which is honest.
   * Seamless hardware swap workflow (`Change Router`) with data retention choices (`keep` vs `reset_hardware`).
   * Soft archive vs permanent purge router lifecycles.
   * Stored credentials never cross the API read path: `GET /api/v1/system/settings` answers `********` for the Telegram bot token, and a settings form that posts that value straight back is understood to mean "unchanged" rather than overwriting the token. The settings form labels the field as hidden so eight bullets in a password box cannot be mistaken for a real credential.

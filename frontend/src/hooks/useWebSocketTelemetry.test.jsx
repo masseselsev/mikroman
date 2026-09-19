@@ -62,14 +62,32 @@ describe('useWebSocketTelemetry', () => {
 
   const visibleSockets = () => FakeWebSocket.instances.filter((s) => !s.closed);
 
-  it('opens exactly one socket per mounted page', () => {
+  it('stays silent while the active router id is unresolved', () => {
+    // The app opens with the router not yet adopted (null). Connecting then is
+    // what made the telemetry bar load twice per refresh: the hub answered the
+    // probe with a default-router replay, the id settled a moment later, and
+    // the socket was torn down and rebuilt. No id -> no socket.
     renderHook(() => useWebSocketTelemetry(null));
+    expect(FakeWebSocket.instances).toHaveLength(0);
+    // undefined is the other spelling of "not resolved yet".
+    renderHook(() => useWebSocketTelemetry(undefined));
+    expect(FakeWebSocket.instances).toHaveLength(0);
+  });
+
+  it('connects once the router id is known', () => {
+    renderHook(() => useWebSocketTelemetry(7));
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    expect(FakeWebSocket.instances[0].url).toContain('router_id=7');
+  });
+
+  it('opens exactly one socket per mounted page', () => {
+    renderHook(() => useWebSocketTelemetry(1));
     expect(FakeWebSocket.instances).toHaveLength(1);
     expect(FakeWebSocket.instances[0].url).toContain('/ws/telemetry');
   });
 
   it('closes the socket when the tab is hidden and stays closed', () => {
-    const { unmount } = renderHook(() => useWebSocketTelemetry(null));
+    const { unmount } = renderHook(() => useWebSocketTelemetry(1));
     const first = FakeWebSocket.instances[0];
     // `open()` runs the hook's onopen, which sets state; keep it inside act().
     act(() => { first.open(); });
@@ -86,7 +104,7 @@ describe('useWebSocketTelemetry', () => {
 
   it('does not reconnect while hidden', () => {
     vi.useFakeTimers();
-    renderHook(() => useWebSocketTelemetry(null));
+    renderHook(() => useWebSocketTelemetry(1));
     const first = FakeWebSocket.instances[0];
     // `open()` runs the hook's onopen, which sets state; keep it inside act().
     act(() => { first.open(); });
@@ -105,7 +123,7 @@ describe('useWebSocketTelemetry', () => {
   });
 
   it('reconnects when the tab becomes visible again', () => {
-    renderHook(() => useWebSocketTelemetry(null));
+    renderHook(() => useWebSocketTelemetry(1));
     act(() => {
       setVisibility('hidden');
       document.dispatchEvent(new Event('visibilitychange'));
@@ -119,7 +137,7 @@ describe('useWebSocketTelemetry', () => {
   });
 
   it('never stacks a second live socket for the same page', () => {
-    renderHook(() => useWebSocketTelemetry(null));
+    renderHook(() => useWebSocketTelemetry(1));
     act(() => { FakeWebSocket.instances[0].open(); });
 
     // Two visibility flips in a row must not produce two connections.
@@ -132,7 +150,7 @@ describe('useWebSocketTelemetry', () => {
 
   it('retries after an unexpected drop while visible', () => {
     vi.useFakeTimers();
-    renderHook(() => useWebSocketTelemetry(null));
+    renderHook(() => useWebSocketTelemetry(1));
     const first = FakeWebSocket.instances[0];
     // `open()` runs the hook's onopen, which sets state; keep it inside act().
     act(() => { first.open(); });
@@ -146,7 +164,7 @@ describe('useWebSocketTelemetry', () => {
 
   it('tears the socket down on unmount without scheduling a reconnect', () => {
     vi.useFakeTimers();
-    const { unmount } = renderHook(() => useWebSocketTelemetry(null));
+    const { unmount } = renderHook(() => useWebSocketTelemetry(1));
     const first = FakeWebSocket.instances[0];
     // `open()` runs the hook's onopen, which sets state; keep it inside act().
     act(() => { first.open(); });

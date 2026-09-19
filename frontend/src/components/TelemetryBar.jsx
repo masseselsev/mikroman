@@ -137,12 +137,12 @@ function PublicIpLink({ ip, service, t }) {
  * entirely, since its globe icon already says what the row is about and the
  * text was the tightest-fitting thing in the row.
  */
-function Tile({ icon, tone, label, value, sub, history, historyMax, onClick, title, valueSize = 'var(--fs-md)' }) {
+function Tile({ icon, tone, label, value, sub, history, historyMax, onClick, title, valueSize = 'var(--fs-md)', dimmed = false }) {
   const subLines = (Array.isArray(sub) ? sub : [sub]).filter(Boolean);
 
   return (
     <div
-      className={`tile${onClick ? ' is-clickable' : ''}`}
+      className={`tile${onClick ? ' is-clickable' : ''}${dimmed ? ' tile-bootstrapped' : ''}`}
       onClick={onClick}
       title={title}
     >
@@ -216,6 +216,28 @@ export function TelemetryBar({ router, activeRouter, interfaces = [], onNavigate
 
   useEffect(() => {
     if (!router) return;
+    // A bootstrap frame carries history medians, not samples: seed each
+    // sparkline with a flat line at the median instead of appending, so the
+    // bar looks occupied from the first paint. The first live tick then
+    // appends onto the seed line — the median "gradually updates" toward the
+    // real curve instead of the bar snapping from empty to busy.
+    if (router.bootstrapped) {
+      // Seed every series explicitly: a field missing from the bootstrap must
+      // clear the previous router's line, not let it linger on the new one.
+      const seed = (setter, value) => {
+        setter(value != null && !Number.isNaN(value) ? [value] : []);
+      };
+      seed(setRxHistory, router.wan_rx_bps);
+      seed(setTxHistory, router.wan_tx_bps);
+      seed(setCpuHistory, router.cpu_load);
+      seed(setTempHistory, router.temperature);
+      if (router.total_memory_mb) {
+        setMemHistory([((router.total_memory_mb - (router.free_memory_mb || 0)) / router.total_memory_mb) * 100]);
+      } else {
+        setMemHistory([]);
+      }
+      return;
+    }
     setRxHistory(prev => pushHistory(prev, router.wan_rx_bps));
     setTxHistory(prev => pushHistory(prev, router.wan_tx_bps));
     setCpuHistory(prev => pushHistory(prev, router.cpu_load));
@@ -452,6 +474,10 @@ export function TelemetryBar({ router, activeRouter, interfaces = [], onNavigate
     ? `${t('configure_interfaces_hint')}\n${t('wan_label')}: ${monitored.join(', ')}`
     : `${t('wan_none_warning')}\n${t('configure_interfaces_hint')}`;
 
+  // Values summarised from history carry a subdued look until the first live
+  // tick — the numbers are medians of recent buckets, honest but not "now".
+  const bootstrapped = !!router.bootstrapped;
+
   return (
     <>
       <div style={{
@@ -472,6 +498,7 @@ export function TelemetryBar({ router, activeRouter, interfaces = [], onNavigate
           value={formatSpeed(router.wan_rx_bps, speedUnit)}
           sub={wanSub}
           history={rxHistory}
+          dimmed={bootstrapped}
           onClick={openConfigModal}
           title={wanTileTitle}
         />
@@ -482,6 +509,7 @@ export function TelemetryBar({ router, activeRouter, interfaces = [], onNavigate
           value={formatSpeed(router.wan_tx_bps, speedUnit)}
           sub={wanSub}
           history={txHistory}
+          dimmed={bootstrapped}
           onClick={openConfigModal}
           title={wanTileTitle}
         />
@@ -498,6 +526,7 @@ export function TelemetryBar({ router, activeRouter, interfaces = [], onNavigate
           sub={cpuLines}
           history={cpuHistory}
           historyMax={100}
+          dimmed={bootstrapped}
           onClick={goHealth}
           title={cpuTitle}
         />
@@ -513,6 +542,7 @@ export function TelemetryBar({ router, activeRouter, interfaces = [], onNavigate
           sub={memPct !== null ? `${memPct}% ${t('used_label')} · ${usedMemMb}/${totalMemMb} MB` : ''}
           history={memHistory}
           historyMax={100}
+          dimmed={bootstrapped}
           onClick={goHealth}
           title={onNavigate ? t('open_health_hint') : undefined}
         />
@@ -524,6 +554,7 @@ export function TelemetryBar({ router, activeRouter, interfaces = [], onNavigate
           value={router.temperature != null ? `${router.temperature}°C` : '—'}
           sub={tempThreshold ? `${t('threshold_label')} ${tempThreshold}°C` : ''}
           history={tempHistory}
+          dimmed={bootstrapped}
           onClick={goHealth}
           title={onNavigate ? t('open_health_hint') : undefined}
         />
