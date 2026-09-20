@@ -48,8 +48,9 @@ type TelemetryService struct {
 	cachedHealthAt  map[int]time.Time
 	cachedDevStats  map[int]map[int]db.VolumeStats
 	cachedUserStats map[int]map[int]db.VolumeStats
-	cachedStatsAt   map[int]time.Time
-	lastMetricsSave map[int]time.Time
+	cachedStatsAt     map[int]time.Time
+	lastMetricsSave   map[int]time.Time
+	lastBucketRefresh map[int]time.Time
 }
 
 func NewTelemetryService(database *db.DB, client *routeros.Client, hub EventBroadcaster) *TelemetryService {
@@ -62,28 +63,29 @@ func NewTelemetryService(database *db.DB, client *routeros.Client, hub EventBroa
 		}
 	}
 	return &TelemetryService{
-		database:        database,
-		client:          client,
-		hub:             hub,
-		clients:         clients,
-		prevIfaces:      make(map[int]map[string][2]int64),
-		prevTime:        make(map[int]time.Time),
-		prevDeviceBytes: make(map[int]map[int][2]int64),
-		prevMangleTime:  make(map[int]time.Time),
-		latestRates:     make(map[int]LiveRateSnapshot),
-		pubNet:          NewPublicNetworkService(),
-		cachedRB:        make(map[int]*routeros.RouterBoard),
-		cachedRBAt:      make(map[int]time.Time),
-		cachedIPAddrs:   make(map[int][]routeros.IPAddress),
-		cachedIPAddrsAt: make(map[int]time.Time),
-		cachedPublicIP:  make(map[int]string),
-		cachedPubIPAt:   make(map[int]time.Time),
-		cachedHealth:    make(map[int][]routeros.HealthItem),
-		cachedHealthAt:  make(map[int]time.Time),
-		cachedDevStats:  make(map[int]map[int]db.VolumeStats),
-		cachedUserStats: make(map[int]map[int]db.VolumeStats),
-		cachedStatsAt:   make(map[int]time.Time),
-		lastMetricsSave: make(map[int]time.Time),
+		database:          database,
+		client:            client,
+		hub:               hub,
+		clients:           clients,
+		prevIfaces:        make(map[int]map[string][2]int64),
+		prevTime:          make(map[int]time.Time),
+		prevDeviceBytes:   make(map[int]map[int][2]int64),
+		prevMangleTime:    make(map[int]time.Time),
+		latestRates:       make(map[int]LiveRateSnapshot),
+		pubNet:            NewPublicNetworkService(),
+		cachedRB:          make(map[int]*routeros.RouterBoard),
+		cachedRBAt:        make(map[int]time.Time),
+		cachedIPAddrs:     make(map[int][]routeros.IPAddress),
+		cachedIPAddrsAt:   make(map[int]time.Time),
+		cachedPublicIP:    make(map[int]string),
+		cachedPubIPAt:     make(map[int]time.Time),
+		cachedHealth:      make(map[int][]routeros.HealthItem),
+		cachedHealthAt:    make(map[int]time.Time),
+		cachedDevStats:    make(map[int]map[int]db.VolumeStats),
+		cachedUserStats:   make(map[int]map[int]db.VolumeStats),
+		cachedStatsAt:     make(map[int]time.Time),
+		lastMetricsSave:   make(map[int]time.Time),
+		lastBucketRefresh: make(map[int]time.Time),
 	}
 }
 
@@ -224,30 +226,42 @@ func (s *TelemetryService) saveMetricsAndRollups(routerID int, now time.Time, re
 	`, routerID, iface.Name, rRx, rTx, rx, txBytes)
 	}
 
-	// Refresh the 15-minute buckets for the window this tick's samples landed in, inside
-	// the same transaction so a raw sample and the bucket describing it commit together.
-	// The upsert recomputes the whole bucket from the raw rows of its quarter hour, which
-	// keeps it idempotent under the 10 s tick: re-running it converges on the same row
-	// instead of adding a second contribution. Both buckets of the sample window are
-	// covered because a tick that straddles a boundary has to close the earlier one.
-	refreshFrom := db.MetricBucketEpoch(now.Add(-db.MetricCollectionCadence))
-	refreshUntil := db.MetricBucketEpoch(now) + db.MetricBucketSeconds
-	// The raw and bucket writes live in one transaction on purpose: if the bucket
-	// recompute fails, the raw rows of this tick roll back with it, and the next tick
-	// rebuilds the same window from raw. Silently committing raw rows while buckets
-	// drift behind is the failure mode a chart cannot detect later.
-	if err := db.ComposeMetricBuckets(tx, db.MetricBucketWindow{
-		RouterID:   &routerID,
-		FromEpoch:  refreshFrom,
-		UntilEpoch: refreshUntil,
-	}); err != nil {
-		slog.Warn("Metric bucket refresh failed; discarding this tick's raw samples", "router_id", routerID, "err", err)
-		return
+	// Refresh the 15-minute buckets for the window this tick's samples landed in.
+	// To minimize SQLite CPU churn and heap allocations on embedded router containers,
+	// bucket recomputation is throttled to at most once per 60 seconds unless we cross
+	// a 15-minute bucket grid boundary (or on the very first tick).
+	s.mu.Lock()
+	lastRefresh := s.lastBucketRefresh[routerID]
+	shouldRefreshBuckets := lastRefresh.IsZero() ||
+		now.Sub(lastRefresh) >= 60*time.Second ||
+		db.MetricBucketEpoch(now) != db.MetricBucketEpoch(lastRefresh)
+	s.mu.Unlock()
+
+	if shouldRefreshBuckets {
+		refreshFrom := db.MetricBucketEpoch(now.Add(-db.MetricCollectionCadence))
+		refreshUntil := db.MetricBucketEpoch(now) + db.MetricBucketSeconds
+		// The raw and bucket writes live in one transaction on purpose: if the bucket
+		// recompute fails, the raw rows of this tick roll back with it, and the next tick
+		// rebuilds the same window from raw.
+		if err := db.ComposeMetricBuckets(tx, db.MetricBucketWindow{
+			RouterID:   &routerID,
+			FromEpoch:  refreshFrom,
+			UntilEpoch: refreshUntil,
+		}); err != nil {
+			slog.Warn("Metric bucket refresh failed; discarding this tick's raw samples", "router_id", routerID, "err", err)
+			return
+		}
 	}
 
 	_ = tx.Commit()
 
 	s.mu.Lock()
+	if shouldRefreshBuckets {
+		if s.lastBucketRefresh == nil {
+			s.lastBucketRefresh = make(map[int]time.Time)
+		}
+		s.lastBucketRefresh[routerID] = now
+	}
 	if s.prevIfaces == nil {
 		s.prevIfaces = make(map[int]map[string][2]int64)
 	}

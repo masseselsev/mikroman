@@ -29,6 +29,8 @@ VOLUME ["/data"]
 
 ENV DATA_DIR=/data \
     DIST_DIR=/app/frontend/dist \
-    PORT=1928
+    PORT=1928 \
+    GOMEMLIMIT=80MiB \
+    GODEBUG=madvdontneed=1
 
 ENTRYPOINT ["/app/mikroman", "-data-dir=/data", "-dist-dir=/app/frontend/dist"]
