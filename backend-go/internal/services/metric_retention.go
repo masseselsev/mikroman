@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"runtime"
+	"runtime/debug"
 	"strconv"
 	"time"
 
@@ -128,6 +130,17 @@ func (s *TelemetryService) PruneRawMetrics(ctx context.Context) (int64, error) {
 			"DELETE FROM %s WHERE bucket_start < ?", table), bucketCutoff); err != nil {
 			return total, fmt.Errorf("prune %s: %w", table, err)
 		}
+	}
+
+	if total > 0 {
+		// Truncate WAL sidecars back to 0 bytes so unreferenced pages do not linger
+		// inside the Linux page cache / cgroup memory quota.
+		if _, err := s.database.SqlDB.ExecContext(ctx, "PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
+			slog.Debug("Post-prune WAL checkpoint notice", "err", err)
+		}
+		// Actively scavenge heap arenas allocated by modernc.org/sqlite back to the host kernel
+		runtime.GC()
+		debug.FreeOSMemory()
 	}
 
 	return total, nil

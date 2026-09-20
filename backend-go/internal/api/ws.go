@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/masseselsev/mikroman/internal/config"
+	"github.com/masseselsev/mikroman/internal/crypto"
 	"github.com/masseselsev/mikroman/internal/db"
 )
 
@@ -39,6 +41,8 @@ type Hub struct {
 	// keeps the old "wait for the first tick" behavior.
 	bootDB    *db.DB
 	bootCache map[int]bootstrapEntry
+	cfg       *config.Config
+	fernet    *crypto.Fernet
 }
 
 func NewHub() *Hub {
@@ -48,7 +52,33 @@ func NewHub() *Hub {
 	}
 }
 
+// AttachAuth configures authentication credentials for the WebSocket hub.
+func (h *Hub) AttachAuth(cfg *config.Config, fernet *crypto.Fernet) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.cfg = cfg
+	h.fernet = fernet
+}
+
 func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
+	h.mu.RLock()
+	cfg := h.cfg
+	fernet := h.fernet
+	h.mu.RUnlock()
+
+	// Enforce session authentication when enabled: reject with 1008 (Policy Violation)
+	if cfg != nil && cfg.AuthEnabled {
+		if _, ok := VerifyRequestAuth(r, cfg, fernet); !ok {
+			conn, err := upgrader.Upgrade(w, r, nil)
+			if err == nil {
+				closeMsg := websocket.FormatCloseMessage(websocket.ClosePolicyViolation, "Authentication required")
+				_ = conn.WriteControl(websocket.CloseMessage, closeMsg, time.Now().Add(time.Second))
+				_ = conn.Close()
+			}
+			return
+		}
+	}
+
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return
