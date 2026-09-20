@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"runtime/debug"
 	"strconv"
 	"syscall"
@@ -59,6 +60,12 @@ func main() {
 	slog.SetDefault(logger)
 
 	slog.Info("Initializing MikroMan Engine (Golang High-Performance Core)", "version", cfg.AppVersion)
+
+	// Memory budget for embedded router containers (< 100MB RAM target)
+	if os.Getenv("GOMEMLIMIT") == "" {
+		debug.SetMemoryLimit(80 * 1024 * 1024) // 80 MiB soft memory limit
+		slog.Debug("Enforced default soft memory limit", "limit", "80MiB")
+	}
 
 	// 3. Resolve master cipher
 	fernet, err := crypto.ResolveKey(cfg.SecretKey, cfg.DataDir)
@@ -156,6 +163,9 @@ func main() {
 			slog.Warn("Metric bucket backfill failed", "err", err)
 		} else if ran {
 			slog.Info("Backfilled metric buckets from existing raw samples", "days", backfillDays)
+			// Free heap and return pages to OS immediately after heavy one-off backfill
+			runtime.GC()
+			debug.FreeOSMemory()
 		}
 		retentionSvc.StartMetricRetentionLoop(ctx, time.Hour)
 	}()

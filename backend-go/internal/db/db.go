@@ -32,15 +32,15 @@ func Open(dbPath string, fernet *crypto.Fernet) (*DB, error) {
 		_ = os.MkdirAll(dir, 0755)
 	}
 
-	dsn := fmt.Sprintf("%s?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(1)&_pragma=cache_size(-2000)&_pragma=wal_autocheckpoint(100)", dbPath)
+	dsn := fmt.Sprintf("%s?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(1)&_pragma=cache_size(-1024)&_pragma=wal_autocheckpoint(100)", dbPath)
 	sqlDB, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open sqlite database: %w", err)
 	}
 
-	// Bounded connection pool: pure Go driver handles concurrency without futex spinning
-	sqlDB.SetMaxOpenConns(10)
-	sqlDB.SetMaxIdleConns(5)
+	// Bounded connection pool: sized for low-memory embedded router containers (< 100MB RAM budget)
+	sqlDB.SetMaxOpenConns(4)
+	sqlDB.SetMaxIdleConns(2)
 	sqlDB.SetConnMaxLifetime(time.Hour)
 
 	// Run table creation

@@ -39,6 +39,49 @@ func CORSMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+// VerifyRequestAuth verifies if the request carries valid credentials (cookie, Bearer token, or query parameter token).
+// Returns (username, true) if authenticated, or ("", false) otherwise.
+func VerifyRequestAuth(r *http.Request, cfg *config.Config, fernet *crypto.Fernet) (string, bool) {
+	if cfg == nil || !cfg.AuthEnabled {
+		return "admin", true
+	}
+	if fernet == nil {
+		return "", false
+	}
+
+	// 1. Query token parameter (?token=...)
+	if token := r.URL.Query().Get("token"); token != "" {
+		if payload, err := fernet.VerifySessionToken(token); err == nil && payload != nil {
+			return payload.Sub, true
+		}
+	}
+
+	// 2. Check Bearer token or X-API-Key header
+	authHeader := r.Header.Get("Authorization")
+	apiKeyHeader := r.Header.Get("X-API-Key")
+	var token string
+	if strings.HasPrefix(strings.ToLower(authHeader), "bearer ") {
+		token = strings.TrimSpace(authHeader[7:])
+	} else if apiKeyHeader != "" {
+		token = strings.TrimSpace(apiKeyHeader)
+	}
+	if token != "" {
+		if payload, err := fernet.VerifySessionToken(token); err == nil && payload != nil {
+			return payload.Sub, true
+		}
+		return "", false
+	}
+
+	// 3. Check Session cookie
+	if sessionCookie, err := r.Cookie(SessionCookie); err == nil && sessionCookie.Value != "" {
+		if payload, err := fernet.VerifySessionToken(sessionCookie.Value); err == nil && payload != nil {
+			return payload.Sub, true
+		}
+	}
+
+	return "", false
+}
+
 // AuthMiddleware enforces session tokens and Double-Submit CSRF on protected routes.
 func AuthMiddleware(cfg *config.Config, fernet *crypto.Fernet) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
@@ -75,59 +118,29 @@ func AuthMiddleware(cfg *config.Config, fernet *crypto.Fernet) func(http.Handler
 				return
 			}
 
-			// 1. Check Bearer token or X-API-Key header
-			authHeader := r.Header.Get("Authorization")
-			apiKeyHeader := r.Header.Get("X-API-Key")
-			var token string
-			if strings.HasPrefix(strings.ToLower(authHeader), "bearer ") {
-				token = strings.TrimSpace(authHeader[7:])
-			} else if apiKeyHeader != "" {
-				token = strings.TrimSpace(apiKeyHeader)
-			}
-
-			if token != "" {
-				if fernet != nil {
-					payload, err := fernet.VerifySessionToken(token)
-					if err == nil && payload != nil {
-						ctx := context.WithValue(r.Context(), UserContextKey, payload.Sub)
-						next.ServeHTTP(w, r.WithContext(ctx))
-						return
-					}
-				}
-				WriteError(w, http.StatusUnauthorized, "Invalid API token")
-				return
-			}
-
-			// 2. Check Session cookie
-			sessionCookie, err := r.Cookie(SessionCookie)
-			if err != nil || sessionCookie.Value == "" {
+			username, ok := VerifyRequestAuth(r, cfg, fernet)
+			if !ok {
 				WriteError(w, http.StatusUnauthorized, "Authentication required")
 				return
 			}
 
-			if fernet == nil {
-				WriteError(w, http.StatusInternalServerError, "Cipher not initialized")
-				return
-			}
-
-			payload, err := fernet.VerifySessionToken(sessionCookie.Value)
-			if err != nil || payload == nil {
-				WriteError(w, http.StatusUnauthorized, "Session expired or invalid")
-				return
-			}
-
-			// 3. Double-Submit CSRF validation on mutating methods
+			// Double-Submit CSRF validation on mutating methods for cookie-based requests
 			if r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodPatch || r.Method == http.MethodDelete {
-				csrfCookie, err := r.Cookie(CSRFCookie)
-				csrfHeader := r.Header.Get(CSRFHeader)
+				authHeader := r.Header.Get("Authorization")
+				apiKeyHeader := r.Header.Get("X-API-Key")
+				// Token-authenticated requests don't require CSRF header
+				if authHeader == "" && apiKeyHeader == "" && r.URL.Query().Get("token") == "" {
+					csrfCookie, err := r.Cookie(CSRFCookie)
+					csrfHeader := r.Header.Get(CSRFHeader)
 
-				if err != nil || csrfCookie.Value == "" || csrfHeader == "" || !crypto.VerifyCSRFToken(csrfHeader, csrfCookie.Value) {
-					WriteError(w, http.StatusForbidden, "CSRF verification failed")
-					return
+					if err != nil || csrfCookie.Value == "" || csrfHeader == "" || !crypto.VerifyCSRFToken(csrfHeader, csrfCookie.Value) {
+						WriteError(w, http.StatusForbidden, "CSRF verification failed")
+						return
+					}
 				}
 			}
 
-			ctx := context.WithValue(r.Context(), UserContextKey, payload.Sub)
+			ctx := context.WithValue(r.Context(), UserContextKey, username)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
